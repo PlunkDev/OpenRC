@@ -49,11 +49,11 @@ SyntheticWad make_wad(
     std::fill(
         result.image.begin(),
         result.image.begin() + static_cast<std::ptrdiff_t>(kTestExtentOffset),
-        0xa5U);
+        static_cast<std::uint8_t>(0xa5U));
     std::fill(
         result.image.begin() + static_cast<std::ptrdiff_t>(kTestExtentOffset + extent_bytes),
         result.image.end(),
-        0x7cU);
+        static_cast<std::uint8_t>(0x7cU));
 
     auto* header = result.image.data() + kTestExtentOffset;
     header[0] = 'W';

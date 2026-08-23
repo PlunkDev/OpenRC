@@ -524,7 +524,7 @@ void create_controls(const HWND window) {
         610,
         27,
         window,
-        reinterpret_cast<HMENU>(kIsoEdit),
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIsoEdit)),
         nullptr,
         nullptr);
 
@@ -538,7 +538,7 @@ void create_controls(const HWND window) {
         106,
         29,
         window,
-        reinterpret_cast<HMENU>(kBrowseButton),
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kBrowseButton)),
         nullptr,
         nullptr);
 
@@ -552,7 +552,7 @@ void create_controls(const HWND window) {
         132,
         32,
         window,
-        reinterpret_cast<HMENU>(kInspectButton),
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kInspectButton)),
         nullptr,
         nullptr);
 
@@ -566,7 +566,7 @@ void create_controls(const HWND window) {
         148,
         32,
         window,
-        reinterpret_cast<HMENU>(kExtractButton),
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kExtractButton)),
         nullptr,
         nullptr);
 
@@ -580,7 +580,7 @@ void create_controls(const HWND window) {
         100,
         32,
         window,
-        reinterpret_cast<HMENU>(kPlayButton),
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPlayButton)),
         nullptr,
         nullptr);
 
@@ -594,7 +594,7 @@ void create_controls(const HWND window) {
         148,
         32,
         window,
-        reinterpret_cast<HMENU>(kOpenDataButton),
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kOpenDataButton)),
         nullptr,
         nullptr);
 
@@ -608,7 +608,7 @@ void create_controls(const HWND window) {
         728,
         22,
         window,
-        reinterpret_cast<HMENU>(kStatusLabel),
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStatusLabel)),
         nullptr,
         nullptr);
 
@@ -622,7 +622,7 @@ void create_controls(const HWND window) {
         728,
         264,
         window,
-        reinterpret_cast<HMENU>(kReportEdit),
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kReportEdit)),
         nullptr,
         nullptr);
 

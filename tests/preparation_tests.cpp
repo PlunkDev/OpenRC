@@ -58,7 +58,7 @@ std::size_t write_directory_record(
     const std::vector<std::uint8_t>& name) {
     const auto padding = name.size() % 2U == 0U ? 1U : 0U;
     const auto record_size = 33U + name.size() + padding;
-    std::fill(target, target + record_size, 0);
+    std::fill(target, target + record_size, std::uint8_t{0});
     target[0] = static_cast<std::uint8_t>(record_size);
     write_both32(target + 2, extent);
     write_both32(target + 10, size);
