@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-msvc-x64:
+    name: Windows / MSVC x64
+    runs-on: windows-2022
+    timeout-minutes: 20
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -G "Visual Studio 17 2022"
+          -A x64
+          -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
+          -DOPENRC_BUILD_TESTS=ON
+          -DBUILD_TESTING=ON
+          -DOPENRC_BUILD_LAUNCHER=ON
+
+      - name: Build
+        run: cmake --build build --config RelWithDebInfo --parallel
+
+      - name: Test
+        run: >
+          ctest --test-dir build
+          --build-config RelWithDebInfo
+          --output-on-failure
+          --no-tests=error
+
+  linux-gcc-x64:
+    name: Linux / GCC x64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      CC: gcc
+      CXX: g++
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -G "Unix Makefiles"
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
+          -DOPENRC_BUILD_TESTS=ON
+          -DBUILD_TESTING=ON
+          -DOPENRC_BUILD_LAUNCHER=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        run: >
+          ctest --test-dir build
+          --output-on-failure
+          --no-tests=error
