@@ -1207,9 +1207,9 @@ int run(const std::vector<std::filesystem::path>& arguments) {
             const auto companion_count =
                 level_assets->primary_extent3.tables.front().size();
             if (static_cast<std::uint64_t>(companion_count) !=
-                directory.declared_count) {
+                directory.record_count) {
                 throw std::runtime_error(
-                    "The scene-block count does not match companion extent-3 table 0");
+                    "The scene-block record count does not match companion extent-3 table 0");
             }
             const auto envelope_bytes =
                 directory.chain_end - directory.directory_bytes;
@@ -1231,6 +1231,9 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 << "Companion pairs:     " << companion_count << '\n'
                 << "Header float:        " << directory.header_float << '\n'
                 << "Directory bytes:     " << directory.directory_bytes << '\n'
+                << "Overlapped entry:    offset "
+                << hexadecimal(directory.overlapped_entry_range.offset, 8)
+                << ", size " << directory.overlapped_entry_range.size << " bytes\n"
                 << "Block chain end:     "
                 << hexadecimal(directory.chain_end, 8) << '\n'
                 << "Block envelopes:     " << envelope_bytes << " bytes\n"

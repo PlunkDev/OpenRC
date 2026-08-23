@@ -51,8 +51,13 @@ struct SceneBlockDirectoryV1 {
     std::uint32_t stride_bytes = 0;
     std::uint32_t declared_count = 0;
     float header_float = 0.0F;
+    // The declared count is the complete descriptor count. The first
+    // declared_count - 1 descriptors follow the fixed header. The final
+    // descriptor begins at directory_bytes and intentionally overlaps the
+    // first block's fixed prefix.
     std::uint64_t directory_bytes = 0;
     std::uint64_t record_count = 0;
+    SceneBlockRange overlapped_entry_range;
     std::uint64_t owned_byte_count = 0;
     std::vector<SceneBlockDirectoryEntryV1> entries;
     std::uint64_t chain_end = 0;

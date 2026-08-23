@@ -79,12 +79,14 @@ void write_entry(
 }
 
 [[nodiscard]] std::vector<std::byte> valid_directory() {
-    constexpr std::size_t kInputBytes = 400U;
+    constexpr std::size_t kInputBytes = 0x220U;
     constexpr std::uint32_t kDeclaredCount = 3U;
     constexpr std::uint32_t kFirstBlockOffset = 0xc0U;
     constexpr std::uint32_t kFirstOpaqueSize = 0x20U;
     constexpr std::uint32_t kSecondBlockOffset = 0x120U;
     constexpr std::uint32_t kSecondOpaqueSize = 0x10U;
+    constexpr std::uint32_t kThirdBlockOffset = 0x170U;
+    constexpr std::uint32_t kThirdOpaqueSize = 0x30U;
 
     std::vector<std::byte> bytes(kInputBytes, std::byte{0});
     write_le32(bytes, 0x00U, openrc::kSceneBlockDirectoryV1Stride);
@@ -113,10 +115,23 @@ void write_entry(
         bytes[offset] = static_cast<std::byte>(
             static_cast<std::uint8_t>((offset * 5U + 1U) & 0xffU));
     }
-    for (std::size_t offset = 0x170U; offset < bytes.size(); ++offset) {
+    for (std::size_t offset = kThirdBlockOffset; offset < 0x1e0U; ++offset) {
         bytes[offset] = static_cast<std::byte>(
             static_cast<std::uint8_t>((offset * 7U + 2U) & 0xffU));
     }
+    for (std::size_t offset = 0x1e0U; offset < bytes.size(); ++offset) {
+        bytes[offset] = static_cast<std::byte>(
+            static_cast<std::uint8_t>((offset * 11U + 3U) & 0xffU));
+    }
+    // The final descriptor occupies the first block's fixed prefix and points
+    // to the final envelope after the two descriptors stored after the header.
+    write_entry(
+        bytes,
+        2U,
+        {16.0F, 32.0F, -8.0F, 2.0F},
+        kThirdBlockOffset,
+        kThirdOpaqueSize,
+        0x99aabbccU);
     return bytes;
 }
 
@@ -133,22 +148,26 @@ void test_valid_directory_and_owned_ranges() {
     auto bytes = valid_directory();
     const auto first_expected = copied_range(bytes, 0xc0U, 0x60U);
     const auto second_expected = copied_range(bytes, 0x120U, 0x50U);
-    const auto trailing_expected = copied_range(bytes, 0x170U, 0x20U);
+    const auto third_expected = copied_range(bytes, 0x170U, 0x70U);
+    const auto trailing_expected = copied_range(bytes, 0x1e0U, 0x40U);
     const auto report = openrc::parse_scene_block_directory_v1(
         bytes,
         kGenerousLimits);
 
-    expect(report.input_bytes == 400U, "scene directory input size is wrong");
+    expect(report.input_bytes == 0x220U, "scene directory input size is wrong");
     expect(report.stride_bytes == 0x40U, "scene directory stride is wrong");
     expect(report.declared_count == 3U, "scene directory count is wrong");
     expect(report.header_float == 2.5F, "scene directory header float is wrong");
     expect(report.directory_bytes == 0xc0U, "scene directory size is wrong");
-    expect(report.record_count == 2U, "scene directory record count is wrong");
-    expect(report.entries.size() == 2U, "scene directory entry vector is wrong");
-    expect(report.owned_byte_count == 0xd0U, "scene owned byte count is wrong");
-    expect(report.chain_end == 0x170U, "scene block chain end is wrong");
+    expect(report.record_count == 3U, "scene directory record count is wrong");
+    expect(report.entries.size() == 3U, "scene directory entry vector is wrong");
     expect(
-        report.trailing_range == openrc::SceneBlockRange{0x170U, 0x20U},
+        report.overlapped_entry_range == openrc::SceneBlockRange{0xc0U, 0x40U},
+        "scene overlapped descriptor range is wrong");
+    expect(report.owned_byte_count == 0x160U, "scene owned byte count is wrong");
+    expect(report.chain_end == 0x1e0U, "scene block chain end is wrong");
+    expect(
+        report.trailing_range == openrc::SceneBlockRange{0x1e0U, 0x40U},
         "scene trailing range is wrong");
     expect(report.trailing_bytes == trailing_expected, "scene trailing bytes are wrong");
     expect(
@@ -184,31 +203,58 @@ void test_valid_directory_and_owned_ranges() {
     expect(second.block_end == 0x170U, "second block end is wrong");
     expect(second.block_bytes == second_expected, "second owned block bytes are wrong");
 
+    const auto& third = report.entries[2];
+    expect(
+        third.directory_entry_offset == 0xc0U,
+        "overlapped entry offset is wrong");
+    expect(
+        third.float_values == std::array<float, 4>{16.0F, 32.0F, -8.0F, 2.0F},
+        "overlapped entry floats are wrong");
+    expect(third.block_offset == 0x170U, "third block offset is wrong");
+    expect(third.opaque_size == 0x30U, "third opaque size is wrong");
+    expect(third.block_end == 0x1e0U, "third block end is wrong");
+    expect(
+        third.block_range == openrc::SceneBlockRange{0x170U, 0x70U} &&
+            third.prefix_range == openrc::SceneBlockRange{0x170U, 0x40U} &&
+            third.remainder_range == openrc::SceneBlockRange{0x1b0U, 0x30U},
+        "third neutral block ranges are wrong");
+    expect(third.block_bytes == third_expected, "third owned block bytes are wrong");
+    expect(
+        third.raw_words[5] == 0x99aabbccU &&
+            third.raw_words[13] == (0x99aabbccU ^ 0xa5a5a5a5U) &&
+            third.raw_words[15] == (0x99aabbccU ^ 0x5a5a5a5aU),
+        "overlapped raw entry words were not preserved");
+    expect(
+        report.overlapped_entry_range == first.prefix_range,
+        "the final descriptor does not overlap the first block prefix");
+
     std::fill(bytes.begin(), bytes.end(), std::byte{0xff});
     expect(
         report.entries[0].block_bytes == first_expected &&
             report.entries[1].block_bytes == second_expected &&
+            report.entries[2].block_bytes == third_expected &&
             report.trailing_bytes == trailing_expected,
         "scene directory report borrows byte ranges from its input");
 }
 
 void test_empty_trailing_range() {
     auto bytes = valid_directory();
-    bytes.resize(0x170U);
+    bytes.resize(0x1e0U);
     const auto report = openrc::parse_scene_block_directory_v1(
         bytes,
         kGenerousLimits);
     expect(
-        report.trailing_range == openrc::SceneBlockRange{0x170U, 0U} &&
+        report.trailing_range == openrc::SceneBlockRange{0x1e0U, 0U} &&
             report.trailing_bytes.empty(),
         "an empty scene trailing range is wrong");
-    expect(report.owned_byte_count == 0xb0U, "owned bytes without trailing data are wrong");
+    expect(report.owned_byte_count == 0x120U, "owned bytes without trailing data are wrong");
 }
 
 void test_zero_opaque_size_is_a_valid_aligned_envelope() {
     auto bytes = valid_directory();
     write_le32(bytes, entry_word_offset(0U, 14U), 0U);
     write_le32(bytes, entry_word_offset(1U, 4U), 0x100U);
+    write_le32(bytes, entry_word_offset(2U, 4U), 0x150U);
     const auto report = openrc::parse_scene_block_directory_v1(
         bytes,
         kGenerousLimits);
@@ -220,9 +266,10 @@ void test_zero_opaque_size_is_a_valid_aligned_envelope() {
             report.entries[0].block_bytes.size() == 0x40U,
         "zero-size scene envelope ranges are wrong");
     expect(
-        report.chain_end == 0x150U &&
-            report.trailing_range == openrc::SceneBlockRange{0x150U, 0x40U},
+        report.chain_end == 0x1c0U &&
+            report.trailing_range == openrc::SceneBlockRange{0x1c0U, 0x60U},
         "zero-size scene envelope did not preserve the trailing range");
+    expect(report.owned_byte_count == 0x160U, "zero-size owned byte count is wrong");
 }
 
 void test_mandatory_limits() {
@@ -252,21 +299,21 @@ void test_mandatory_limits() {
         [&] {
             (void)openrc::parse_scene_block_directory_v1(
                 bytes,
-                openrc::SceneBlockDirectoryLimits{399U, 16U, 1024U});
+                openrc::SceneBlockDirectoryLimits{0x21fU, 16U, 1024U});
         },
         "the scene input limit was ignored");
     expect_directory_error(
         [&] {
             (void)openrc::parse_scene_block_directory_v1(
                 bytes,
-                openrc::SceneBlockDirectoryLimits{1024U, 1U, 1024U});
+                openrc::SceneBlockDirectoryLimits{1024U, 2U, 1024U});
         },
         "the scene record limit was ignored");
     expect_directory_error(
         [&] {
             (void)openrc::parse_scene_block_directory_v1(
                 bytes,
-                openrc::SceneBlockDirectoryLimits{1024U, 16U, 0xcfU});
+                openrc::SceneBlockDirectoryLimits{1024U, 16U, 0x15fU});
         },
         "the scene owned-byte limit was ignored");
 }
@@ -316,10 +363,10 @@ void test_header_rejections() {
     }
     {
         auto bytes = valid_directory();
-        write_le32(bytes, 0x04U, 7U);
+        write_le32(bytes, 0x04U, 9U);
         expect_directory_error(
             [&] { (void)openrc::parse_scene_block_directory_v1(bytes, kGenerousLimits); },
-            "a scene directory extending beyond input was accepted");
+            "a scene descriptor span extending beyond input was accepted");
     }
 }
 
@@ -337,6 +384,13 @@ void test_entry_float_rejections() {
         expect_directory_error(
             [&] { (void)openrc::parse_scene_block_directory_v1(bytes, kGenerousLimits); },
             "a non-positive fourth scene entry float was accepted");
+    }
+    {
+        auto bytes = valid_directory();
+        write_le32(bytes, entry_word_offset(2U, 0U), 0x7fc00000U);
+        expect_directory_error(
+            [&] { (void)openrc::parse_scene_block_directory_v1(bytes, kGenerousLimits); },
+            "a non-finite overlapped descriptor float was accepted");
     }
 }
 
@@ -368,6 +422,13 @@ void test_block_chain_rejections() {
         expect_directory_error(
             [&] { (void)openrc::parse_scene_block_directory_v1(bytes, kGenerousLimits); },
             "a gap or overlap in the scene block chain was accepted");
+    }
+    {
+        auto bytes = valid_directory();
+        write_le32(bytes, entry_word_offset(2U, 4U), 0x180U);
+        expect_directory_error(
+            [&] { (void)openrc::parse_scene_block_directory_v1(bytes, kGenerousLimits); },
+            "a gap before the final scene block was accepted");
     }
     {
         auto bytes = valid_directory();

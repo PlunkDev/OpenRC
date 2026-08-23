@@ -225,39 +225,45 @@ opaque in the public API.
 ## SceneBlockDirectoryV1
 
 Primary-extent-0 subrange 10 is a WadV1 record on all 19 levels. Its decoded
-buffer begins with a neutral fixed-stride directory:
+buffer begins with a neutral fixed-stride descriptor structure:
 
-- header word 0 is `0x40` and word 1 is a count that includes the header;
+- header word 0 is `0x40` and word 1 is the complete descriptor count;
 - header word 2 is a finite positive float and words 3-15 are zero;
-- `directory_bytes = count * 0x40` and the directory contains `count - 1`
-  records;
-- each record preserves 16 raw little-endian words; words 0-3 are finite
+- the first `count - 1` descriptors follow the header, while the final
+  descriptor begins at `directory_bytes = count * 0x40` and intentionally
+  overlaps the first block's fixed `0x40`-byte prefix;
+- each descriptor preserves 16 raw little-endian words; words 0-3 are finite
   floats with a positive fourth value, word 4 is a block offset, and word 14
   is an opaque size;
 - offsets and opaque sizes are `0x10`-aligned; the first offset equals the
-  directory end and each following offset is exactly
+  overlapped descriptor offset and each following offset is exactly
   `previous_offset + 0x40 + previous_opaque_size`.
 
 OpenRC owns each complete `0x40 + opaque_size` block envelope. It exposes the
 first `0x40` bytes and the remainder only as neutral ranges because there is
-not yet enough evidence to call either one a header or payload. The last block
-does not end the decoded WAD: every level has a large, non-empty trailing range,
-which is retained independently rather than rejected or discarded.
+not yet enough evidence to call either one a header or payload. The overlap
+does not create overlapping block envelopes: it stores the final descriptor in
+the first envelope's prefix, and that descriptor points to one final envelope
+after the preceding chain. The last block still does not end the decoded WAD:
+every level has a large, non-empty trailing range, which is retained
+independently rather than rejected or discarded.
 
 The header count equals the size of primary-extent-3 table 0 on all 19 levels.
-The complete sweep validates 19,997 records, 47,849,328 bytes of chained block
-envelopes, and 369,019,856 trailing bytes. Declared counts range from 444 to
-2,144 and record counts from 443 to 2,143.
+The complete sweep validates 20,016 descriptors, 47,894,288 bytes of chained
+block envelopes, and 368,974,896 trailing bytes. Declared and parsed counts
+both range from 444 to 2,144. The 19 final envelopes add 44,960 bytes.
 
 | Level | Decoded bytes | Count / records | Directory end | Chain end | Raw WadV1 SHA-256 | Decoded SHA-256 |
 | ---: | ---: | ---: | ---: | ---: | --- | --- |
-| 0 | 16,791,232 | 460 / 459 | `0x7300` | `0x1133C0` | `737fec3eff206fa57125451387feac69946f045643567587097b1f9c0403302d` | `f316516a3aba1d3fc6b75b8eda1fffa13fd67fa911ee09d3026c99a07ad7d957` |
-| 18 | 22,661,824 | 1,144 / 1,143 | `0x11E00` | `0x2A5F70` | `0221dc2b9e25ad62c3dedcdfd480dc2e7967fac15c8821dd6c750a5471f826ce` | `f26bba8b9a87f133c6e72101e4e8e758409467b80bcbf0c34568e7fd4282bc77` |
+| 0 | 16,791,232 | 460 / 460 | `0x7300` | `0x113EE0` | `737fec3eff206fa57125451387feac69946f045643567587097b1f9c0403302d` | `f316516a3aba1d3fc6b75b8eda1fffa13fd67fa911ee09d3026c99a07ad7d957` |
+| 18 | 22,661,824 | 1,144 / 1,144 | `0x11E00` | `0x2A6380` | `0221dc2b9e25ad62c3dedcdfd480dc2e7967fac15c8821dd6c750a5471f826ce` | `f26bba8b9a87f133c6e72101e4e8e758409467b80bcbf0c34568e7fd4282bc77` |
 
-The leading floats and regular data patterns are consistent with spatial
-scene records, and an executable overlay contains the literal `tfrag geom`.
-Those clues justify a diagnostic-rendering experiment but do not yet justify
-labelling the blocks as terrain, collision, or models in the parser contract.
+The leading floats and regular packet patterns are consistent with spatial
+scene records. The boot ELF's `.data` also retains `tfrag geom` as one label in
+a diagnostic memory map beside occlusion, sky, collision, and other categories;
+it is not a format signature or a decoder reference. Those clues justify a
+diagnostic-rendering experiment but do not yet justify labelling the blocks as
+terrain, collision, or models in the parser contract.
 
 ## CompanionTerminalWadIndexV1
 

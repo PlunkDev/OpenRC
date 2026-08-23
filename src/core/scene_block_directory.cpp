@@ -113,7 +113,7 @@ SceneBlockDirectoryV1 parse_scene_block_directory_v1(
         fail("SceneBlockDirectoryV1 does not use the required 0x40-byte stride");
     }
     if (result.declared_count < 2U) {
-        fail("SceneBlockDirectoryV1 must contain at least one record");
+        fail("SceneBlockDirectoryV1 must contain at least two descriptors");
     }
     if (!std::isfinite(result.header_float) || result.header_float <= 0.0F) {
         fail("SceneBlockDirectoryV1 header float must be finite and positive");
@@ -129,14 +129,20 @@ SceneBlockDirectoryV1 parse_scene_block_directory_v1(
         result.declared_count,
         kSceneBlockDirectoryV1Stride,
         "the SceneBlockDirectoryV1 directory size");
-    if (result.directory_bytes > input_bytes) {
-        fail("SceneBlockDirectoryV1 directory exceeds the input");
+    const auto descriptor_span_end = checked_add(
+        result.directory_bytes,
+        kSceneBlockDirectoryV1Stride,
+        "the SceneBlockDirectoryV1 descriptor span");
+    if (descriptor_span_end > input_bytes) {
+        fail("SceneBlockDirectoryV1 descriptor span exceeds the input");
     }
-    result.record_count =
-        static_cast<std::uint64_t>(result.declared_count) - 1U;
+    result.record_count = result.declared_count;
     if (result.record_count > limits.max_records) {
         fail("SceneBlockDirectoryV1 record count exceeds the caller's limit");
     }
+    result.overlapped_entry_range = SceneBlockRange{
+        result.directory_bytes,
+        kSceneBlockDirectoryV1Stride};
     result.owned_byte_count = input_bytes - result.directory_bytes;
     if (result.owned_byte_count > limits.max_owned_bytes) {
         fail("SceneBlockDirectoryV1 owned bytes exceed the caller's limit");
@@ -158,10 +164,10 @@ SceneBlockDirectoryV1 parse_scene_block_directory_v1(
                 kSceneBlockDirectoryV1Stride,
                 "a SceneBlockDirectoryV1 entry offset"),
             "a SceneBlockDirectoryV1 entry offset");
-        if (directory_entry_offset > result.directory_bytes ||
-            result.directory_bytes - directory_entry_offset <
+        if (directory_entry_offset > descriptor_span_end ||
+            descriptor_span_end - directory_entry_offset <
                 kSceneBlockDirectoryV1Stride) {
-            fail("A SceneBlockDirectoryV1 entry exceeds the directory");
+            fail("A SceneBlockDirectoryV1 entry exceeds the descriptor span");
         }
         const auto entry_offset = static_cast<std::size_t>(
             directory_entry_offset);
@@ -225,6 +231,12 @@ SceneBlockDirectoryV1 parse_scene_block_directory_v1(
     }
 
     result.chain_end = expected_block_offset;
+    if (result.entries.empty() ||
+        result.entries.front().prefix_range != result.overlapped_entry_range ||
+        result.entries.back().directory_entry_offset !=
+            result.overlapped_entry_range.offset) {
+        fail("SceneBlockDirectoryV1 final descriptor overlap is inconsistent");
+    }
     result.trailing_range = SceneBlockRange{
         result.chain_end,
         input_bytes - result.chain_end};
