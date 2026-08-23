@@ -274,7 +274,9 @@ void check_single_unpack(
            "single UNPACK provenance has the wrong command index");
     expect(write.output_vector_index == 0U,
            "single UNPACK provenance has the wrong output index");
-    expect(write.input_vector_index == std::optional<std::uint16_t>{0U},
+    expect(
+        write.input_vector_index == std::optional<std::uint16_t>{
+            static_cast<std::uint16_t>(0U)},
            "single UNPACK provenance has the wrong input index");
     expect(write.unwrapped_destination_qword == 7U &&
                write.destination_qword == 7U && !write.wrapped,
@@ -815,7 +817,8 @@ void test_fill_difference_poisoning() {
                !snapshot.writes[2U].input_vector_index.has_value(),
            "difference fill generated input provenance");
     expect(snapshot.writes[3U].input_vector_index ==
-               std::optional<std::uint16_t>{1U},
+               std::optional<std::uint16_t>{
+                   static_cast<std::uint16_t>(1U)},
            "post-fill payload input index is wrong");
     for (std::size_t lane = 0U; lane < 4U; ++lane) {
         expect(snapshot.writes[3U].lanes[lane].source ==
@@ -960,7 +963,8 @@ void test_skip_wrap_self_overwrite_provenance() {
                snapshot.writes[8U].command_index == 1U &&
                snapshot.writes[8U].output_vector_index == 8U &&
                snapshot.writes[8U].input_vector_index ==
-                   std::optional<std::uint16_t>{8U},
+                   std::optional<std::uint16_t>{
+                       static_cast<std::uint16_t>(8U)},
            "self-wrap event provenance is wrong");
     expect(
         snapshot.writes[8U].lanes[3U].source_range ==
