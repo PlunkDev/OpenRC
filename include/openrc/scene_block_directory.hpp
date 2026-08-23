@@ -11,6 +11,11 @@ namespace openrc {
 
 inline constexpr std::uint32_t kSceneBlockDirectoryV1Stride = 0x40;
 inline constexpr std::size_t kSceneBlockDirectoryV1WordCount = 16;
+inline constexpr std::size_t kSceneBlockSectionCount = 8;
+inline constexpr std::size_t kSceneBlockSectionBoundaryCount =
+    kSceneBlockSectionCount + 1U;
+inline constexpr std::uint32_t kSceneBlockSectionAlignment = 0x10;
+inline constexpr std::uint32_t kSceneBlockSectionMarker = 0xffff00ffU;
 
 struct SceneBlockDirectoryLimits {
     std::uint64_t max_input_bytes = 0;
@@ -28,6 +33,18 @@ struct SceneBlockRange {
     [[nodiscard]] bool operator==(const SceneBlockRange&) const = default;
 };
 
+struct SceneBlockSectionLayoutV1 {
+    // Boundaries are relative to the beginning of the block remainder. They
+    // are strictly increasing, 0x10-aligned, begin at zero, and end at the
+    // descriptor's opaque_size.
+    std::array<std::uint32_t, kSceneBlockSectionBoundaryCount>
+        relative_boundaries{};
+
+    // Ranges use decoded-input coordinates and partition remainder_range
+    // exactly. Their bytes are already owned by the entry's block_bytes.
+    std::array<SceneBlockRange, kSceneBlockSectionCount> ranges{};
+};
+
 struct SceneBlockDirectoryEntryV1 {
     std::uint64_t directory_entry_offset = 0;
     std::array<std::uint32_t, kSceneBlockDirectoryV1WordCount> raw_words{};
@@ -42,6 +59,7 @@ struct SceneBlockDirectoryEntryV1 {
     SceneBlockRange block_range;
     SceneBlockRange prefix_range;
     SceneBlockRange remainder_range;
+    SceneBlockSectionLayoutV1 section_layout;
     std::vector<std::byte> block_bytes;
 };
 

@@ -237,7 +237,13 @@ buffer begins with a neutral fixed-stride descriptor structure:
   is an opaque size;
 - offsets and opaque sizes are `0x10`-aligned; the first offset equals the
   overlapped descriptor offset and each following offset is exactly
-  `previous_offset + 0x40 + previous_opaque_size`.
+  `previous_offset + 0x40 + previous_opaque_size`;
+- descriptor words 5-7, 11, 12, and 14 encode nine neutral boundaries for the
+  opaque remainder. With `lo(x)` and `hi(x)` denoting the two 16-bit halves,
+  the ordered boundaries are
+  `[lo(w5), hi(w5), lo(w7), lo(w6), hi(w6), hi(w7), lo(w12), hi(w11), w14]`;
+- `lo(w5) = 0`, `hi(w11) = hi(w12)`, word 13 is `0xFFFF00FF`, and
+  `w14 = hi(w11) + lo(w11) * 0x10`.
 
 OpenRC owns each complete `0x40 + opaque_size` block envelope. It exposes the
 first `0x40` bytes and the remainder only as neutral ranges because there is
@@ -247,6 +253,35 @@ the first envelope's prefix, and that descriptor points to one final envelope
 after the preceding chain. The last block still does not end the decoded WAD:
 every level has a large, non-empty trailing range, which is retained
 independently rather than rejected or discarded.
+
+The nine relative boundaries are all `0x10`-aligned and strictly increasing,
+so they partition every opaque remainder into exactly eight non-empty neutral
+sections. OpenRC exposes decoded-input ranges into the already owned block
+envelope; it does not copy the 46,613,264 section bytes a second time. Words
+8-10 and 15 remain opaque.
+
+The complete 19-level corpus contains 160,128 sections:
+
+| Section | Aggregate bytes | Per-block size range |
+| ---: | ---: | ---: |
+| 0 | 1,816,864 | `0x30`-`0x130` |
+| 1 | 960,768 | `0x30` exactly |
+| 2 | 12,463,472 | `0xD0`-`0x6A0` |
+| 3 | 1,766,976 | `0x30`-`0x130` |
+| 4 | 13,786,032 | `0x60`-`0x5B0` |
+| 5 | 4,208,464 | `0x10`-`0x170` |
+| 6 | 8,574,048 | `0x30`-`0x2E0` |
+| 7 | 3,036,640 | `0x10`-`0x420` |
+
+As a separate clean-room check, concatenated sections 0-4 form one exact VIF
+stream in each block and total 30,794,112 bytes across the corpus. The
+individual section boundaries may split a VIFcode from its payload and must
+not be parsed as independent streams. All 20,016 streams end exactly at
+`hi(w7)`, with no IRQ bits or unknown commands. The observed instruction set
+is NOP, STCYCL, STMOD, STROW, and UNPACK V3-16/V4-32/V4-16/V4-8: 925,997
+commands in total, including 318,044 UNPACKs. Opcode naming and bit fields follow the
+[PS2SDK packet2 VIF definitions](https://github.com/ps2dev/ps2sdk/blob/master/ee/packet2/include/packet2_types.h).
+OpenRC does not expose these commands in its public API yet.
 
 The header count equals the size of primary-extent-3 table 0 on all 19 levels.
 The complete sweep validates 20,016 descriptors, 47,894,288 bytes of chained

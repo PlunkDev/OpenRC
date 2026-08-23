@@ -31,6 +31,16 @@ namespace {
         (static_cast<std::uint32_t>(byte_value(bytes[offset + 3U])) << 24U);
 }
 
+[[nodiscard]] std::uint32_t low_half(
+    const std::uint32_t value) noexcept {
+    return value & 0xffffU;
+}
+
+[[nodiscard]] std::uint32_t high_half(
+    const std::uint32_t value) noexcept {
+    return value >> 16U;
+}
+
 [[nodiscard]] std::uint64_t checked_add(
     const std::uint64_t left,
     const std::uint64_t right,
@@ -226,6 +236,61 @@ SceneBlockDirectoryV1 parse_scene_block_directory_v1(
                 kSceneBlockDirectoryV1Stride,
                 "a SceneBlockDirectoryV1 remainder offset"),
             entry.opaque_size};
+
+        const auto section_tail_bytes = checked_multiply(
+            low_half(entry.raw_words[11]),
+            kSceneBlockSectionAlignment,
+            "a SceneBlockDirectoryV1 final section size");
+        if (low_half(entry.raw_words[5]) != 0U) {
+            fail("A SceneBlockDirectoryV1 section layout does not begin at zero");
+        }
+        if (high_half(entry.raw_words[11]) !=
+            high_half(entry.raw_words[12])) {
+            fail("A SceneBlockDirectoryV1 section layout has inconsistent final boundaries");
+        }
+        if (entry.raw_words[13] != kSceneBlockSectionMarker) {
+            fail("A SceneBlockDirectoryV1 section layout marker is invalid");
+        }
+        if (checked_add(
+                high_half(entry.raw_words[11]),
+                section_tail_bytes,
+                "a SceneBlockDirectoryV1 final section end") !=
+            entry.opaque_size) {
+            fail("A SceneBlockDirectoryV1 final section does not end at the remainder boundary");
+        }
+
+        entry.section_layout.relative_boundaries = {
+            low_half(entry.raw_words[5]),
+            high_half(entry.raw_words[5]),
+            low_half(entry.raw_words[7]),
+            low_half(entry.raw_words[6]),
+            high_half(entry.raw_words[6]),
+            high_half(entry.raw_words[7]),
+            low_half(entry.raw_words[12]),
+            high_half(entry.raw_words[11]),
+            entry.opaque_size,
+        };
+        for (std::size_t section_index = 0U;
+             section_index < kSceneBlockSectionCount;
+             ++section_index) {
+            const auto section_begin =
+                entry.section_layout.relative_boundaries[section_index];
+            const auto section_end =
+                entry.section_layout.relative_boundaries[section_index + 1U];
+            if (section_begin % kSceneBlockSectionAlignment != 0U ||
+                section_end % kSceneBlockSectionAlignment != 0U) {
+                fail("A SceneBlockDirectoryV1 section boundary is not 0x10-aligned");
+            }
+            if (section_begin >= section_end) {
+                fail("SceneBlockDirectoryV1 section boundaries are not strictly increasing");
+            }
+            entry.section_layout.ranges[section_index] = SceneBlockRange{
+                checked_add(
+                    entry.remainder_range.offset,
+                    section_begin,
+                    "a SceneBlockDirectoryV1 section offset"),
+                section_end - section_begin};
+        }
         result.entries.push_back(std::move(entry));
         expected_block_offset = result.entries.back().block_end;
     }

@@ -1213,6 +1213,29 @@ int run(const std::vector<std::filesystem::path>& arguments) {
             }
             const auto envelope_bytes =
                 directory.chain_end - directory.directory_bytes;
+            std::array<std::uint64_t, openrc::kSceneBlockSectionCount>
+                section_total_bytes{};
+            std::array<std::uint64_t, openrc::kSceneBlockSectionCount>
+                section_minimum_bytes{};
+            std::array<std::uint64_t, openrc::kSceneBlockSectionCount>
+                section_maximum_bytes{};
+            section_minimum_bytes.fill(
+                std::numeric_limits<std::uint64_t>::max());
+            for (const auto& entry : directory.entries) {
+                for (std::size_t section_index = 0U;
+                     section_index < openrc::kSceneBlockSectionCount;
+                     ++section_index) {
+                    const auto section_bytes =
+                        entry.section_layout.ranges[section_index].size;
+                    section_total_bytes[section_index] += section_bytes;
+                    section_minimum_bytes[section_index] = std::min(
+                        section_minimum_bytes[section_index],
+                        section_bytes);
+                    section_maximum_bytes[section_index] = std::max(
+                        section_maximum_bytes[section_index],
+                        section_bytes);
+                }
+            }
 
             std::cout
                 << "OpenRC SceneBlockDirectoryV1 report\n"
@@ -1240,7 +1263,20 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 << "Trailing offset:     "
                 << hexadecimal(directory.trailing_range.offset, 8) << '\n'
                 << "Trailing bytes:      " << directory.trailing_range.size << '\n'
-                << "Owned bytes:         " << directory.owned_byte_count << '\n';
+                << "Owned bytes:         " << directory.owned_byte_count << '\n'
+                << "Sections per block:  "
+                << openrc::kSceneBlockSectionCount << "\n\n"
+                << "Neutral remainder sections:\n";
+            for (std::size_t section_index = 0U;
+                 section_index < openrc::kSceneBlockSectionCount;
+                 ++section_index) {
+                std::cout
+                    << "  [" << section_index << "] total "
+                    << section_total_bytes[section_index]
+                    << " bytes, per-block range "
+                    << section_minimum_bytes[section_index] << ".."
+                    << section_maximum_bytes[section_index] << " bytes\n";
+            }
 
             if (!directory.entries.empty()) {
                 const auto& first = directory.entries.front();
