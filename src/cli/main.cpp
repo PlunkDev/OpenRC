@@ -9,6 +9,7 @@
 #include "openrc/ps2_save_bundle.hpp"
 #include "openrc/scene_block_directory.hpp"
 #include "openrc/scene_block_vif.hpp"
+#include "openrc/scene_block_vu.hpp"
 #include "openrc/sblk.hpp"
 #include "openrc/sblk_audio.hpp"
 #include "openrc/two_fip.hpp"
@@ -1251,6 +1252,13 @@ int run(const std::vector<std::filesystem::path>& arguments) {
             std::uint64_t vif_unpack_count = 0U;
             std::uint64_t vif_payload_bytes = 0U;
             std::uint64_t vif_padding_bytes = 0U;
+            std::uint64_t vu_vector_writes = 0U;
+            std::uint64_t vu_unique_qword_writes = 0U;
+            std::uint64_t vu_overwrite_vector_writes = 0U;
+            std::uint64_t vu_wrapped_vector_writes = 0U;
+            std::uint64_t vu_fully_known_qwords = 0U;
+            std::uint64_t vu_partially_known_qwords = 0U;
+            std::uint64_t vu_indeterminate_qwords = 0U;
             for (const auto& entry : directory.entries) {
                 for (std::size_t section_index = 0U;
                      section_index < openrc::kSceneBlockSectionCount;
@@ -1278,17 +1286,45 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 }
                 const auto vif_bytes = std::span<const std::byte>(
                     entry.block_bytes).subspan(prefix_size, vif_size);
-                const auto vif = openrc::parse_scene_block_vif_stream_v1(
+                const auto execution = openrc::execute_scene_block_vu_v1(
                     vif_bytes,
-                    openrc::SceneBlockVifLimits{
-                        kMaximumCliDecodedWadBytes,
-                        1'000'000U,
-                        kMaximumCliDecodedWadBytes});
+                    openrc::SceneBlockVuExecutionOptionsV1{0U},
+                    openrc::SceneBlockVuLimits{
+                        openrc::SceneBlockVifLimits{
+                            kMaximumCliDecodedWadBytes,
+                            1'000'000U,
+                            kMaximumCliDecodedWadBytes},
+                        1'000'000U});
+                const auto& vif = execution.stream;
                 vif_stream_bytes += vif.input_bytes;
                 vif_command_count +=
                     static_cast<std::uint64_t>(vif.commands.size());
                 vif_payload_bytes += vif.total_payload_bytes;
                 vif_padding_bytes += vif.total_padding_bytes;
+                vu_vector_writes += execution.total_vector_writes;
+                vu_unique_qword_writes += execution.unique_qword_writes;
+                vu_overwrite_vector_writes +=
+                    execution.overwrite_vector_writes;
+                vu_wrapped_vector_writes += execution.wrapped_vector_writes;
+                for (const auto& qword : execution.memory) {
+                    if (qword.write_count == 0U) {
+                        continue;
+                    }
+                    const auto known_lanes = std::count_if(
+                        qword.lanes.begin(),
+                        qword.lanes.end(),
+                        [](const openrc::SceneBlockVuValueV1& lane) {
+                            return lane.state ==
+                                openrc::SceneBlockVuValueState::known;
+                        });
+                    if (known_lanes == qword.lanes.end() - qword.lanes.begin()) {
+                        ++vu_fully_known_qwords;
+                    } else if (known_lanes == 0) {
+                        ++vu_indeterminate_qwords;
+                    } else {
+                        ++vu_partially_known_qwords;
+                    }
+                }
                 for (const auto& vif_command : vif.commands) {
                     const auto opcode = std::find(
                         kVifOpcodes.begin(),
@@ -1364,6 +1400,16 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                     << "    " << kVifOpcodeNames[opcode_index] << ": "
                     << vif_opcode_counts[opcode_index] << '\n';
             }
+
+            std::cout
+                << "\nNeutral VU1 execution (relative TOPS=0):\n"
+                << "  Vector writes:     " << vu_vector_writes << '\n'
+                << "  Unique qwords:     " << vu_unique_qword_writes << '\n'
+                << "  Overwrite writes:  " << vu_overwrite_vector_writes << '\n'
+                << "  Wrapped writes:    " << vu_wrapped_vector_writes << '\n'
+                << "  Final fully known: " << vu_fully_known_qwords << '\n'
+                << "  Final partial:     " << vu_partially_known_qwords << '\n'
+                << "  Final unknown:     " << vu_indeterminate_qwords << '\n';
 
             if (!directory.entries.empty()) {
                 const auto& first = directory.entries.front();

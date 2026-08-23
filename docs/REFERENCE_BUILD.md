@@ -297,6 +297,39 @@ opcodes, reserved fields, non-zero padding, truncation, overshoot, and caller
 limit violations. It neither copies payload bytes nor retains pointers into
 the caller's storage.
 
+`SceneBlockVuSnapshotV1` executes those commands in order into a neutral VU1
+data-memory image of 1024 128-bit qwords. It models the reset cycle as `1/1`,
+tracks STCYCL, STROW, and all three legal STMOD modes, performs signed or
+unsigned component expansion, applies row addition modulo 2^32, and wraps
+every destination through the ten-bit VU1 qword address. TOPS is mandatory
+caller state rather than a value inferred from the stream. The semantics were
+implemented from the
+[Emotion Engine User's Manual](https://usermanual.wiki/Pdf/EEUsersManual.1748563585.pdf)
+and checked independently against PCSX2's
+[VIF command handling](https://github.com/PCSX2/pcsx2/blob/3e29183a37e74cbc8c17bda8afb63c2d9bc6fd14/pcsx2/Vif_Codes.cpp)
+and
+[UNPACK implementation](https://github.com/PCSX2/pcsx2/blob/3e29183a37e74cbc8c17bda8afb63c2d9bc6fd14/pcsx2/Vif_Unpack.cpp).
+
+The snapshot does not invent values which the evidence cannot establish.
+V3-16 W is retained as indeterminate, as are STCYCL fill-generated vectors;
+unknown values propagate through row arithmetic and overwrites. Every output
+write preserves its command and output-vector indices, optional consumed-input
+index, unwrapped and wrapped destinations, addition mode, and exact per-lane
+source range. Final qwords retain their write count and an index back to the
+last ordered write, so deliberate overlap remains auditable without retaining
+payload pointers.
+
+With explicit diagnostic `TOPS=0`, the complete corpus executes 3,602,759
+vector writes into relative qword addresses 0-327. Summed independently per
+stream, 3,106,660 qword destinations are unique and 496,099 writes overwrite
+an earlier value; every stream contains overlap and every observed overwrite
+is V4-8 over V4-8. No write wraps at this diagnostic TOPS. All observed UNPACK
+commands request external TOPS, so these addresses are intentionally reported
+as relative diagnostics rather than claimed runtime VU1 locations. The final
+per-stream snapshots contain 2,083,563 fully known and 1,023,097 partially
+known written qwords, with no wholly indeterminate written qword; the partial
+count exactly matches the observed V3-16 writes whose W lane remains unknown.
+
 The header count equals the size of primary-extent-3 table 0 on all 19 levels.
 The complete sweep validates 20,016 descriptors, 47,894,288 bytes of chained
 block envelopes, and 368,974,896 trailing bytes. Declared and parsed counts

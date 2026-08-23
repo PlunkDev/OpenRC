@@ -257,6 +257,32 @@ void test_fill_cycle_and_num_zero() {
     expect(report.final_write_length == 4U, "fill-mode write length is wrong");
 }
 
+void test_zero_cycle_fields() {
+    std::vector<std::byte> bytes;
+    append_le32(bytes, make_code(0x0000U, 0U, 0x01U));
+    append_le32(bytes, make_code(0x8009U, 2U, 0x6eU));
+
+    const auto report = openrc::parse_scene_block_vif_stream_v1(
+        bytes,
+        kGenerousLimits);
+    expect(report.commands.size() == 2U, "zero-cycle VIF command count is wrong");
+    const auto& unpack = report.commands[1];
+    expect(unpack.output_vector_count == 2U,
+           "zero-cycle UNPACK output count is wrong");
+    expect(unpack.input_vector_count == 0U,
+           "raw CL zero did not remain an effective zero");
+    expect(unpack.payload_data_bytes == 0U,
+           "zero-cycle UNPACK unexpectedly consumes source bytes");
+    expect(unpack.payload_range == openrc::SceneBlockVifRange{8U, 0U},
+           "zero-cycle UNPACK payload range is wrong");
+    expect(report.total_payload_bytes == 0U,
+           "zero-cycle aggregate payload size is wrong");
+    expect(report.final_cycle_length == 0U,
+           "raw CL zero did not remain an effective zero");
+    expect(report.final_write_length == 256U,
+           "raw WL zero did not expand to 256");
+}
+
 void test_mandatory_and_aggregate_limits() {
     const auto bytes = valid_all_command_stream();
     for (const auto limits : std::array<openrc::SceneBlockVifLimits, 3U>{
@@ -401,6 +427,7 @@ int main() {
     try {
         test_all_commands_ranges_and_accounting();
         test_fill_cycle_and_num_zero();
+        test_zero_cycle_fields();
         test_mandatory_and_aggregate_limits();
         test_opcode_and_reserved_field_rejections();
         test_truncation_overshoot_and_padding_rejections();

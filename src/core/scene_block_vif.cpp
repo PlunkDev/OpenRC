@@ -66,7 +66,7 @@ constexpr std::uint16_t kUnpackTopsBit = 0x8000U;
     return checked_add(value, kMask, description) & ~kMask;
 }
 
-[[nodiscard]] std::uint16_t effective_cycle_field(
+[[nodiscard]] std::uint16_t effective_write_length(
     const std::uint8_t raw_value) noexcept {
     return raw_value == 0U
         ? kSceneBlockVifMaximumVectorCount
@@ -192,9 +192,8 @@ SceneBlockVifStreamV1 parse_scene_block_vif_stream_v1(
             if (command.raw_num != 0U) {
                 fail("A SceneBlock VIF STCYCL has a non-zero reserved NUM field");
             }
-            cycle_length = effective_cycle_field(
-                static_cast<std::uint8_t>(command.immediate));
-            write_length = effective_cycle_field(
+            cycle_length = static_cast<std::uint8_t>(command.immediate);
+            write_length = effective_write_length(
                 static_cast<std::uint8_t>(command.immediate >> 8U));
             break;
         }

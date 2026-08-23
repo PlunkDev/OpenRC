@@ -22,6 +22,7 @@ openrc_core
 ├── decoded WadBundleV1 record inventory
 ├── neutral SceneBlockDirectoryV1 parsing with owned blocks and 8-section layouts
 ├── bounded zero-copy SceneBlock VIF command parsing across sections 0-4
+├── conservative SceneBlock VIF execution with VU1 memory/write provenance
 ├── CompanionTerminalWadIndexV1 validation of the shared terminal WAD bank
 ├── bounded 2FIP indexed-texture parsing and RGBA/TGA conversion
 ├── neutral seven-region boundary-table parsing
@@ -37,7 +38,7 @@ openrc_core
 
 openrc-cli
 ├── disc inspection and inventory
-├── TOC, WAD/bundle/companion, scene-block/VIF, 2FIP, MapArt, PS2D, VAGp, and SBlk diagnostics
+├── TOC, WAD/bundle/companion, scene-block/VIF/VU, 2FIP, MapArt, PS2D, VAGp, and SBlk diagnostics
 ├── prepared-game extraction
 └── ELF and IOP/IRX inspection and diagnostics
 
