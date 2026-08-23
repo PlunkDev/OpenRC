@@ -279,9 +279,23 @@ individual section boundaries may split a VIFcode from its payload and must
 not be parsed as independent streams. All 20,016 streams end exactly at
 `hi(w7)`, with no IRQ bits or unknown commands. The observed instruction set
 is NOP, STCYCL, STMOD, STROW, and UNPACK V3-16/V4-32/V4-16/V4-8: 925,997
-commands in total, including 318,044 UNPACKs. Opcode naming and bit fields follow the
-[PS2SDK packet2 VIF definitions](https://github.com/ps2dev/ps2sdk/blob/master/ee/packet2/include/packet2_types.h).
-OpenRC does not expose these commands in its public API yet.
+commands in total, including 318,044 UNPACKs. Their physical payloads occupy
+27,090,124 bytes, including 58,146 required four-byte-alignment bytes, all of
+which are zero in the complete corpus. Opcode names, VIFcode fields, and
+`NUM = 0` behavior follow the
+[PS2SDK packet2 VIF types](https://github.com/ps2dev/ps2sdk/blob/master/ee/packet2/include/packet2_types.h)
+and its
+[VIF construction helpers](https://github.com/ps2dev/ps2sdk/blob/master/ee/packet2/include/packet2_vif.h).
+
+`SceneBlockVifStreamV1` now exposes this as bounded, metadata-only command
+records. Code, physical payload, and complete packet ranges are relative to
+the supplied stream; logical payload size excludes the separately reported
+zero alignment suffix. The parser keeps STCYCL state for UNPACK sizing,
+supports the specified `NUM = 0` encoding of 256 output vectors, requires an
+exact end at the section-4 boundary, and rejects IRQ, masked or unobserved
+opcodes, reserved fields, non-zero padding, truncation, overshoot, and caller
+limit violations. It neither copies payload bytes nor retains pointers into
+the caller's storage.
 
 The header count equals the size of primary-extent-3 table 0 on all 19 levels.
 The complete sweep validates 20,016 descriptors, 47,894,288 bytes of chained

@@ -8,6 +8,7 @@
 #include "openrc/preparation.hpp"
 #include "openrc/ps2_save_bundle.hpp"
 #include "openrc/scene_block_directory.hpp"
+#include "openrc/scene_block_vif.hpp"
 #include "openrc/sblk.hpp"
 #include "openrc/sblk_audio.hpp"
 #include "openrc/two_fip.hpp"
@@ -24,6 +25,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <span>
@@ -1221,6 +1223,34 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 section_maximum_bytes{};
             section_minimum_bytes.fill(
                 std::numeric_limits<std::uint64_t>::max());
+
+            constexpr std::array<openrc::SceneBlockVifOpcode, 8U> kVifOpcodes{
+                openrc::SceneBlockVifOpcode::nop,
+                openrc::SceneBlockVifOpcode::stcycl,
+                openrc::SceneBlockVifOpcode::stmod,
+                openrc::SceneBlockVifOpcode::strow,
+                openrc::SceneBlockVifOpcode::unpack_v3_16,
+                openrc::SceneBlockVifOpcode::unpack_v4_32,
+                openrc::SceneBlockVifOpcode::unpack_v4_16,
+                openrc::SceneBlockVifOpcode::unpack_v4_8,
+            };
+            constexpr std::array<std::string_view, kVifOpcodes.size()>
+                kVifOpcodeNames{
+                    "NOP",
+                    "STCYCL",
+                    "STMOD",
+                    "STROW",
+                    "UNPACK V3-16",
+                    "UNPACK V4-32",
+                    "UNPACK V4-16",
+                    "UNPACK V4-8",
+                };
+            std::array<std::uint64_t, kVifOpcodes.size()> vif_opcode_counts{};
+            std::uint64_t vif_stream_bytes = 0U;
+            std::uint64_t vif_command_count = 0U;
+            std::uint64_t vif_unpack_count = 0U;
+            std::uint64_t vif_payload_bytes = 0U;
+            std::uint64_t vif_padding_bytes = 0U;
             for (const auto& entry : directory.entries) {
                 for (std::size_t section_index = 0U;
                      section_index < openrc::kSceneBlockSectionCount;
@@ -1234,6 +1264,46 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                     section_maximum_bytes[section_index] = std::max(
                         section_maximum_bytes[section_index],
                         section_bytes);
+                }
+
+                const auto vif_size = static_cast<std::size_t>(
+                    entry.section_layout.relative_boundaries[
+                        openrc::kSceneBlockVifSectionCount]);
+                const auto prefix_size = static_cast<std::size_t>(
+                    openrc::kSceneBlockDirectoryV1Stride);
+                if (entry.block_bytes.size() < prefix_size ||
+                    vif_size > entry.block_bytes.size() - prefix_size) {
+                    throw std::runtime_error(
+                        "A verified scene-block VIF range exceeds its owned envelope");
+                }
+                const auto vif_bytes = std::span<const std::byte>(
+                    entry.block_bytes).subspan(prefix_size, vif_size);
+                const auto vif = openrc::parse_scene_block_vif_stream_v1(
+                    vif_bytes,
+                    openrc::SceneBlockVifLimits{
+                        kMaximumCliDecodedWadBytes,
+                        1'000'000U,
+                        kMaximumCliDecodedWadBytes});
+                vif_stream_bytes += vif.input_bytes;
+                vif_command_count +=
+                    static_cast<std::uint64_t>(vif.commands.size());
+                vif_payload_bytes += vif.total_payload_bytes;
+                vif_padding_bytes += vif.total_padding_bytes;
+                for (const auto& vif_command : vif.commands) {
+                    const auto opcode = std::find(
+                        kVifOpcodes.begin(),
+                        kVifOpcodes.end(),
+                        vif_command.opcode);
+                    if (opcode == kVifOpcodes.end()) {
+                        throw std::runtime_error(
+                            "The SceneBlock VIF parser returned an unknown opcode");
+                    }
+                    const auto opcode_index = static_cast<std::size_t>(
+                        std::distance(kVifOpcodes.begin(), opcode));
+                    ++vif_opcode_counts[opcode_index];
+                    if (vif_command.component_count != 0U) {
+                        ++vif_unpack_count;
+                    }
                 }
             }
 
@@ -1276,6 +1346,23 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                     << " bytes, per-block range "
                     << section_minimum_bytes[section_index] << ".."
                     << section_maximum_bytes[section_index] << " bytes\n";
+            }
+
+            std::cout
+                << "\nBounded VIF streams (sections 0-4):\n"
+                << "  Streams:           " << directory.record_count << '\n'
+                << "  Stream bytes:      " << vif_stream_bytes << '\n'
+                << "  Commands:          " << vif_command_count << '\n'
+                << "  UNPACK commands:   " << vif_unpack_count << '\n'
+                << "  Payload bytes:     " << vif_payload_bytes << '\n'
+                << "  Alignment bytes:   " << vif_padding_bytes << '\n'
+                << "  Opcodes:\n";
+            for (std::size_t opcode_index = 0U;
+                 opcode_index < kVifOpcodes.size();
+                 ++opcode_index) {
+                std::cout
+                    << "    " << kVifOpcodeNames[opcode_index] << ": "
+                    << vif_opcode_counts[opcode_index] << '\n';
             }
 
             if (!directory.entries.empty()) {

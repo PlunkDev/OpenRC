@@ -40,7 +40,7 @@ This roadmap describes technical milestones rather than release dates.
 - [x] inventory embedded IOP/IRX module metadata, relocations, and imports
 - [x] validate the neutral per-level SceneBlockDirectoryV1 block chain
 - [x] partition every scene-block remainder into eight verified neutral sections
-- [ ] expose the bounded VIF stream spanning scene-block sections 0-4
+- [x] expose the bounded VIF stream spanning scene-block sections 0-4
 - [x] validate the companion index for the shared terminal WadV1 bank
 - [ ] identify the semantic formats inside decoded WAD payloads
 - [ ] inventory R5900, VU0, VU1, IOP, GS, and system-call boundaries
