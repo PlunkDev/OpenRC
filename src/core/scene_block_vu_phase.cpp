@@ -273,13 +273,13 @@ void validate_non_unpack_metadata(
 unpack_format(const SceneBlockVifOpcode opcode) {
     switch (opcode) {
     case SceneBlockVifOpcode::unpack_v3_16:
-        return {3U, 16U};
+        return {std::uint8_t{3U}, std::uint8_t{16U}};
     case SceneBlockVifOpcode::unpack_v4_32:
-        return {4U, 32U};
+        return {std::uint8_t{4U}, std::uint8_t{32U}};
     case SceneBlockVifOpcode::unpack_v4_16:
-        return {4U, 16U};
+        return {std::uint8_t{4U}, std::uint8_t{16U}};
     case SceneBlockVifOpcode::unpack_v4_8:
-        return {4U, 8U};
+        return {std::uint8_t{4U}, std::uint8_t{8U}};
     default:
         fail("Internal phase UNPACK opcode mismatch");
     }
