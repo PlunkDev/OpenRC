@@ -1,0 +1,28 @@
+# Local game dumps and extracted copyrighted data.
+/local/
+*.iso
+*.chd
+*.cue
+*.mdf
+*.mds
+
+# Build output.
+/build/
+/build-*/
+/out/
+/bin/
+/.vs/
+/.vscode/
+/CMakeUserPresets.json
+
+# Tool output.
+*.log
+*.plist
+*.pdb
+*.ilk
+
+# OS/editor files.
+.DS_Store
+Thumbs.db
+*.user
+*.suo
