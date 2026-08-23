@@ -10,6 +10,7 @@
 #include "openrc/scene_block_directory.hpp"
 #include "openrc/scene_block_vif.hpp"
 #include "openrc/scene_block_vu.hpp"
+#include "openrc/scene_block_vu_phase.hpp"
 #include "openrc/sblk.hpp"
 #include "openrc/sblk_audio.hpp"
 #include "openrc/two_fip.hpp"
@@ -1259,6 +1260,13 @@ int run(const std::vector<std::filesystem::path>& arguments) {
             std::uint64_t vu_fully_known_qwords = 0U;
             std::uint64_t vu_partially_known_qwords = 0U;
             std::uint64_t vu_indeterminate_qwords = 0U;
+            std::uint64_t vu_phase_count = 0U;
+            std::uint64_t vu_minimum_phases_per_stream =
+                std::numeric_limits<std::uint64_t>::max();
+            std::uint64_t vu_maximum_phases_per_stream = 0U;
+            std::uint64_t vu_phase_destination_runs = 0U;
+            std::uint64_t vu_internal_phase_overwrites = 0U;
+            std::uint64_t vu_prior_phase_overwrites = 0U;
             for (const auto& entry : directory.entries) {
                 for (std::size_t section_index = 0U;
                      section_index < openrc::kSceneBlockSectionCount;
@@ -1296,6 +1304,26 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                             kMaximumCliDecodedWadBytes},
                         1'000'000U});
                 const auto& vif = execution.stream;
+                const auto phases =
+                    openrc::group_scene_block_vu_phases_v1(execution);
+                const auto stream_phase_count =
+                    static_cast<std::uint64_t>(phases.size());
+                vu_phase_count += stream_phase_count;
+                vu_minimum_phases_per_stream = std::min(
+                    vu_minimum_phases_per_stream,
+                    stream_phase_count);
+                vu_maximum_phases_per_stream = std::max(
+                    vu_maximum_phases_per_stream,
+                    stream_phase_count);
+                for (const auto& phase : phases) {
+                    vu_phase_destination_runs +=
+                        static_cast<std::uint64_t>(
+                            phase.unique_destination_runs.size());
+                    vu_internal_phase_overwrites +=
+                        phase.internal_overwrite_count;
+                    vu_prior_phase_overwrites +=
+                        phase.prior_phase_overwrite_count;
+                }
                 vif_stream_bytes += vif.input_bytes;
                 vif_command_count +=
                     static_cast<std::uint64_t>(vif.commands.size());
@@ -1409,7 +1437,23 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 << "  Wrapped writes:    " << vu_wrapped_vector_writes << '\n'
                 << "  Final fully known: " << vu_fully_known_qwords << '\n'
                 << "  Final partial:     " << vu_partially_known_qwords << '\n'
-                << "  Final unknown:     " << vu_indeterminate_qwords << '\n';
+                << "  Final unknown:     " << vu_indeterminate_qwords << '\n'
+                << "\nNeutral control-to-UNPACK phases:\n"
+                << "  Phases:            " << vu_phase_count << '\n'
+                << "  Per-stream range:  ";
+            if (directory.entries.empty()) {
+                std::cout << "none\n";
+            } else {
+                std::cout
+                    << vu_minimum_phases_per_stream << ".."
+                    << vu_maximum_phases_per_stream << '\n';
+            }
+            std::cout
+                << "  Destination runs:  " << vu_phase_destination_runs << '\n'
+                << "  Internal overwrite:" << ' '
+                << vu_internal_phase_overwrites << '\n'
+                << "  Prior-phase overwrite: "
+                << vu_prior_phase_overwrites << '\n';
 
             if (!directory.entries.empty()) {
                 const auto& first = directory.entries.front();
@@ -1981,6 +2025,35 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 }
             }
 
+            if (report.dvp_overlay_table) {
+                const auto& table = *report.dvp_overlay_table;
+                std::cout
+                    << "\nDVP overlays: "
+                    << table.overlays.size()
+                    << " (table section " << table.section_index
+                    << ", strings section "
+                    << table.string_table_section_index << ")\n";
+                for (const auto& overlay : table.overlays) {
+                    const auto& code_section =
+                        report.section_headers[overlay.code_section_index];
+                    std::cout
+                        << "  [" << overlay.overlay_section_index << "] "
+                        << overlay.name
+                        << " lma="
+                        << hexadecimal(overlay.load_memory_address, 8)
+                        << " vma="
+                        << hexadecimal(overlay.virtual_memory_address, 8)
+                        << " size=" << hexadecimal(overlay.size)
+                        << " code=" << code_section.name
+                        << '+' << hexadecimal(
+                            overlay.code_file_offset -
+                                code_section.file_offset)
+                        << " (file "
+                        << hexadecimal(overlay.code_file_offset, 8)
+                        << ")\n";
+                }
+            }
+
             std::cout << "\nProgram headers:\n";
             for (std::size_t index = 0; index < report.program_headers.size(); ++index) {
                 const auto& header = report.program_headers[index];
@@ -1988,6 +2061,7 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                     << "  [" << index << "] type=" << header.type
                     << " offset=" << hexadecimal(header.file_offset, 8)
                     << " vaddr=" << hexadecimal(header.virtual_address, 8)
+                    << " paddr=" << hexadecimal(header.physical_address, 8)
                     << " filesz=" << hexadecimal(header.file_size)
                     << " memsz=" << hexadecimal(header.memory_size)
                     << " flags=" << hexadecimal(header.flags)

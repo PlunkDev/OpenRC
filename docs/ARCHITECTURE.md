@@ -23,6 +23,7 @@ openrc_core
 ├── neutral SceneBlockDirectoryV1 parsing with owned blocks and 8-section layouts
 ├── bounded zero-copy SceneBlock VIF command parsing across sections 0-4
 ├── conservative SceneBlock VIF execution with VU1 memory/write provenance
+├── neutral SceneBlock VIF/VU phases with inherited state and exact qword runs
 ├── CompanionTerminalWadIndexV1 validation of the shared terminal WAD bank
 ├── bounded 2FIP indexed-texture parsing and RGBA/TGA conversion
 ├── neutral seven-region boundary-table parsing
@@ -32,7 +33,7 @@ openrc_core
 ├── clean-room linear PS ADPCM frame decoding
 ├── strict VAGp V1 parsing and bounded mono PCM16 WAV encoding
 ├── SHA-256 and prepared-game manifest
-├── ELF32/MIPS executable and IOP/IRX module/import inventory
+├── ELF32/MIPS executable, typed DVP overlay, and IOP/IRX module/import inventory
 ├── application directories
 └── launcher settings
 
@@ -40,7 +41,7 @@ openrc-cli
 ├── disc inspection and inventory
 ├── TOC, WAD/bundle/companion, scene-block/VIF/VU, 2FIP, MapArt, PS2D, VAGp, and SBlk diagnostics
 ├── prepared-game extraction
-└── ELF and IOP/IRX inspection and diagnostics
+└── ELF, DVP overlay, and IOP/IRX inspection and diagnostics
 
 openrc-launcher
 ├── image selection

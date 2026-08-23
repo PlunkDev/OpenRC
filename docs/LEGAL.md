@@ -38,10 +38,11 @@ not be copied into OpenRC.
 
 The current WadV1 and PS ADPCM decoders and the 2FIP, boundary-table,
 MapArtV1, PS2D, VAGp, SBlk, SBlk audio-bank, SceneBlockDirectoryV1, and
-SceneBlock VIF/VU processing and CompanionTerminalWadIndexV1 parsers are
-independent implementations based on locally observed behavior, public PS2
-documentation, and repository-owned synthetic test vectors; they incorporate
-no Wrench source code.
+SceneBlock VIF/VU processing and phase grouping, DVP overlay-table inventory,
+and CompanionTerminalWadIndexV1 parsers are independent implementations based
+on locally observed behavior, public PS2/binutils documentation, and
+repository-owned synthetic test vectors; they incorporate no Wrench source
+code.
 
 ## Trademarks
 

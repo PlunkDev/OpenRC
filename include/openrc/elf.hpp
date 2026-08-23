@@ -20,6 +20,7 @@ struct ElfProgramHeader {
     std::uint32_t type = 0;
     std::uint32_t file_offset = 0;
     std::uint32_t virtual_address = 0;
+    std::uint32_t physical_address = 0;
     std::uint32_t file_size = 0;
     std::uint32_t memory_size = 0;
     std::uint32_t flags = 0;
@@ -81,6 +82,23 @@ struct IopImportLibrary {
     std::vector<std::uint16_t> ordinals;
 };
 
+struct ElfDvpOverlay {
+    std::uint16_t overlay_section_index = 0;
+    std::uint16_t code_section_index = 0;
+    std::uint32_t name_offset = 0;
+    std::string name;
+    std::uint32_t load_memory_address = 0;
+    std::uint32_t virtual_memory_address = 0;
+    std::uint64_t code_file_offset = 0;
+    std::uint32_t size = 0;
+};
+
+struct ElfDvpOverlayTable {
+    std::uint16_t section_index = 0;
+    std::uint16_t string_table_section_index = 0;
+    std::vector<ElfDvpOverlay> overlays;
+};
+
 struct ElfReport {
     std::filesystem::path executable_path;
     std::uintmax_t file_size = 0;
@@ -98,6 +116,7 @@ struct ElfReport {
     std::optional<IopModuleInfo> iop_module_info;
     std::vector<ElfRelocationSummary> relocation_summaries;
     std::vector<IopImportLibrary> iop_import_libraries;
+    std::optional<ElfDvpOverlayTable> dvp_overlay_table;
 };
 
 class ElfError final : public std::runtime_error {

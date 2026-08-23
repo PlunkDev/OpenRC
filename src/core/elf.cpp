@@ -26,6 +26,8 @@ constexpr std::uint32_t kSectionTypeNoBits = 8;
 constexpr std::uint32_t kSectionTypeRel = 9;
 constexpr std::uint32_t kSectionTypeDynamicSymbolTable = 11;
 constexpr std::uint32_t kSectionTypeIopModule = 0x70000080U;
+constexpr std::uint32_t kSectionTypeDvpOverlayTable = 0x7ffff420U;
+constexpr std::uint32_t kSectionTypeDvpOverlay = 0x7ffff421U;
 constexpr std::uint32_t kSectionFlagAllocated = 0x2;
 constexpr std::uint32_t kSectionFlagExecutable = 0x4;
 constexpr std::uint16_t kExtendedProgramHeaderCount = 0xffffU;
@@ -49,6 +51,8 @@ constexpr std::size_t kMaximumIopImportLibraries = 4096;
 constexpr std::size_t kMaximumIopImportStubsPerLibrary = 65536;
 constexpr std::size_t kMaximumIopImportStubsTotal = 1'000'000;
 constexpr std::uint64_t kMaximumIopImportScanBytes = 256ULL * 1024ULL * 1024ULL;
+constexpr std::uint32_t kDvpOverlayEntrySize = 12;
+constexpr std::size_t kMaximumDvpOverlayNameLength = 4096;
 
 [[nodiscard]] std::uint8_t byte_value(const std::byte value) {
     return std::to_integer<std::uint8_t>(value);
@@ -107,6 +111,7 @@ void inspect_program_headers(
         const auto type = read_le32(bytes, offset);
         const auto file_offset = read_le32(bytes, offset + 4);
         const auto virtual_address = read_le32(bytes, offset + 8);
+        const auto physical_address = read_le32(bytes, offset + 12);
         const auto file_byte_count = read_le32(bytes, offset + 16);
         const auto memory_byte_count = read_le32(bytes, offset + 20);
         const auto flags = read_le32(bytes, offset + 24);
@@ -117,6 +122,7 @@ void inspect_program_headers(
             type,
             file_offset,
             virtual_address,
+            physical_address,
             file_byte_count,
             memory_byte_count,
             flags,
@@ -139,6 +145,14 @@ void inspect_program_headers(
         const auto range_end = range_begin + memory_byte_count;
         if (range_end > kElf32AddressSpaceEnd) {
             throw ElfError("Loadable segment exceeds the ELF32 virtual address space");
+        }
+        const auto physical_range_begin =
+            static_cast<std::uint64_t>(physical_address);
+        const auto physical_range_end =
+            physical_range_begin + memory_byte_count;
+        if (physical_range_end > kElf32AddressSpaceEnd) {
+            throw ElfError(
+                "Loadable segment exceeds the ELF32 physical address space");
         }
 
         if (!report.loadable_virtual_address_range) {
@@ -237,6 +251,266 @@ void inspect_section_headers(
     if (byte_value(string_table.back()) != 0) {
         throw ElfError("ELF section-name string table does not end with a null byte");
     }
+}
+
+[[nodiscard]] std::string read_dvp_overlay_name(
+    const std::span<const std::byte> string_table,
+    const std::uint32_t name_offset) {
+    if (name_offset >= string_table.size()) {
+        throw ElfError(
+            "DVP overlay name offset is outside the linked string table");
+    }
+
+    const auto name_begin = string_table.begin() + name_offset;
+    const auto name_end =
+        std::find(name_begin, string_table.end(), std::byte{0});
+    if (name_end == string_table.end()) {
+        throw ElfError("DVP overlay name is not null-terminated");
+    }
+    const auto name_size =
+        static_cast<std::size_t>(name_end - name_begin);
+    if (name_size == 0U) {
+        throw ElfError("DVP overlay name is empty");
+    }
+    if (name_size > kMaximumDvpOverlayNameLength) {
+        throw ElfError("DVP overlay name exceeds the supported length limit");
+    }
+
+    std::string result;
+    result.reserve(name_size);
+    for (auto iterator = name_begin; iterator != name_end; ++iterator) {
+        result.push_back(static_cast<char>(byte_value(*iterator)));
+    }
+    return result;
+}
+
+void inspect_dvp_overlays(
+    const std::span<const std::byte> bytes,
+    ElfReport& report) {
+    std::optional<std::size_t> table_section_index;
+    std::vector<std::pair<std::string, std::size_t>> overlay_sections;
+
+    for (std::size_t index = 0U;
+         index < report.section_headers.size();
+         ++index) {
+        const auto& section = report.section_headers[index];
+        if (section.type == kSectionTypeDvpOverlayTable) {
+            if (table_section_index) {
+                throw ElfError(
+                    "ELF contains more than one DVP overlay table");
+            }
+            table_section_index = index;
+        } else if (section.type == kSectionTypeDvpOverlay) {
+            overlay_sections.emplace_back(section.name, index);
+        }
+    }
+    if (!table_section_index) {
+        return;
+    }
+
+    for (const auto& overlay : overlay_sections) {
+        if (overlay.first.empty()) {
+            throw ElfError("A DVP overlay section has no name");
+        }
+    }
+    std::sort(overlay_sections.begin(), overlay_sections.end());
+    for (std::size_t index = 1U; index < overlay_sections.size(); ++index) {
+        if (overlay_sections[index - 1U].first ==
+            overlay_sections[index].first) {
+            throw ElfError("DVP overlay section names are not unique");
+        }
+    }
+
+    const auto& table_section =
+        report.section_headers[*table_section_index];
+    if (table_section.entry_size != kDvpOverlayEntrySize) {
+        throw ElfError(
+            "DVP overlay table entry size is not the canonical ELF32 size");
+    }
+    if (table_section.size % kDvpOverlayEntrySize != 0U) {
+        throw ElfError(
+            "DVP overlay table size is not a multiple of its entry size");
+    }
+    if (table_section.link >= report.section_headers.size()) {
+        throw ElfError("DVP overlay table string-table link is out of range");
+    }
+
+    const auto& string_table_section =
+        report.section_headers[table_section.link];
+    if (string_table_section.type != kSectionTypeStringTable) {
+        throw ElfError(
+            "DVP overlay table link does not reference a string table");
+    }
+    if (string_table_section.size == 0U) {
+        throw ElfError("DVP overlay string table is empty");
+    }
+    if (string_table_section.size > kMaximumSectionNameTableSize) {
+        throw ElfError(
+            "DVP overlay string table exceeds the supported size limit");
+    }
+    const auto string_table = bytes.subspan(
+        static_cast<std::size_t>(string_table_section.file_offset),
+        static_cast<std::size_t>(string_table_section.size));
+    if (byte_value(string_table.front()) != 0U) {
+        throw ElfError(
+            "DVP overlay string table does not start with a null byte");
+    }
+    if (byte_value(string_table.back()) != 0U) {
+        throw ElfError(
+            "DVP overlay string table does not end with a null byte");
+    }
+
+    const auto entry_count =
+        table_section.size / kDvpOverlayEntrySize;
+    if (entry_count != overlay_sections.size()) {
+        throw ElfError(
+            "DVP overlay table and overlay-section counts do not match");
+    }
+
+    ElfDvpOverlayTable table;
+    table.section_index =
+        static_cast<std::uint16_t>(*table_section_index);
+    table.string_table_section_index =
+        static_cast<std::uint16_t>(table_section.link);
+    table.overlays.reserve(entry_count);
+    std::vector<bool> referenced_sections(
+        report.section_headers.size(), false);
+
+    for (std::uint32_t index = 0U; index < entry_count; ++index) {
+        const auto entry_offset = static_cast<std::size_t>(
+            static_cast<std::uint64_t>(table_section.file_offset) +
+            static_cast<std::uint64_t>(index) * kDvpOverlayEntrySize);
+        const auto name_offset = read_le32(bytes, entry_offset);
+        const auto load_memory_address = read_le32(bytes, entry_offset + 4U);
+        const auto virtual_memory_address =
+            read_le32(bytes, entry_offset + 8U);
+        auto name = read_dvp_overlay_name(string_table, name_offset);
+
+        const auto matching_section = std::lower_bound(
+            overlay_sections.begin(),
+            overlay_sections.end(),
+            name,
+            [](const auto& candidate, const std::string& value) {
+                return candidate.first < value;
+            });
+        if (matching_section == overlay_sections.end() ||
+            matching_section->first != name) {
+            throw ElfError(
+                "DVP overlay table entry has no matching overlay section");
+        }
+        const auto overlay_section_index = matching_section->second;
+        if (referenced_sections[overlay_section_index]) {
+            throw ElfError(
+                "DVP overlay table references an overlay section more than once");
+        }
+        referenced_sections[overlay_section_index] = true;
+
+        const auto& overlay_section =
+            report.section_headers[overlay_section_index];
+        if (overlay_section.size == 0U) {
+            throw ElfError("DVP overlay section is empty");
+        }
+        const auto load_end =
+            static_cast<std::uint64_t>(load_memory_address) +
+            overlay_section.size;
+        const auto virtual_end =
+            static_cast<std::uint64_t>(virtual_memory_address) +
+            overlay_section.size;
+        if (load_end > kElf32AddressSpaceEnd) {
+            throw ElfError(
+                "DVP overlay load range exceeds the ELF32 address space");
+        }
+        if (virtual_end > kElf32AddressSpaceEnd) {
+            throw ElfError(
+                "DVP overlay virtual range exceeds the ELF32 address space");
+        }
+
+        std::optional<std::size_t> load_segment_index;
+        for (std::size_t candidate_index = 0U;
+             candidate_index < report.program_headers.size();
+             ++candidate_index) {
+            const auto& candidate =
+                report.program_headers[candidate_index];
+            if (candidate.type != kProgramTypeLoad) {
+                continue;
+            }
+            const auto candidate_begin =
+                static_cast<std::uint64_t>(candidate.physical_address);
+            const auto candidate_end =
+                candidate_begin + candidate.file_size;
+            if (load_memory_address < candidate_begin ||
+                load_end > candidate_end) {
+                continue;
+            }
+            if (load_segment_index) {
+                throw ElfError(
+                    "DVP overlay load range maps to more than one PT_LOAD segment");
+            }
+            load_segment_index = candidate_index;
+        }
+        if (!load_segment_index) {
+            throw ElfError(
+                "DVP overlay load range is not file-backed by a PT_LOAD segment");
+        }
+
+        const auto& load_segment =
+            report.program_headers[*load_segment_index];
+        const auto code_file_offset =
+            static_cast<std::uint64_t>(load_segment.file_offset) +
+            (static_cast<std::uint64_t>(load_memory_address) -
+             load_segment.physical_address);
+        require_file_range(
+            code_file_offset,
+            overlay_section.size,
+            bytes.size(),
+            "DVP overlay code range");
+
+        const auto code_file_end =
+            code_file_offset + overlay_section.size;
+        std::optional<std::size_t> code_section_index;
+        for (std::size_t candidate_index = 0U;
+             candidate_index < report.section_headers.size();
+             ++candidate_index) {
+            const auto& candidate =
+                report.section_headers[candidate_index];
+            if ((candidate.flags & kSectionFlagAllocated) == 0U ||
+                candidate.type == kSectionTypeNoBits ||
+                candidate.type == kSectionTypeDvpOverlayTable ||
+                candidate.type == kSectionTypeDvpOverlay) {
+                continue;
+            }
+            const auto candidate_begin =
+                static_cast<std::uint64_t>(candidate.file_offset);
+            const auto candidate_end =
+                candidate_begin + candidate.size;
+            if (code_file_offset < candidate_begin ||
+                code_file_end > candidate_end) {
+                continue;
+            }
+            if (code_section_index) {
+                throw ElfError(
+                    "DVP overlay code range maps to more than one allocated section");
+            }
+            code_section_index = candidate_index;
+        }
+        if (!code_section_index) {
+            throw ElfError(
+                "DVP overlay code range is not backed by an allocated file section");
+        }
+
+        table.overlays.push_back(ElfDvpOverlay{
+            static_cast<std::uint16_t>(overlay_section_index),
+            static_cast<std::uint16_t>(*code_section_index),
+            name_offset,
+            std::move(name),
+            load_memory_address,
+            virtual_memory_address,
+            code_file_offset,
+            overlay_section.size,
+        });
+    }
+
+    report.dvp_overlay_table = std::move(table);
 }
 
 [[nodiscard]] std::array<std::uint64_t, 3> allocated_section_sizes(
@@ -645,6 +919,7 @@ ElfReport inspect_elf(const std::span<const std::byte> executable_bytes) {
         section_header_count,
         section_name_index,
         report);
+    inspect_dvp_overlays(executable_bytes, report);
     inspect_iop_module_info(executable_bytes, report);
     inspect_relocations(executable_bytes, report);
     inspect_iop_imports(executable_bytes, report);

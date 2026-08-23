@@ -26,6 +26,7 @@ add_library(openrc_core STATIC
     src/core/scene_block_directory.cpp
     src/core/scene_block_vif.cpp
     src/core/scene_block_vu.cpp
+    src/core/scene_block_vu_phase.cpp
     src/core/sblk.cpp
     src/core/sblk_audio.cpp
     src/core/settings.cpp
@@ -162,6 +163,13 @@ if(OPENRC_BUILD_TESTS)
     target_compile_features(openrc-scene-block-vu-tests PRIVATE cxx_std_20)
 
     add_executable(
+        openrc-scene-block-vu-phase-tests
+        tests/scene_block_vu_phase_tests.cpp
+    )
+    target_link_libraries(openrc-scene-block-vu-phase-tests PRIVATE openrc_core)
+    target_compile_features(openrc-scene-block-vu-phase-tests PRIVATE cxx_std_20)
+
+    add_executable(
         openrc-companion-wad-index-tests
         tests/companion_wad_index_tests.cpp
     )
@@ -184,6 +192,7 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-scene-block-directory-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-scene-block-vif-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-scene-block-vu-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-scene-block-vu-phase-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-companion-wad-index-tests PRIVATE /W4 /permissive- /utf-8)
     else()
         target_compile_options(openrc-disc-tests PRIVATE -Wall -Wextra -Wpedantic)
@@ -201,6 +210,7 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-scene-block-directory-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-scene-block-vif-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-scene-block-vu-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-scene-block-vu-phase-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-companion-wad-index-tests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
 
@@ -219,6 +229,7 @@ if(OPENRC_BUILD_TESTS)
     add_test(NAME scene-block-directory COMMAND openrc-scene-block-directory-tests)
     add_test(NAME scene-block-vif COMMAND openrc-scene-block-vif-tests)
     add_test(NAME scene-block-vu COMMAND openrc-scene-block-vu-tests)
+    add_test(NAME scene-block-vu-phase COMMAND openrc-scene-block-vu-phase-tests)
     add_test(NAME companion-wad-index COMMAND openrc-companion-wad-index-tests)
 
     add_executable(openrc-elf-tests tests/elf_tests.cpp)

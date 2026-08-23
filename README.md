@@ -41,12 +41,14 @@ Stage 1 is in progress. The repository currently provides:
   sections, owned trailing data, and bounded zero-copy VIF command metadata
   for the verified stream spanning sections 0-4, plus conservative execution
   into a neutral 1024-qword VU1 memory snapshot with ordered write provenance
-  and explicit indeterminate lanes;
+  and explicit indeterminate lanes, followed by exact neutral control-to-UNPACK
+  phase grouping with inherited state and disjoint destination runs;
 - a bounded `CompanionTerminalWadIndexV1` parser that validates the 21 aligned
   terminal WadV1 records shared by every reference level;
 - streamed SHA-256 inventory and extraction into an immutable prepared-game
   directory with a deterministic manifest;
-- ELF32/MIPS span/path parsing with program/section inventory plus bounded
+- ELF32/MIPS span/path parsing with program/section inventory, a typed DVP
+  overlay table mapped from LMA/VMA records to the real code bytes, and bounded
   IOP/IRX module, relocation, and import metadata;
 - recognition of the PAL (`SCES-50916`) reference executable and detection of
   the NTSC-U/C (`SCUS-97199`) release;
@@ -55,8 +57,8 @@ Stage 1 is in progress. The repository currently provides:
 - application directories following the `PlunkDev/OpenRC` convention;
 - synthetic ISO, ELF, SHA-256, disc, WAD, bundle, 2FIP, boundary-table,
   MapArtV1, PS2 save-bundle, PS ADPCM, VAGp, SBlk/audio, scene-block,
-  scene-block VIF/VU execution, companion-WAD-index, and preparation tests that
-  contain no copyrighted game data.
+  scene-block VIF/VU execution and phase grouping, companion-WAD-index, and
+  preparation tests that contain no copyrighted game data.
 
 **Prepare game files** becomes available after the supported reference
 executable is detected. **Play** remains disabled because the native runtime
@@ -128,8 +130,10 @@ VIF stream across sections 0-4, then cross-checks the declared count against
 the independent extent-3 table. The report includes exact opcode, payload,
 alignment, and conservative VU1 write totals. VU addresses are reported
 relative to an explicitly supplied diagnostic `TOPS=0`; unknown V3/fill lanes
-remain unknown. It does not yet label those blocks as terrain, collision, or
-models.
+remain unknown. It also reports exact neutral command phases and their
+destination coverage without treating the two corpus-observed phase skeletons
+as an acceptance grammar. It does not yet label those blocks as terrain,
+collision, or models.
 `companion-wads` validates the independent subrange-2 index into that decoded
 buffer, checks every exact WadV1 range and zero alignment gap, and then
 actually decodes all indexed WAD streams under an aggregate limit.

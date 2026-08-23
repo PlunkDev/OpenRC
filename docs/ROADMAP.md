@@ -19,6 +19,7 @@ This roadmap describes technical milestones rather than release dates.
 - [x] extract regular ISO files into the local-data directory
 - [x] preserve a deterministic manifest containing sizes, extents, and hashes
 - [x] inventory ELF program headers, sections, and embedded DVP/VU overlays
+- [x] parse the DVP overlay table and map every LMA/VMA record to real code
 - [x] export the boot ELF for analysis
 - [x] establish the PAL v2.00 executable and image as the reference build
 - [x] identify and validate the `DiscTocV1` index used outside regular ISO files
@@ -42,6 +43,7 @@ This roadmap describes technical milestones rather than release dates.
 - [x] partition every scene-block remainder into eight verified neutral sections
 - [x] expose the bounded VIF stream spanning scene-block sections 0-4
 - [x] execute its bounded UNPACK writes into a conservative neutral VU1 snapshot
+- [x] group VIF/VU commands into exact neutral phases with inherited state
 - [x] validate the companion index for the shared terminal WadV1 bank
 - [ ] identify the semantic formats inside decoded WAD payloads
 - [ ] inventory R5900, VU0, VU1, IOP, GS, and system-call boundaries

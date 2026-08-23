@@ -330,6 +330,34 @@ per-stream snapshots contain 2,083,563 fully known and 1,023,097 partially
 known written qwords, with no wholly indeterminate written qword; the partial
 count exactly matches the observed V3-16 writes whose W lane remains unknown.
 
+`SceneBlockVuCommandPhaseV1` adds a derived, neutral partition over this
+ordered snapshot. A phase contains the maximal non-NOP control prefix followed
+by UNPACK commands; the first control after data opens the next phase. Its
+command and byte ranges form a gapless partition, with NOPs immediately before
+that boundary retained by the preceding phase. Each phase owns copied
+`state_before`/`state_after` values, one exact contiguous write range, and
+sorted disjoint qword runs, so STCYCL holes and ten-bit address wrap are never
+collapsed into a misleading min/max interval.
+
+The full corpus forms 254,052 phases, 9-13 per stream. Ignoring NOP placement
+leaves five exact whole-stream sequences; collapsing the multiplicity of
+adjacent equal UNPACK commands leaves two structural skeletons, used by 18,477
+and 1,539 streams. These are regression observations, not public parser
+acceptance rules. All observed phases have zero internal overwrite. The
+496,099 overwrite writes occur between phases, remain exclusively V4-8 over
+V4-8, and are independently recovered by the phase accounting.
+
+The three remainder tail sections remain opaque, but two stronger structural
+facts are now established over all 20,016 blocks. In qwords,
+`section6_size` is exactly `2 * section5_size` for 10,196 streams and one
+qword larger for the other 9,820. The first section-6 qword is also an exact
+copy of one ROW payload which occurs twice in that stream: always STROW ordinal
+2, then ordinal 4 in the short phase skeleton or ordinal 6 in the long one.
+It is never the final ROW. Sections 5 and 7 have no STROW match, and none of
+the three tails is a literal copy of a fully known ordered write or final VU
+qword. This supports a shared cardinality driver and one ROW template, but not
+terrain, vertex, or transform names in the API.
+
 The header count equals the size of primary-extent-3 table 0 on all 19 levels.
 The complete sweep validates 20,016 descriptors, 47,894,288 bytes of chained
 block envelopes, and 368,974,896 trailing bytes. Declared and parsed counts
@@ -340,12 +368,31 @@ both range from 444 to 2,144. The 19 final envelopes add 44,960 bytes.
 | 0 | 16,791,232 | 460 / 460 | `0x7300` | `0x113EE0` | `737fec3eff206fa57125451387feac69946f045643567587097b1f9c0403302d` | `f316516a3aba1d3fc6b75b8eda1fffa13fd67fa911ee09d3026c99a07ad7d957` |
 | 18 | 22,661,824 | 1,144 / 1,144 | `0x11E00` | `0x2A6380` | `0221dc2b9e25ad62c3dedcdfd480dc2e7967fac15c8821dd6c750a5471f826ce` | `f26bba8b9a87f133c6e72101e4e8e758409467b80bcbf0c34568e7fd4282bc77` |
 
-The leading floats and regular packet patterns are consistent with spatial
-scene records. The boot ELF's `.data` also retains `tfrag geom` as one label in
-a diagnostic memory map beside occlusion, sky, collision, and other categories;
-it is not a format signature or a decoder reference. Those clues justify a
-diagnostic-rendering experiment but do not yet justify labelling the blocks as
-terrain, collision, or models in the parser contract.
+The EE executable provides an independent link to the runtime consumer.
+Function `0x204918` reads this exact offset/count header, advances to
+`base + word0`, walks `count` records at stride `0x40`, and relocates the
+word-4 pointer at record offset `0x10`. Render task `0x2352C8` consumes the
+same relocated pointer/count pair, iterates the same records, and assembles
+their VIF chain. This confirms that the clean-room directory and runtime
+records are the same structure rather than merely similar data.
+
+That task uploads DVP overlay group `55907` itself: seven 0x800-byte chunks
+at VU VMAs `0x0000` through `0x3000`, followed by one 0x260-byte chunk at
+`0x3800`. The upload contains exactly `0x3AA` DMA qwords: eight 8-byte VIF
+headers plus `0x3A60` bytes of microcode. Its headers encode FLUSHA/MPG and
+successive MPG destinations, while later task code selects MSCAL entries
+2, 6, 8, 10, 14, 16, or 20 from record fields. This is the confirmed SceneBlock
+VU program; overlay groups `57843` and `13859` are separate render passes.
+Every selected entry immediately executes XTOP into `vi14`, then accesses
+the TOP-relative header region including integer loads from qwords 0-4 and
+vector loads from qwords 5-8. Confirmed XGKICK sites establish the eventual GS
+packet boundary. The task's trailing VIF template restores BASE/OFFSET to
+`0/0` and STCYCL to `4/4`; this gives high confidence that steady-state
+SceneBlock TOPS is zero, while the public executor still requires TOPS
+explicitly because first-use ordering has not yet been proved.
+The leading floats and regular packet patterns remain consistent with spatial
+scene records, but the parser still does not label individual blocks as
+terrain, collision, or models.
 
 ## CompanionTerminalWadIndexV1
 
@@ -531,9 +578,16 @@ general IOP staging, and audio. None contains a literal `WAD` or `2FIP`
 reference; the texture/resource decoders therefore remain targets in the main
 EE executable or other decoded data, rather than these IOP modules.
 
-The boot ELF also contains 43 DVP overlay sections and paths such as
+The boot ELF also contains 43 DVP overlay records. OpenRC now parses the
+canonical 12-byte `name/lma/vma` records, validates their linked overlay
+string table and one-to-one overlay-section names, maps each LMA range through
+its file-backed `PT_LOAD.p_paddr`, and resolves the real bytes in the allocated
+`.vutext` section. The processor-specific
+section identifiers and record layout follow the public
+[GNU binutils MIPS ELF definitions](https://mirror.iscas.ac.cn/git/sourceware.org/git/binutils-gdb/-/blame/7ae26f2731023f088ea805a39e47d1680055f88e/include/elf/mips.h?page=1).
+The `.DVP.overlay.*` sections in this executable are placeholder ranges, not
+the code source. The image also contains paths such as
 `cdrom0:\DATA\LEVELS\LEVEL`, `cdrom0:\CODE\I5\PARAM.TXT;1`, and the
-`occ_sample_deltas.dat`/`occ_samp.dat` resources. The next Stage 1 targets are
-SBlk sample-rate and loop playback metadata, the larger per-level decoded
-containers that remain opaque, and the eventual R5900/VU/IOP execution
-boundary.
+`occ_sample_deltas.dat`/`occ_samp.dat` resources. The next Stage 1 target is
+a neutral decoder for the confirmed `55907` VU program and its memory-access
+contract, alongside remaining audio and asset-format work.

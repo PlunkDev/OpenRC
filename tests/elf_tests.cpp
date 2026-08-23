@@ -36,6 +36,36 @@ constexpr std::size_t kIrxRelocationSectionIndex = 4;
 constexpr std::size_t kIrxModuleSectionIndex = 5;
 constexpr char kIrxSectionNames[] =
     "\0.text\0.data\0.bss\0.rel.text\0.iopmod\0.symtab\0.strtab\0.shstrtab";
+constexpr std::size_t kDvpCodeOffset = 0x300;
+constexpr std::size_t kDvpFirstOverlayOffset = 0x330;
+constexpr std::size_t kDvpSecondOverlayOffset = 0x340;
+constexpr std::size_t kDvpTableOffset = 0x358;
+constexpr std::size_t kDvpStringTableOffset = 0x380;
+constexpr std::size_t kDvpSectionNameTableOffset = 0x3c0;
+constexpr std::size_t kDvpCodeSectionIndex = 1;
+constexpr std::size_t kDvpFirstOverlaySectionIndex = 2;
+constexpr std::size_t kDvpSecondOverlaySectionIndex = 3;
+constexpr std::size_t kDvpTableSectionIndex = 4;
+constexpr std::size_t kDvpStringTableSectionIndex = 5;
+constexpr std::uint32_t kDvpCodeNameOffset = 1;
+constexpr std::uint32_t kDvpFirstOverlayNameOffset =
+    kDvpCodeNameOffset + sizeof(".vutext");
+constexpr std::uint32_t kDvpSecondOverlayNameOffset =
+    kDvpFirstOverlayNameOffset + sizeof(".DVP.overlay.alpha");
+constexpr std::uint32_t kDvpTableNameOffset =
+    kDvpSecondOverlayNameOffset + sizeof(".DVP.overlay.beta");
+constexpr std::uint32_t kDvpStringTableNameOffset =
+    kDvpTableNameOffset + sizeof(".DVP.ovlytab");
+constexpr std::uint32_t kDvpSectionNameTableNameOffset =
+    kDvpStringTableNameOffset + sizeof(".DVP.ovlystrtab");
+constexpr std::uint32_t kDvpFirstRecordNameOffset = 1;
+constexpr std::uint32_t kDvpSecondRecordNameOffset =
+    kDvpFirstRecordNameOffset + sizeof(".DVP.overlay.alpha");
+constexpr char kDvpOverlayNames[] =
+    "\0.DVP.overlay.alpha\0.DVP.overlay.beta";
+constexpr char kDvpSectionNames[] =
+    "\0.vutext\0.DVP.overlay.alpha\0.DVP.overlay.beta"
+    "\0.DVP.ovlytab\0.DVP.ovlystrtab\0.shstrtab";
 
 void write_le16(std::uint8_t* target, const std::uint16_t value) {
     target[0] = static_cast<std::uint8_t>(value & 0xffU);
@@ -236,6 +266,139 @@ std::vector<std::uint8_t> make_valid_irx() {
     return elf;
 }
 
+std::vector<std::uint8_t> make_valid_dvp_elf() {
+    std::vector<std::uint8_t> elf(0x500, 0);
+    elf[0] = 0x7fU;
+    elf[1] = 'E';
+    elf[2] = 'L';
+    elf[3] = 'F';
+    elf[4] = 1;
+    elf[5] = 1;
+    elf[6] = 1;
+    write_le16(elf.data() + 16, 2);
+    write_le16(elf.data() + 18, 8);
+    write_le32(elf.data() + 20, 1);
+    write_le32(elf.data() + 24, 0x1000);
+    write_le32(elf.data() + 28, static_cast<std::uint32_t>(kProgramHeaderOffset));
+    write_le32(elf.data() + 32, static_cast<std::uint32_t>(kIrxSectionHeaderOffset));
+    write_le16(elf.data() + 40, static_cast<std::uint16_t>(kElfHeaderSize));
+    write_le16(elf.data() + 42, static_cast<std::uint16_t>(kProgramHeaderSize));
+    write_le16(elf.data() + 44, 1);
+    write_le16(elf.data() + 46, static_cast<std::uint16_t>(kSectionHeaderSize));
+    write_le16(elf.data() + 48, 7);
+    write_le16(elf.data() + 50, 6);
+
+    auto* program_header = elf.data() + kProgramHeaderOffset;
+    write_le32(program_header, 1);
+    write_le32(program_header + 4, static_cast<std::uint32_t>(kDvpCodeOffset));
+    write_le32(program_header + 8, 0x2000);
+    write_le32(program_header + 12, 0x1000);
+    write_le32(program_header + 16, 0x30);
+    write_le32(program_header + 20, 0x30);
+    write_le32(program_header + 24, 5);
+    write_le32(program_header + 28, 0x10);
+
+    write_section_header(
+        elf,
+        kDvpCodeSectionIndex,
+        kDvpCodeNameOffset,
+        1,
+        6,
+        0x2000,
+        static_cast<std::uint32_t>(kDvpCodeOffset),
+        0x30,
+        0,
+        0,
+        0x10,
+        0);
+    write_section_header(
+        elf,
+        kDvpFirstOverlaySectionIndex,
+        kDvpFirstOverlayNameOffset,
+        0x7ffff421U,
+        5,
+        0,
+        static_cast<std::uint32_t>(kDvpFirstOverlayOffset),
+        0x10,
+        0,
+        0,
+        1,
+        0);
+    write_section_header(
+        elf,
+        kDvpSecondOverlaySectionIndex,
+        kDvpSecondOverlayNameOffset,
+        0x7ffff421U,
+        5,
+        0,
+        static_cast<std::uint32_t>(kDvpSecondOverlayOffset),
+        0x18,
+        0,
+        0,
+        1,
+        0);
+    write_section_header(
+        elf,
+        kDvpTableSectionIndex,
+        kDvpTableNameOffset,
+        0x7ffff420U,
+        1,
+        0,
+        static_cast<std::uint32_t>(kDvpTableOffset),
+        0x18,
+        kDvpStringTableSectionIndex,
+        0,
+        4,
+        12);
+    write_section_header(
+        elf,
+        kDvpStringTableSectionIndex,
+        kDvpStringTableNameOffset,
+        3,
+        1,
+        0,
+        static_cast<std::uint32_t>(kDvpStringTableOffset),
+        static_cast<std::uint32_t>(sizeof(kDvpOverlayNames)),
+        0,
+        0,
+        1,
+        0);
+    write_section_header(
+        elf,
+        6,
+        kDvpSectionNameTableNameOffset,
+        3,
+        0,
+        0,
+        static_cast<std::uint32_t>(kDvpSectionNameTableOffset),
+        static_cast<std::uint32_t>(sizeof(kDvpSectionNames)),
+        0,
+        0,
+        1,
+        0);
+
+    for (std::size_t index = 0U; index < 0x30U; ++index) {
+        elf[kDvpCodeOffset + index] =
+            static_cast<std::uint8_t>(index + 1U);
+    }
+    write_le32(elf.data() + kDvpTableOffset, kDvpFirstRecordNameOffset);
+    write_le32(elf.data() + kDvpTableOffset + 4, 0x1000);
+    write_le32(elf.data() + kDvpTableOffset + 8, 0x0000);
+    write_le32(elf.data() + kDvpTableOffset + 12, kDvpSecondRecordNameOffset);
+    write_le32(elf.data() + kDvpTableOffset + 16, 0x1010);
+    write_le32(elf.data() + kDvpTableOffset + 20, 0x0800);
+
+    for (std::size_t index = 0U; index < sizeof(kDvpOverlayNames); ++index) {
+        elf[kDvpStringTableOffset + index] =
+            static_cast<std::uint8_t>(kDvpOverlayNames[index]);
+    }
+    for (std::size_t index = 0U; index < sizeof(kDvpSectionNames); ++index) {
+        elf[kDvpSectionNameTableOffset + index] =
+            static_cast<std::uint8_t>(kDvpSectionNames[index]);
+    }
+    return elf;
+}
+
 std::span<const std::byte> as_bytes(const std::vector<std::uint8_t>& bytes) {
     return std::as_bytes(std::span<const std::uint8_t>(bytes));
 }
@@ -308,6 +471,7 @@ void test_valid_elf(const std::filesystem::path& directory) {
     expect(first_segment.type == 1, "program segment type was not parsed");
     expect(first_segment.file_offset == 0x200, "program segment file offset was not parsed");
     expect(first_segment.virtual_address == 0x00100000U, "program segment address was not parsed");
+    expect(first_segment.physical_address == 0x00100000U, "program segment physical address was not parsed");
     expect(first_segment.file_size == 0x20, "program segment file size was not parsed");
     expect(first_segment.memory_size == 0x40, "program segment memory size was not parsed");
     expect(first_segment.flags == 5, "program segment flags were not parsed");
@@ -316,6 +480,7 @@ void test_valid_elf(const std::filesystem::path& directory) {
     const auto& second_segment = report.program_headers[1];
     expect(second_segment.file_offset == 0x240, "second program segment offset was not parsed");
     expect(second_segment.virtual_address == 0x00200000U, "second program segment address was not parsed");
+    expect(second_segment.physical_address == 0x00200000U, "second program segment physical address was not parsed");
     expect(second_segment.file_size == 0x10, "second program segment file size was not parsed");
     expect(second_segment.memory_size == 0x80, "second program segment memory size was not parsed");
     expect(second_segment.flags == 6, "second program segment flags were not parsed");
@@ -446,6 +611,206 @@ void test_unknown_relocation_type_is_preserved() {
     expect(
         report.relocation_summaries[0].types[1].type == 0x7f,
         "neutral relocation inventory discarded an unknown MIPS type");
+}
+
+void test_valid_dvp_overlay_inventory() {
+    const auto report = openrc::inspect_elf(as_bytes(make_valid_dvp_elf()));
+    expect(report.dvp_overlay_table.has_value(), "DVP overlay table is missing");
+    expect(
+        report.program_headers.size() == 1U &&
+            report.program_headers[0].physical_address == 0x1000U &&
+            report.program_headers[0].virtual_address == 0x2000U,
+        "DVP test segment did not preserve distinct physical and virtual addresses");
+    const auto& table = report.dvp_overlay_table.value();
+    expect(
+        table.section_index == kDvpTableSectionIndex,
+        "DVP overlay table section index is wrong");
+    expect(
+        table.string_table_section_index == kDvpStringTableSectionIndex,
+        "DVP overlay string-table index is wrong");
+    expect(table.overlays.size() == 2U, "DVP overlay inventory is incomplete");
+
+    const auto& first = table.overlays[0];
+    expect(
+        first.overlay_section_index == kDvpFirstOverlaySectionIndex,
+        "first DVP overlay section index is wrong");
+    expect(
+        first.code_section_index == kDvpCodeSectionIndex,
+        "first DVP code section index is wrong");
+    expect(
+        first.name_offset == kDvpFirstRecordNameOffset,
+        "first DVP overlay name offset is wrong");
+    expect(
+        first.name == ".DVP.overlay.alpha",
+        "first DVP overlay name is wrong");
+    expect(
+        first.load_memory_address == 0x1000U,
+        "first DVP overlay LMA is wrong");
+    expect(
+        first.virtual_memory_address == 0U,
+        "first DVP overlay VMA is wrong");
+    expect(
+        first.code_file_offset == kDvpCodeOffset,
+        "first DVP overlay code file offset is wrong");
+    expect(first.size == 0x10U, "first DVP overlay size is wrong");
+
+    const auto& second = table.overlays[1];
+    expect(
+        second.overlay_section_index == kDvpSecondOverlaySectionIndex,
+        "second DVP overlay section index is wrong");
+    expect(
+        second.code_section_index == kDvpCodeSectionIndex,
+        "second DVP code section index is wrong");
+    expect(
+        second.name == ".DVP.overlay.beta",
+        "second DVP overlay name is wrong");
+    expect(
+        second.load_memory_address == 0x1010U,
+        "second DVP overlay LMA is wrong");
+    expect(
+        second.virtual_memory_address == 0x0800U,
+        "second DVP overlay VMA is wrong");
+    expect(
+        second.code_file_offset == kDvpCodeOffset + 0x10U,
+        "second DVP overlay code file offset is wrong");
+    expect(second.size == 0x18U, "second DVP overlay size is wrong");
+}
+
+void test_malformed_dvp_overlay_metadata() {
+    const auto table_header_offset =
+        kIrxSectionHeaderOffset +
+        kDvpTableSectionIndex * kSectionHeaderSize;
+    const auto string_header_offset =
+        kIrxSectionHeaderOffset +
+        kDvpStringTableSectionIndex * kSectionHeaderSize;
+    const auto first_overlay_header_offset =
+        kIrxSectionHeaderOffset +
+        kDvpFirstOverlaySectionIndex * kSectionHeaderSize;
+    const auto second_overlay_header_offset =
+        kIrxSectionHeaderOffset +
+        kDvpSecondOverlaySectionIndex * kSectionHeaderSize;
+
+    auto bytes = make_valid_dvp_elf();
+    write_le32(bytes.data() + table_header_offset + 36, 8);
+    expect_span_rejected(
+        bytes,
+        "noncanonical DVP overlay entry size should be rejected");
+
+    bytes = make_valid_dvp_elf();
+    write_le32(bytes.data() + table_header_offset + 20, 20);
+    expect_span_rejected(
+        bytes,
+        "unaligned DVP overlay table size should be rejected");
+
+    bytes = make_valid_dvp_elf();
+    write_le32(bytes.data() + table_header_offset + 24, 7);
+    expect_span_rejected(
+        bytes,
+        "out-of-range DVP string-table link should be rejected");
+
+    bytes = make_valid_dvp_elf();
+    write_le32(bytes.data() + table_header_offset + 24, kDvpCodeSectionIndex);
+    expect_span_rejected(
+        bytes,
+        "DVP table link to a non-string section should be rejected");
+
+    bytes = make_valid_dvp_elf();
+    write_le16(bytes.data() + 44, 0);
+    expect_span_rejected(
+        bytes,
+        "DVP overlay LMA without a PT_LOAD mapping should be rejected");
+
+    bytes = make_valid_dvp_elf();
+    write_le32(bytes.data() + kProgramHeaderOffset + 16, 8);
+    expect_span_rejected(
+        bytes,
+        "DVP overlay backed only by PT_LOAD memory should be rejected");
+
+    bytes = make_valid_dvp_elf();
+    bytes[kDvpStringTableOffset] = 'x';
+    expect_span_rejected(
+        bytes,
+        "DVP string table without a leading null should be rejected");
+
+    bytes = make_valid_dvp_elf();
+    bytes[kDvpStringTableOffset + sizeof(kDvpOverlayNames) - 1U] = 'x';
+    expect_span_rejected(
+        bytes,
+        "DVP string table without a trailing null should be rejected");
+
+    bytes = make_valid_dvp_elf();
+    write_le32(
+        bytes.data() + kDvpTableOffset,
+        static_cast<std::uint32_t>(sizeof(kDvpOverlayNames)));
+    expect_span_rejected(
+        bytes,
+        "out-of-range DVP overlay name should be rejected");
+
+    bytes = make_valid_dvp_elf();
+    write_le32(bytes.data() + kDvpTableOffset, 0);
+    expect_span_rejected(bytes, "empty DVP overlay name should be rejected");
+
+    bytes = make_valid_dvp_elf();
+    write_le32(
+        bytes.data() + kDvpTableOffset + 12,
+        kDvpFirstRecordNameOffset);
+    expect_span_rejected(
+        bytes,
+        "duplicate DVP overlay reference should be rejected");
+
+    bytes = make_valid_dvp_elf();
+    write_le32(
+        bytes.data() + second_overlay_header_offset,
+        kDvpFirstOverlayNameOffset);
+    expect_span_rejected(
+        bytes,
+        "duplicate DVP overlay section name should be rejected");
+
+    bytes = make_valid_dvp_elf();
+    write_le32(bytes.data() + kDvpTableOffset + 4, 0x2000);
+    expect_span_rejected(
+        bytes,
+        "unbacked DVP overlay LMA should be rejected");
+
+    bytes = make_valid_dvp_elf();
+    write_le32(bytes.data() + kDvpTableOffset + 4, 0x1028);
+    expect_span_rejected(
+        bytes,
+        "DVP overlay spanning past its code section should be rejected");
+
+    bytes = make_valid_dvp_elf();
+    write_le32(bytes.data() + kDvpTableOffset + 4, 0xfffffff8U);
+    expect_span_rejected(
+        bytes,
+        "overflowing DVP overlay load range should be rejected");
+
+    bytes = make_valid_dvp_elf();
+    write_le32(bytes.data() + kDvpTableOffset + 8, 0xfffffff8U);
+    expect_span_rejected(
+        bytes,
+        "overflowing DVP overlay virtual range should be rejected");
+
+    bytes = make_valid_dvp_elf();
+    write_le32(bytes.data() + first_overlay_header_offset + 20, 0);
+    expect_span_rejected(bytes, "empty DVP overlay section should be rejected");
+
+    bytes = make_valid_dvp_elf();
+    write_le32(bytes.data() + table_header_offset + 20, 12);
+    expect_span_rejected(
+        bytes,
+        "DVP table and overlay-section count mismatch should be rejected");
+
+    bytes = make_valid_dvp_elf();
+    write_le32(
+        bytes.data() + second_overlay_header_offset + 4,
+        0x7ffff420U);
+    expect_span_rejected(
+        bytes,
+        "multiple DVP overlay tables should be rejected");
+
+    bytes = make_valid_dvp_elf();
+    write_le32(bytes.data() + string_header_offset + 20, 0);
+    expect_span_rejected(bytes, "empty DVP overlay string table should be rejected");
 }
 
 void test_export_marker_is_not_guessed_as_import() {
@@ -581,6 +946,14 @@ void test_malformed_bounds(const std::filesystem::path& directory) {
         directory / "address-overflow.elf",
         bytes,
         "segment outside the ELF32 address space should be rejected");
+
+    bytes = make_valid_elf();
+    write_le32(bytes.data() + kProgramHeaderOffset + 12, 0xfffffff0U);
+    write_le32(bytes.data() + kProgramHeaderOffset + 20, 0x40);
+    expect_rejected(
+        directory / "physical-address-overflow.elf",
+        bytes,
+        "segment outside the ELF32 physical address space should be rejected");
 }
 
 void test_malformed_section_names(const std::filesystem::path& directory) {
@@ -659,6 +1032,8 @@ int main() {
         test_irx_consistency_is_diagnostic();
         test_iop_module_is_detected_by_type_without_section_names();
         test_unknown_relocation_type_is_preserved();
+        test_valid_dvp_overlay_inventory();
+        test_malformed_dvp_overlay_metadata();
         test_export_marker_is_not_guessed_as_import();
         test_malformed_irx_metadata();
         test_iop_import_magic_collisions();
