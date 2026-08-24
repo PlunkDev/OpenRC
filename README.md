@@ -50,6 +50,11 @@ Stage 1 is in progress. The repository currently provides:
 - ELF32/MIPS span/path parsing with program/section inventory, a typed DVP
   overlay table mapped from LMA/VMA records to the real code bytes, and bounded
   IOP/IRX module, relocation, and import metadata;
+- a bounded neutral DVP VU microprogram decoder which preserves both raw words
+  and explicit unknown operations while exposing the recognized upper/lower
+  instructions required by overlay group `55907`, upper flags and operands,
+  wrapped direct-branch targets, and typed control-flow and VU1-memory-access
+  inventory including XTOP and XGKICK sites;
 - recognition of the PAL (`SCES-50916`) reference executable and detection of
   the NTSC-U/C (`SCUS-97199`) release;
 - a native Windows launcher with disc inspection, asynchronous Prepare,
@@ -57,8 +62,9 @@ Stage 1 is in progress. The repository currently provides:
 - application directories following the `PlunkDev/OpenRC` convention;
 - synthetic ISO, ELF, SHA-256, disc, WAD, bundle, 2FIP, boundary-table,
   MapArtV1, PS2 save-bundle, PS ADPCM, VAGp, SBlk/audio, scene-block,
-  scene-block VIF/VU execution and phase grouping, companion-WAD-index, and
-  preparation tests that contain no copyrighted game data.
+  scene-block VIF/VU execution and phase grouping, DVP VU microprogram
+  decoding, companion-WAD-index, and preparation tests that contain no
+  copyrighted game data.
 
 **Prepare game files** becomes available after the supported reference
 executable is detected. **Play** remains disabled because the native runtime
@@ -105,6 +111,7 @@ build/Debug/openrc-cli.exe wad-bundle local/ratchet-and-clank.iso 14365 162
 build/Debug/openrc-cli.exe twofip local/ratchet-and-clank.iso 100 texture.tga
 build/Debug/openrc-cli.exe prepare local/ratchet-and-clank.iso
 build/Debug/openrc-cli.exe elf path/to/prepared/files/SCES_509.16
+build/Debug/openrc-cli.exe dvp-vu path/to/prepared/files/SCES_509.16 2,6,8,10,14,16,20 11,12,13,14,15,16,17,18
 ```
 
 The `wad-bundle` LBA and sector count above identify a container in the exact
@@ -134,6 +141,14 @@ remain unknown. It also reports exact neutral command phases and their
 destination coverage without treating the two corpus-observed phase skeletons
 as an acceptance grammar. It does not yet label those blocks as terrain,
 collision, or models.
+The DVP VU decoder is analysis metadata only: it does not execute a
+microprogram, infer geometry semantics, or provide a renderer.
+
+`dvp-vu` accepts comma-separated decimal VU pair addresses and ELF overlay
+section indices, with at most 128 values in either list. The example selects
+the seven confirmed SceneBlock entrypoints and all eight chunks of overlay
+group `55907`.
+
 `companion-wads` validates the independent subrange-2 index into that decoded
 buffer, checks every exact WadV1 range and zero alignment gap, and then
 actually decodes all indexed WAD streams under an aggregate limit.

@@ -2,6 +2,7 @@
 #include "openrc/companion_wad_index.hpp"
 #include "openrc/disc.hpp"
 #include "openrc/disc_toc.hpp"
+#include "openrc/dvp_vu.hpp"
 #include "openrc/elf.hpp"
 #include "openrc/map_art.hpp"
 #include "openrc/paths.hpp"
@@ -66,6 +67,8 @@ constexpr std::uint64_t kMaximumCliVagpBytes = 64U * 1024U * 1024U;
 constexpr std::uint64_t kMaximumCliVagpFrames = 1'000'000U;
 constexpr std::uint64_t kMaximumCliVagpSamples =
     kMaximumCliVagpFrames * openrc::kPsAdpcmSamplesPerFrame;
+constexpr std::uint64_t kMaximumCliElfBytes = 64U * 1024U * 1024U;
+constexpr std::size_t kMaximumCliDvpVuListItems = 128U;
 constexpr std::size_t kMapArtFirstGlobalSlot = 259;
 constexpr std::size_t kPs2SaveBundleGlobalSlot = 1;
 
@@ -92,6 +95,8 @@ void print_usage() {
         << "                                                    Inspect/export 2FIP (16 Mi pixels)\n"
         << "  openrc-cli prepare <disc.iso> [games-directory]  Extract and verify game files\n"
         << "  openrc-cli elf <executable>                      Inspect a PlayStation 2 ELF\n"
+        << "  openrc-cli dvp-vu <elf> <entry-pairs> <overlay-sections>\n"
+        << "                                                    Decode decimal CSV VU/ELF lists\n"
         << "  openrc-cli paths                                 Show application data directories\n"
         << "  openrc-cli help                                  Show this help\n";
 }
@@ -109,6 +114,76 @@ void print_usage() {
         return std::nullopt;
     }
     return value;
+}
+
+[[nodiscard]] std::optional<std::vector<std::uint16_t>>
+parse_decimal_u16_list(
+    const std::filesystem::path& argument,
+    const std::size_t maximum_values) {
+    const auto text = openrc::path_to_utf8(argument);
+    if (text.empty() || maximum_values == 0U) {
+        return std::nullopt;
+    }
+
+    std::vector<std::uint16_t> values;
+    std::size_t begin = 0U;
+    while (begin < text.size()) {
+        const auto separator = text.find(',', begin);
+        const auto end = separator == std::string::npos ? text.size()
+                                                        : separator;
+        std::uint32_t value = 0U;
+        const auto parsed = std::from_chars(
+            text.data() + begin,
+            text.data() + end,
+            value);
+        if (begin == end || parsed.ec != std::errc{} ||
+            parsed.ptr != text.data() + end ||
+            value > std::numeric_limits<std::uint16_t>::max()) {
+            return std::nullopt;
+        }
+        if (values.size() >= maximum_values) {
+            return std::nullopt;
+        }
+        values.push_back(static_cast<std::uint16_t>(value));
+        if (separator == std::string::npos) {
+            break;
+        }
+        begin = separator + 1U;
+    }
+    if (values.empty() || text.back() == ',') {
+        return std::nullopt;
+    }
+    return values;
+}
+
+[[nodiscard]] std::vector<std::byte> read_bounded_binary_file(
+    const std::filesystem::path& path,
+    const std::uint64_t maximum_bytes) {
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    if (!input) {
+        throw std::runtime_error("Cannot open the input file");
+    }
+    const auto end_position = input.tellg();
+    if (end_position < 0) {
+        throw std::runtime_error("Cannot determine the input file size");
+    }
+    const auto byte_count = static_cast<std::uint64_t>(end_position);
+    if (byte_count > maximum_bytes ||
+        byte_count > std::numeric_limits<std::size_t>::max() ||
+        byte_count > static_cast<std::uint64_t>(
+                         std::numeric_limits<std::streamsize>::max())) {
+        throw std::runtime_error("The input file exceeds the CLI size limit");
+    }
+
+    std::vector<std::byte> bytes(static_cast<std::size_t>(byte_count));
+    input.seekg(0, std::ios::beg);
+    if (!bytes.empty() &&
+        !input.read(
+            reinterpret_cast<char*>(bytes.data()),
+            static_cast<std::streamsize>(bytes.size()))) {
+        throw std::runtime_error("Cannot read the complete input file");
+    }
+    return bytes;
 }
 
 [[nodiscard]] const char* wad_bundle_kind_name(
@@ -1933,6 +2008,199 @@ int run(const std::vector<std::filesystem::path>& arguments) {
             return kCancelled;
         } catch (const std::exception& error) {
             progress.finish();
+            std::cerr << "error: " << error.what() << '\n';
+            return kOperationError;
+        }
+    }
+
+    if (command == "dvp-vu") {
+        if (arguments.size() != 4) {
+            std::cerr
+                << "error: dvp-vu expects an executable, a comma-separated "
+                   "entrypoint list, and a comma-separated overlay-section list\n";
+            return kUsageError;
+        }
+
+        const auto entrypoint_addresses =
+            parse_decimal_u16_list(
+                arguments[2], kMaximumCliDvpVuListItems);
+        const auto overlay_section_indices =
+            parse_decimal_u16_list(
+                arguments[3], kMaximumCliDvpVuListItems);
+        if (!entrypoint_addresses || !overlay_section_indices) {
+            std::cerr
+                << "error: VU pair entrypoints and ELF overlay sections must "
+                   "be non-empty comma-separated decimal uint16 lists with at "
+                   "most "
+                << kMaximumCliDvpVuListItems << " items each\n";
+            return kUsageError;
+        }
+
+        try {
+            const auto bytes =
+                read_bounded_binary_file(arguments[1], kMaximumCliElfBytes);
+            const auto elf = openrc::inspect_elf(
+                std::span<const std::byte>(bytes));
+            if (!elf.dvp_overlay_table) {
+                throw std::runtime_error(
+                    "The executable has no DVP overlay table");
+            }
+
+            std::vector<openrc::ElfDvpOverlay> selected_overlays;
+            selected_overlays.reserve(overlay_section_indices->size());
+            for (const auto requested_index : *overlay_section_indices) {
+                const auto overlay = std::find_if(
+                    elf.dvp_overlay_table->overlays.begin(),
+                    elf.dvp_overlay_table->overlays.end(),
+                    [requested_index](const openrc::ElfDvpOverlay& candidate) {
+                        return candidate.overlay_section_index ==
+                            requested_index;
+                    });
+                if (overlay == elf.dvp_overlay_table->overlays.end()) {
+                    throw std::runtime_error(
+                        "A requested DVP overlay section was not found");
+                }
+                selected_overlays.push_back(*overlay);
+            }
+
+            const auto program = openrc::decode_dvp_vu_program_v1(
+                std::span<const std::byte>(bytes),
+                std::span<const openrc::ElfDvpOverlay>(selected_overlays),
+                std::span<const std::uint16_t>(*entrypoint_addresses),
+                openrc::DvpVuLimits{
+                    kMaximumCliElfBytes,
+                    kMaximumCliDvpVuListItems,
+                    openrc::kDvpVu1MicroMemoryBytes,
+                    kMaximumCliDvpVuListItems,
+                    2U * openrc::kDvpVu1InstructionCount,
+                    8U * openrc::kDvpVu1InstructionCount,
+                });
+
+            std::uint64_t flag_i_count = 0U;
+            std::uint64_t flag_e_count = 0U;
+            std::uint64_t flag_m_count = 0U;
+            std::uint64_t flag_d_count = 0U;
+            std::uint64_t flag_t_count = 0U;
+            std::uint64_t xtop_count = 0U;
+            std::uint64_t xitop_count = 0U;
+            std::uint64_t xgkick_count = 0U;
+            for (const auto& instruction : program.instructions) {
+                flag_i_count += instruction.upper.immediate ? 1U : 0U;
+                flag_e_count += instruction.upper.end ? 1U : 0U;
+                flag_m_count += instruction.upper.m ? 1U : 0U;
+                flag_d_count += instruction.upper.d ? 1U : 0U;
+                flag_t_count += instruction.upper.t ? 1U : 0U;
+                switch (instruction.lower.opcode) {
+                case openrc::DvpVuLowerOpcode::xtop:
+                    ++xtop_count;
+                    break;
+                case openrc::DvpVuLowerOpcode::xitop:
+                    ++xitop_count;
+                    break;
+                case openrc::DvpVuLowerOpcode::xgkick:
+                    ++xgkick_count;
+                    break;
+                default:
+                    break;
+                }
+            }
+
+            std::uint64_t vector_load_count = 0U;
+            std::uint64_t vector_store_count = 0U;
+            std::uint64_t integer_load_count = 0U;
+            std::uint64_t integer_store_count = 0U;
+            for (const auto& access : program.memory_accesses) {
+                switch (access.kind) {
+                case openrc::DvpVuMemoryAccessKind::vector_load:
+                    ++vector_load_count;
+                    break;
+                case openrc::DvpVuMemoryAccessKind::vector_store:
+                    ++vector_store_count;
+                    break;
+                case openrc::DvpVuMemoryAccessKind::integer_load:
+                    ++integer_load_count;
+                    break;
+                case openrc::DvpVuMemoryAccessKind::integer_store:
+                    ++integer_store_count;
+                    break;
+                }
+            }
+
+            std::uint64_t direct_transfer_count = 0U;
+            std::uint64_t resolved_direct_transfer_count = 0U;
+            std::uint64_t end_transfer_count = 0U;
+            for (const auto& transfer : program.control_transfers) {
+                if (transfer.direct_target_address) {
+                    ++direct_transfer_count;
+                    resolved_direct_transfer_count +=
+                        transfer.direct_target_decoded ? 1U : 0U;
+                }
+                if (transfer.kind ==
+                    openrc::DvpVuControlTransferKind::end_after_delay_slot) {
+                    ++end_transfer_count;
+                }
+            }
+
+            std::cout
+                << "OpenRC DVP VU program report\n"
+                << "Executable:           "
+                << openrc::path_to_utf8(arguments[1]) << '\n'
+                << "Input bytes:          " << program.input_bytes << '\n'
+                << "Overlay chunks:       " << program.code_chunks.size() << '\n'
+                << "Instruction runs:     "
+                << program.instruction_runs.size() << '\n'
+                << "Code bytes:           " << program.total_code_bytes << '\n'
+                << "Instruction pairs:    " << program.instructions.size() << '\n'
+                << "Entrypoints:          ";
+            for (std::size_t index = 0U;
+                 index < program.entrypoints.size();
+                 ++index) {
+                if (index != 0U) {
+                    std::cout << ',';
+                }
+                std::cout << hexadecimal(
+                    program.entrypoints[index].instruction_address, 3);
+            }
+            std::cout
+                << '\n'
+                << "Unknown upper/lower: "
+                << program.unknown_upper_count << '/'
+                << program.unknown_lower_count << '\n'
+                << "Flags I/E/M/D/T:     "
+                << flag_i_count << '/' << flag_e_count << '/'
+                << flag_m_count << '/' << flag_d_count << '/'
+                << flag_t_count << '\n'
+                << "XTOP/XITOP/XGKICK:   "
+                << xtop_count << '/' << xitop_count << '/'
+                << xgkick_count << '\n'
+                << "Vector load/store:   "
+                << vector_load_count << '/' << vector_store_count << '\n'
+                << "Integer load/store:  "
+                << integer_load_count << '/' << integer_store_count << '\n'
+                << "Direct targets:      "
+                << resolved_direct_transfer_count << '/'
+                << direct_transfer_count << " resolved\n"
+                << "Indirect transfers:  "
+                << program.indirect_control_transfer_count << '\n'
+                << "End flags:            " << end_transfer_count << '\n'
+                << "Missing delay slots:  "
+                << program.missing_delay_slot_count << '\n'
+                << "Basic blocks/edges:  "
+                << program.basic_blocks.size() << '/'
+                << program.cfg_edges.size() << '\n';
+
+            std::cout << "\nChunks by VU virtual address:\n";
+            for (const auto& chunk : program.code_chunks) {
+                std::cout
+                    << "  section " << chunk.overlay_section_index
+                    << " vma="
+                    << hexadecimal(chunk.virtual_byte_address, 4)
+                    << " instructions=" << chunk.instruction_count
+                    << " source=" << hexadecimal(chunk.source_range.offset, 8)
+                    << '+' << hexadecimal(chunk.source_range.size) << '\n';
+            }
+            return 0;
+        } catch (const std::exception& error) {
             std::cerr << "error: " << error.what() << '\n';
             return kOperationError;
         }

@@ -20,6 +20,8 @@ This roadmap describes technical milestones rather than release dates.
 - [x] preserve a deterministic manifest containing sizes, extents, and hashes
 - [x] inventory ELF program headers, sections, and embedded DVP/VU overlays
 - [x] parse the DVP overlay table and map every LMA/VMA record to real code
+- [x] decode the confirmed VU microprogram under explicit bounds into neutral
+  typed control-flow/access metadata while preserving raw and unknown data
 - [x] export the boot ELF for analysis
 - [x] establish the PAL v2.00 executable and image as the reference build
 - [x] identify and validate the `DiscTocV1` index used outside regular ISO files

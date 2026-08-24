@@ -39,10 +39,20 @@ not be copied into OpenRC.
 The current WadV1 and PS ADPCM decoders and the 2FIP, boundary-table,
 MapArtV1, PS2D, VAGp, SBlk, SBlk audio-bank, SceneBlockDirectoryV1, and
 SceneBlock VIF/VU processing and phase grouping, DVP overlay-table inventory,
-and CompanionTerminalWadIndexV1 parsers are independent implementations based
-on locally observed behavior, public PS2/binutils documentation, and
+the neutral DVP VU microprogram decoder and control/access inventory, and
+CompanionTerminalWadIndexV1 parsers are independent implementations based on
+locally observed behavior, public PS2/binutils documentation, and
 repository-owned synthetic test vectors; they incorporate no Wrench source
 code.
+
+The GPL-licensed GNU binutils
+[DVP opcode table](https://github.com/ps2dev/binutils-gdb/blob/dvp-v2.45.1/opcodes/dvp-opc.c)
+is used only as a public primary reference for factual instruction names,
+bit-field positions, masks, and encoded values. OpenRC does not copy that table
+or its implementation and does not link against binutils. Its decoder and
+tests are independently written from the public encoding facts, locally
+observed behavior, and original synthetic vectors; no binutils source, binary,
+or game microprogram bytes are distributed in this repository.
 
 ## Trademarks
 

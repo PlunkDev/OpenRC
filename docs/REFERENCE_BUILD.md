@@ -383,13 +383,45 @@ headers plus `0x3A60` bytes of microcode. Its headers encode FLUSHA/MPG and
 successive MPG destinations, while later task code selects MSCAL entries
 2, 6, 8, 10, 14, 16, or 20 from record fields. This is the confirmed SceneBlock
 VU program; overlay groups `57843` and `13859` are separate render passes.
-Every selected entry immediately executes XTOP into `vi14`, then accesses
-the TOP-relative header region including integer loads from qwords 0-4 and
-vector loads from qwords 5-8. Confirmed XGKICK sites establish the eventual GS
-packet boundary. The task's trailing VIF template restores BASE/OFFSET to
-`0/0` and STCYCL to `4/4`; this gives high confidence that steady-state
-SceneBlock TOPS is zero, while the public executor still requires TOPS
-explicitly because first-use ordering has not yet been proved.
+
+The bounded neutral decoder reads each little-endian eight-byte pair as a
+lower word followed by an upper word, retains both raw words, and decodes the
+recognized instruction subset required by this overlay. Unknown upper or lower
+halves remain explicit. It exposes upper I/E/M/D/T flags, typed operands,
+direct and indirect control transfers, VU1-wrapped direct targets, and typed
+data-memory, XTOP, and XGKICK accesses. Instruction names, masks, values,
+and operand fields are checked against the public GNU binutils
+[DVP opcode table](https://github.com/ps2dev/binutils-gdb/blob/dvp-v2.45.1/opcodes/dvp-opc.c).
+
+The real `0x3A60`-byte program contains 1,868 instruction pairs and decodes
+without an unknown half. Only four upper words carry a flag, all `E`; the
+program has no observed `I`, `M`, `D`, or `T` flag. Its control inventory has
+216 direct branches and 23 indirect transfers, all of the latter `JR vi15`.
+Eight direct branches cross the linear zero boundary; applying the VU1
+11-bit instruction-PC wrap (`target_pair & 0x7FF`) places every direct target
+inside the loaded program.
+
+The eight chunks form one continuous decoded instruction run. None of the 243
+control transfers has a missing delay slot, and no instruction-run boundary,
+entrypoint, direct target, or other control transfer lies in one. Under the
+context-insensitive CFG contract this partitions the program into 287 basic
+blocks and 423 edges. `BAL` contributes a call edge while its decoded
+continuation address is kept as metadata rather than added as a speculative
+return edge.
+
+Each selected MSCAL entry is an unconditional dispatcher branch and its single
+branch-delay pair executes the identical `XTOP vi14`. The complete program has
+12 XTOP sites, all targeting `vi14`, and six XGKICK sites, all sourced from
+`vi01`. Its typed memory inventory contains 395 LQ, 94 LQI, 159 ILW, 126 ILWR,
+48 SQ, 192 SQI, 16 ISW, and four ISWR instructions. TOP-relative accesses
+include integer loads from the header region and vector loads from qwords 5-8.
+These are control/access facts only: the decoder does not execute the program,
+name geometry, or interpret the emitted GS packets.
+
+The task's trailing VIF template restores BASE/OFFSET to `0/0` and STCYCL to
+`4/4`; this gives high confidence that steady-state SceneBlock TOPS is zero,
+while the public executor still requires TOPS explicitly because first-use
+ordering has not yet been proved.
 The leading floats and regular packet patterns remain consistent with spatial
 scene records, but the parser still does not label individual blocks as
 terrain, collision, or models.
@@ -588,6 +620,8 @@ section identifiers and record layout follow the public
 The `.DVP.overlay.*` sections in this executable are placeholder ranges, not
 the code source. The image also contains paths such as
 `cdrom0:\DATA\LEVELS\LEVEL`, `cdrom0:\CODE\I5\PARAM.TXT;1`, and the
-`occ_sample_deltas.dat`/`occ_samp.dat` resources. The next Stage 1 target is
-a neutral decoder for the confirmed `55907` VU program and its memory-access
-contract, alongside remaining audio and asset-format work.
+`occ_sample_deltas.dat`/`occ_samp.dat` resources. The confirmed `55907` bytes
+now feed the bounded neutral decoder and its control/access inventory. Relating
+those facts to SceneBlock data and eventual GS output remains future work,
+alongside remaining audio and asset-format analysis; no semantic geometry or
+renderer is claimed at this stage.

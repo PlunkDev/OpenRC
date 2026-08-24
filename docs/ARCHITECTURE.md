@@ -34,6 +34,7 @@ openrc_core
 ├── strict VAGp V1 parsing and bounded mono PCM16 WAV encoding
 ├── SHA-256 and prepared-game manifest
 ├── ELF32/MIPS executable, typed DVP overlay, and IOP/IRX module/import inventory
+├── bounded neutral DVP VU decoding with typed control-flow/access inventory
 ├── application directories
 └── launcher settings
 
@@ -41,7 +42,7 @@ openrc-cli
 ├── disc inspection and inventory
 ├── TOC, WAD/bundle/companion, scene-block/VIF/VU, 2FIP, MapArt, PS2D, VAGp, and SBlk diagnostics
 ├── prepared-game extraction
-└── ELF, DVP overlay, and IOP/IRX inspection and diagnostics
+└── ELF, DVP overlay/VU microprogram, and IOP/IRX inspection and diagnostics
 
 openrc-launcher
 ├── image selection
@@ -86,6 +87,33 @@ The long-term runtime may combine:
 
 The final program must not require a PS2 BIOS or execute through a general PS2
 emulator.
+
+## DVP VU analysis boundary
+
+The neutral DVP VU decoder accepts a bounded ELF byte span and overlay metadata,
+composes non-overlapping code chunks in the VU1 microaddress space, and splits
+each little-endian eight-byte pair into the lower word at offset zero and the
+upper word at offset four. It always preserves both raw words. The result owns
+only metadata and source ranges and retains no input pointers. The recognized
+subset covers the upper and lower encodings required by confirmed SceneBlock
+overlay group `55907`; an unrecognized half remains explicit rather than being
+assigned a guessed instruction.
+
+Decoded metadata includes upper I/E/M/D/T flags, typed operands, VU1-wrapped
+direct branch targets, indirect transfers, and typed VU1 data-memory,
+XTOP, and XGKICK accesses. A derived control-flow inventory exposes those
+relationships without executing the program. Register values, pipeline and
+delay-slot execution, geometry meaning, GS packet interpretation, and rendering
+remain separate future layers.
+
+The current CFG is deliberately context-insensitive and folds each decoded
+delay pair into its transfer block. It rejects an instruction-run start,
+entrypoint, direct target, or another control transfer in a decoded delay slot,
+as well as multiple control effects in one instruction pair. The decoder
+returns an explicit error for those shapes instead of publishing a graph that
+could bypass required delay-slot execution. A direct call has one call edge;
+its decoded continuation address remains metadata rather than a speculative
+return edge.
 
 ## Disc data model
 
