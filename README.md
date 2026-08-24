@@ -55,6 +55,10 @@ Stage 1 is in progress. The repository currently provides:
   instructions required by overlay group `55907`, upper flags and operands,
   wrapped direct-branch targets, and typed control-flow and VU1-memory-access
   inventory including XTOP and XGKICK sites;
+- a bounded functional VU1 execution layer with explicit partially known
+  register/RAM state, paired upper/lower reads, branch and E delay slots,
+  confirmed STATUS/CLIP/Q latencies, conservative VU memory operations, and
+  synchronous bounded XGKICK/GIFtag packet snapshots;
 - recognition of the PAL (`SCES-50916`) reference executable and detection of
   the NTSC-U/C (`SCUS-97199`) release;
 - a native Windows launcher with disc inspection, asynchronous Prepare,
@@ -63,8 +67,8 @@ Stage 1 is in progress. The repository currently provides:
 - synthetic ISO, ELF, SHA-256, disc, WAD, bundle, 2FIP, boundary-table,
   MapArtV1, PS2 save-bundle, PS ADPCM, VAGp, SBlk/audio, scene-block,
   scene-block VIF/VU execution and phase grouping, DVP VU microprogram
-  decoding, companion-WAD-index, and preparation tests that contain no
-  copyrighted game data.
+  decoding/execution, companion-WAD-index, and preparation tests that contain
+  no copyrighted game data.
 
 **Prepare game files** becomes available after the supported reference
 executable is detected. **Play** remains disabled because the native runtime
@@ -112,6 +116,7 @@ build/Debug/openrc-cli.exe twofip local/ratchet-and-clank.iso 100 texture.tga
 build/Debug/openrc-cli.exe prepare local/ratchet-and-clank.iso
 build/Debug/openrc-cli.exe elf path/to/prepared/files/SCES_509.16
 build/Debug/openrc-cli.exe dvp-vu path/to/prepared/files/SCES_509.16 2,6,8,10,14,16,20 11,12,13,14,15,16,17,18
+build/Debug/openrc-cli.exe dvp-vu-run path/to/prepared/files/SCES_509.16 2 11,12,13,14,15,16,17,18 0
 ```
 
 The `wad-bundle` LBA and sector count above identify a container in the exact
@@ -141,13 +146,26 @@ remain unknown. It also reports exact neutral command phases and their
 destination coverage without treating the two corpus-observed phase skeletons
 as an acceptance grammar. It does not yet label those blocks as terrain,
 collision, or models.
-The DVP VU decoder is analysis metadata only: it does not execute a
-microprogram, infer geometry semantics, or provide a renderer.
+The DVP VU layer remains diagnostic rather than a renderer. The decoder owns
+neutral program metadata; the bounded-functional executor can run that program
+from an explicit partially known state, propagate unknown values, execute one
+delay pair, and snapshot bounded GIF packets at XGKICK. It does not infer
+geometry semantics, emulate bit-exact VU floating point or live PATH1
+arbitration, or submit work to a native renderer.
 
 `dvp-vu` accepts comma-separated decimal VU pair addresses and ELF overlay
 section indices, with at most 128 values in either list. The example selects
-the seven confirmed SceneBlock entrypoints and all eight chunks of overlay
-group `55907`.
+seven decoded dispatcher entrypoints and all eight chunks of overlay group
+`55907`. The SceneBlock task is confirmed to call entries
+`6,8,10,14,16,20` in that program; its later MSCAL 2 follows an upload of the
+separate group `903379`.
+
+`dvp-vu-run` is intentionally a microcode-only diagnostic. It supplies the
+requested VIF1 TOP but leaves other registers and RAM indeterminate, stops
+after the first XGKICK, and returns a nonzero code for an indeterminate,
+unsupported, unmapped, or limit termination. The exact SceneBlock task packet,
+static qwords 656-670, and carried state between MSCAL calls are the next
+runtime seam; TOP is never silently substituted with the VIF UNPACK TOPS.
 
 `companion-wads` validates the independent subrange-2 index into that decoded
 buffer, checks every exact WadV1 range and zero alignment gap, and then

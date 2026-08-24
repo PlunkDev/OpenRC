@@ -16,6 +16,7 @@ add_library(openrc_core STATIC
     src/core/disc.cpp
     src/core/disc_toc.cpp
     src/core/dvp_vu.cpp
+    src/core/dvp_vu_execute.cpp
     src/core/elf.cpp
     src/core/hash.cpp
     src/core/iso9660.cpp
@@ -241,6 +242,13 @@ if(OPENRC_BUILD_TESTS)
     target_link_libraries(openrc-dvp-vu-tests PRIVATE openrc_core)
     target_compile_features(openrc-dvp-vu-tests PRIVATE cxx_std_20)
 
+    add_executable(
+        openrc-dvp-vu-execute-tests
+        tests/dvp_vu_execute_tests.cpp
+    )
+    target_link_libraries(openrc-dvp-vu-execute-tests PRIVATE openrc_core)
+    target_compile_features(openrc-dvp-vu-execute-tests PRIVATE cxx_std_20)
+
     add_executable(openrc-hash-tests tests/hash_tests.cpp)
     target_link_libraries(openrc-hash-tests PRIVATE openrc_core)
     target_compile_features(openrc-hash-tests PRIVATE cxx_std_20)
@@ -260,6 +268,7 @@ if(OPENRC_BUILD_TESTS)
     if(MSVC)
         target_compile_options(openrc-elf-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-dvp-vu-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-dvp-vu-execute-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-hash-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-iso9660-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-preparation-tests PRIVATE /W4 /permissive- /utf-8)
@@ -267,6 +276,7 @@ if(OPENRC_BUILD_TESTS)
     else()
         target_compile_options(openrc-elf-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-dvp-vu-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-dvp-vu-execute-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-hash-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-iso9660-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-preparation-tests PRIVATE -Wall -Wextra -Wpedantic)
@@ -275,6 +285,7 @@ if(OPENRC_BUILD_TESTS)
 
     add_test(NAME elf-inspector COMMAND openrc-elf-tests)
     add_test(NAME dvp-vu COMMAND openrc-dvp-vu-tests)
+    add_test(NAME dvp-vu-execute COMMAND openrc-dvp-vu-execute-tests)
     add_test(NAME sha256 COMMAND openrc-hash-tests)
     add_test(NAME iso9660-reader COMMAND openrc-iso9660-tests)
     add_test(NAME preparation COMMAND openrc-preparation-tests)

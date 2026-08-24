@@ -381,8 +381,20 @@ at VU VMAs `0x0000` through `0x3000`, followed by one 0x260-byte chunk at
 `0x3800`. The upload contains exactly `0x3AA` DMA qwords: eight 8-byte VIF
 headers plus `0x3A60` bytes of microcode. Its headers encode FLUSHA/MPG and
 successive MPG destinations, while later task code selects MSCAL entries
-2, 6, 8, 10, 14, 16, or 20 from record fields. This is the confirmed SceneBlock
-VU program; overlay groups `57843` and `13859` are separate render passes.
+6, 8, 10, 14, 16, or 20 from record fields. A later MSCAL 2 occurs only
+after the task uploads the separate overlay group `903379`; although `55907`
+contains a decoded dispatcher at entry 2, this task does not call it there.
+Overlay groups `57843` and `13859` are separate render passes.
+
+Before processing records, the task UNPACKs 15 constant qwords to VU RAM
+`656..670`, executes entry 0, and configures VIF1 `BASE=0, OFFSET=328`.
+Entry 0 establishes the observed control registers and loads qword 664. Each
+record then uses an entry-specific selection of its remainder ranges plus a
+V4_8 tail from section 5; it is not equivalent to executing the complete
+public sections-0-through-4 diagnostic snapshot. TOP/TOPS alternates between
+the two 328-qword input banks and state is carried between calls. Exact task
+packet reconstruction is therefore required before claiming a SceneBlock
+render invocation.
 
 The bounded neutral decoder reads each little-endian eight-byte pair as a
 lower word followed by an upper word, retains both raw words, and decodes the
@@ -401,6 +413,17 @@ Eight direct branches cross the linear zero boundary; applying the VU1
 11-bit instruction-PC wrap (`target_pair & 0x7FF`) places every direct target
 inside the loaded program.
 
+The bounded-functional executor now runs decoded program metadata from an
+explicit partially known state. On the real eight-chunk `55907` program, the
+microcode-only diagnostic reaches normal E termination from decoded entry 2
+after four pairs. Entry 6 advances 20 pairs before stopping at an
+indeterminate memory address when started without the task seed and record
+packet. That stop is intentional evidence of the missing runtime input, not a
+zero-filled guess. The executor models paired pre-state reads, one branch/E
+delay pair, STATUS/CLIP latency 4, Q latency 7, queued stores, and bounded
+synchronous XGKICK/GIFtag snapshots; full FMAC/load scoreboarding and live
+PATH1 transfer remain outside this milestone.
+
 The eight chunks form one continuous decoded instruction run. None of the 243
 control transfers has a missing delay slot, and no instruction-run boundary,
 entrypoint, direct target, or other control transfer lies in one. Under the
@@ -409,7 +432,7 @@ blocks and 423 edges. `BAL` contributes a call edge while its decoded
 continuation address is kept as metadata rather than added as a speculative
 return edge.
 
-Each selected MSCAL entry is an unconditional dispatcher branch and its single
+Each decoded MSCAL entry is an unconditional dispatcher branch and its single
 branch-delay pair executes the identical `XTOP vi14`. The complete program has
 12 XTOP sites, all targeting `vi14`, and six XGKICK sites, all sourced from
 `vi01`. Its typed memory inventory contains 395 LQ, 94 LQI, 159 ILW, 126 ILWR,
@@ -418,10 +441,12 @@ include integer loads from the header region and vector loads from qwords 5-8.
 These are control/access facts only: the decoder does not execute the program,
 name geometry, or interpret the emitted GS packets.
 
-The task's trailing VIF template restores BASE/OFFSET to `0/0` and STCYCL to
-`4/4`; this gives high confidence that steady-state SceneBlock TOPS is zero,
-while the public executor still requires TOPS explicitly because first-use
-ordering has not yet been proved.
+The task's common preamble sets `BASE=0`, `OFFSET=328`, and initial `DBF=0`.
+The first record therefore exposes TOP/TOPS qword 0; subsequent record calls
+alternate the two input banks at qwords 0 and 328 as DBF toggles. The trailing
+batch reset restores BASE/OFFSET to `0/0` and STCYCL to `4/4` only after that
+sequence. Public diagnostics still take TOP/TOPS explicitly so an arbitrary
+call cannot silently assume its position in the carried batch state.
 The leading floats and regular packet patterns remain consistent with spatial
 scene records, but the parser still does not label individual blocks as
 terrain, collision, or models.

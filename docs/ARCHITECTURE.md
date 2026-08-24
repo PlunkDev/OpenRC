@@ -100,11 +100,26 @@ overlay group `55907`; an unrecognized half remains explicit rather than being
 assigned a guessed instruction.
 
 Decoded metadata includes upper I/E/M/D/T flags, typed operands, VU1-wrapped
-direct branch targets, indirect transfers, and typed VU1 data-memory,
-XTOP, and XGKICK accesses. A derived control-flow inventory exposes those
-relationships without executing the program. Register values, pipeline and
-delay-slot execution, geometry meaning, GS packet interpretation, and rendering
-remain separate future layers.
+direct branch targets, indirect transfers, and typed VU1 data-memory, XTOP,
+and XGKICK accesses. A derived control-flow inventory exposes those
+relationships independently of execution.
+
+The bounded-functional VU1 executor consumes only decoded program metadata and
+an owned explicit state. Individual 32-bit values carry a known-bit mask, so
+missing VIF/runtime inputs propagate as indeterminate rather than guessed
+zeroes. Upper and lower halves read the same pre-pair snapshot; direct and
+indirect control flow executes exactly one delay pair, E executes one final
+pair, and the confirmed four-pair STATUS/CLIP and seven-pair Q visibility are
+modeled. Stores are queued, while a diagnostic XGKICK mode commits older
+stores and copies a bounded, VU-RAM-wrapped GIFtag sequence through EOP.
+
+This is not yet a cycle- or bit-exact VU1. General FMAC/load scoreboarding,
+the VU multiplier's exact rounding, live PATH1 arbitration, geometry meaning,
+GS state, and rendering remain future layers. The SceneBlock bridge can replay
+an explicit VIF-write prefix and keeps UNPACK TOPS separate from XTOP, but a
+real task invocation additionally requires its static constant seed, exact
+entry-specific DMA/VIF packet, entry-0 poststate, and carried state between
+records.
 
 The current CFG is deliberately context-insensitive and folds each decoded
 delay pair into its transfer block. It rejects an instruction-run start,

@@ -3,6 +3,7 @@
 #include "openrc/disc.hpp"
 #include "openrc/disc_toc.hpp"
 #include "openrc/dvp_vu.hpp"
+#include "openrc/dvp_vu_execute.hpp"
 #include "openrc/elf.hpp"
 #include "openrc/map_art.hpp"
 #include "openrc/paths.hpp"
@@ -97,6 +98,8 @@ void print_usage() {
         << "  openrc-cli elf <executable>                      Inspect a PlayStation 2 ELF\n"
         << "  openrc-cli dvp-vu <elf> <entry-pairs> <overlay-sections>\n"
         << "                                                    Decode decimal CSV VU/ELF lists\n"
+        << "  openrc-cli dvp-vu-run <elf> <entry-pair> <overlay-sections> <top-qword>\n"
+        << "                                                    Microcode-only run with unknown state\n"
         << "  openrc-cli paths                                 Show application data directories\n"
         << "  openrc-cli help                                  Show this help\n";
 }
@@ -154,6 +157,50 @@ parse_decimal_u16_list(
         return std::nullopt;
     }
     return values;
+}
+
+[[nodiscard]] const char* dvp_vu_termination_name(
+    const openrc::DvpVuTerminationV1 termination) noexcept {
+    switch (termination) {
+    case openrc::DvpVuTerminationV1::program_end:
+        return "program-end";
+    case openrc::DvpVuTerminationV1::stopped_after_xgkick:
+        return "first-xgkick";
+    case openrc::DvpVuTerminationV1::instruction_limit:
+        return "instruction-limit";
+    case openrc::DvpVuTerminationV1::xgkick_event_limit:
+        return "xgkick-event-limit";
+    case openrc::DvpVuTerminationV1::xgkick_tag_limit:
+        return "xgkick-tag-limit";
+    case openrc::DvpVuTerminationV1::xgkick_qword_limit:
+        return "xgkick-qword-limit";
+    case openrc::DvpVuTerminationV1::indeterminate_control:
+        return "indeterminate-control";
+    case openrc::DvpVuTerminationV1::indeterminate_memory_address:
+        return "indeterminate-memory-address";
+    case openrc::DvpVuTerminationV1::unsupported_instruction:
+        return "unsupported-instruction";
+    case openrc::DvpVuTerminationV1::unmapped_instruction:
+        return "unmapped-instruction";
+    }
+    return "unknown";
+}
+
+[[nodiscard]] const char* dvp_vu_warning_name(
+    const openrc::DvpVuExecutionWarningV1 warning) noexcept {
+    switch (warning) {
+    case openrc::DvpVuExecutionWarningV1::host_float_approximation:
+        return "host-float-approximation";
+    case openrc::DvpVuExecutionWarningV1::q_read_before_ready:
+        return "q-read-before-ready";
+    case openrc::DvpVuExecutionWarningV1::
+            forced_store_commit_for_xgkick_snapshot:
+        return "forced-store-commit-for-xgkick-snapshot";
+    case openrc::DvpVuExecutionWarningV1::
+            documented_undefined_e_delay_memory:
+        return "documented-undefined-e-delay-memory";
+    }
+    return "unknown";
 }
 
 [[nodiscard]] std::vector<std::byte> read_bounded_binary_file(
@@ -2200,6 +2247,190 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                     << '+' << hexadecimal(chunk.source_range.size) << '\n';
             }
             return 0;
+        } catch (const std::exception& error) {
+            std::cerr << "error: " << error.what() << '\n';
+            return kOperationError;
+        }
+    }
+
+    if (command == "dvp-vu-run") {
+        if (arguments.size() != 5) {
+            std::cerr
+                << "error: dvp-vu-run expects an executable, one decimal "
+                   "VU pair entrypoint, a decimal CSV overlay-section list, "
+                   "and one decimal VIF1 TOP qword\n";
+            return kUsageError;
+        }
+
+        const auto entrypoint = parse_decimal_argument(arguments[2]);
+        const auto overlay_section_indices =
+            parse_decimal_u16_list(
+                arguments[3], kMaximumCliDvpVuListItems);
+        const auto top_qword = parse_decimal_argument(arguments[4]);
+        if (!entrypoint ||
+            *entrypoint >= openrc::kDvpVu1InstructionCount ||
+            !overlay_section_indices ||
+            !top_qword ||
+            *top_qword >= openrc::kDvpVuDataMemoryQwordCount) {
+            std::cerr
+                << "error: entrypoint must be 0..2047, overlay sections "
+                   "must be a non-empty decimal uint16 CSV list, and TOP "
+                   "must be 0..1023\n";
+            return kUsageError;
+        }
+
+        try {
+            const auto bytes =
+                read_bounded_binary_file(arguments[1], kMaximumCliElfBytes);
+            const auto elf = openrc::inspect_elf(
+                std::span<const std::byte>(bytes));
+            if (!elf.dvp_overlay_table) {
+                throw std::runtime_error(
+                    "The executable has no DVP overlay table");
+            }
+
+            std::vector<openrc::ElfDvpOverlay> selected_overlays;
+            selected_overlays.reserve(overlay_section_indices->size());
+            for (const auto requested_index : *overlay_section_indices) {
+                const auto overlay = std::find_if(
+                    elf.dvp_overlay_table->overlays.begin(),
+                    elf.dvp_overlay_table->overlays.end(),
+                    [requested_index](const openrc::ElfDvpOverlay& candidate) {
+                        return candidate.overlay_section_index ==
+                            requested_index;
+                    });
+                if (overlay == elf.dvp_overlay_table->overlays.end()) {
+                    throw std::runtime_error(
+                        "A requested DVP overlay section was not found");
+                }
+                selected_overlays.push_back(*overlay);
+            }
+
+            const std::array entrypoints{
+                static_cast<std::uint16_t>(*entrypoint)};
+            const auto program = openrc::decode_dvp_vu_program_v1(
+                std::span<const std::byte>(bytes),
+                std::span<const openrc::ElfDvpOverlay>(selected_overlays),
+                std::span<const std::uint16_t>(entrypoints),
+                openrc::DvpVuLimits{
+                    kMaximumCliElfBytes,
+                    kMaximumCliDvpVuListItems,
+                    openrc::kDvpVu1MicroMemoryBytes,
+                    kMaximumCliDvpVuListItems,
+                    2U * openrc::kDvpVu1InstructionCount,
+                    8U * openrc::kDvpVu1InstructionCount,
+                });
+
+            auto initial_state = openrc::make_dvp_vu_execution_state_v1();
+            initial_state.xtop_qword = openrc::DvpVuWordV1{
+                static_cast<std::uint32_t>(*top_qword),
+                0xffffffffU,
+            };
+            const auto execution = openrc::execute_dvp_vu_program_v1(
+                program,
+                std::move(initial_state),
+                openrc::DvpVuExecutionOptionsV1{
+                    static_cast<std::uint16_t>(*entrypoint),
+                    true,
+                },
+                openrc::DvpVuExecutionLimitsV1{
+                    1'000'000U,
+                    64U,
+                    1024U,
+                    65'536U,
+                });
+
+            std::cout
+                << "OpenRC bounded DVP VU1 execution\n"
+                << "Executable:           "
+                << openrc::path_to_utf8(arguments[1]) << '\n'
+                << "Entrypoint pair:      "
+                << hexadecimal(*entrypoint, 3) << '\n'
+                << "VIF1 TOP qword:       " << *top_qword << '\n'
+                << "Initial state:        registers/RAM indeterminate\n"
+                << "Timing model:         bounded-functional-v1\n"
+                << "Termination:          "
+                << dvp_vu_termination_name(execution.termination) << '\n'
+                << "Executed pairs:       "
+                << execution.executed_instruction_pairs << '\n'
+                << "Final PC:             "
+                << hexadecimal(execution.final_state.pc, 3) << '\n';
+            if (execution.stopped_instruction_address) {
+                std::cout
+                    << "Stopped instruction: "
+                    << hexadecimal(
+                        *execution.stopped_instruction_address, 3)
+                    << '\n';
+            }
+            std::cout
+                << "XGKICK events:        "
+                << execution.xgkick_events.size() << '\n'
+                << "Warnings:             ";
+            if (execution.warnings.empty()) {
+                std::cout << "none";
+            } else {
+                for (std::size_t index = 0U;
+                     index < execution.warnings.size();
+                     ++index) {
+                    if (index != 0U) {
+                        std::cout << ',';
+                    }
+                    std::cout
+                        << dvp_vu_warning_name(execution.warnings[index]);
+                }
+            }
+            std::cout << '\n';
+
+            for (std::size_t event_index = 0U;
+                 event_index < execution.xgkick_events.size();
+                 ++event_index) {
+                const auto& event = execution.xgkick_events[event_index];
+                std::cout
+                    << "\nXGKICK " << event_index
+                    << " pc="
+                    << hexadecimal(event.instruction_address, 3)
+                    << " base=";
+                if ((event.base_qword.known_mask & 0x03ffU) == 0x03ffU) {
+                    std::cout << (event.base_qword.bits & 0x03ffU);
+                } else {
+                    std::cout << "indeterminate";
+                }
+                std::cout
+                    << " qwords=" << event.packet_qwords.size()
+                    << " tags=" << event.tags.size()
+                    << " complete="
+                    << (event.packet_complete ? "yes" : "no")
+                    << " indeterminate-tag="
+                    << (event.encountered_indeterminate_tag ? "yes" : "no")
+                    << " wrapped="
+                    << (event.wrapped_memory ? "yes" : "no")
+                    << '\n';
+                for (std::size_t tag_index = 0U;
+                     tag_index < event.tags.size();
+                     ++tag_index) {
+                    const auto& tag = event.tags[tag_index];
+                    std::cout
+                        << "  tag " << tag_index
+                        << " memory=" << tag.memory_qword
+                        << " nloop=" << tag.tag.nloop
+                        << " eop=" << (tag.tag.eop ? 1 : 0)
+                        << " flg="
+                        << static_cast<unsigned int>(tag.tag.format)
+                        << " nreg="
+                        << static_cast<unsigned int>(
+                               tag.tag.register_count)
+                        << " payload-qwords="
+                        << tag.tag.payload_qword_count
+                        << '\n';
+                }
+            }
+
+            const bool successful =
+                execution.termination ==
+                    openrc::DvpVuTerminationV1::program_end ||
+                execution.termination ==
+                    openrc::DvpVuTerminationV1::stopped_after_xgkick;
+            return successful ? 0 : kOperationError;
         } catch (const std::exception& error) {
             std::cerr << "error: " << error.what() << '\n';
             return kOperationError;
