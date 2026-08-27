@@ -19,6 +19,7 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -46,10 +47,13 @@ enum class PreparationOutcome {
 };
 
 struct PreparationOperation {
-    explicit PreparationOperation(const std::uint32_t operation_id)
-        : id(operation_id) {}
+    PreparationOperation(
+        const std::uint32_t operation_id,
+        std::filesystem::path source_image_path)
+        : id(operation_id), image_path(std::move(source_image_path)) {}
 
     const std::uint32_t id;
+    const std::filesystem::path image_path;
     std::mutex mutex;
     openrc::PreparationProgress latest_progress;
     bool has_progress = false;
@@ -60,6 +64,11 @@ struct PreparationOperation {
     std::string error_message;
 };
 
+struct ReadyGame {
+    std::filesystem::path image_path;
+    openrc::PreparationResult preparation;
+};
+
 HWND g_iso_edit = nullptr;
 HWND g_extract_button = nullptr;
 HWND g_play_button = nullptr;
@@ -67,6 +76,7 @@ HWND g_status_label = nullptr;
 HWND g_report_edit = nullptr;
 
 std::optional<std::filesystem::path> g_inspected_iso;
+std::optional<ReadyGame> g_ready_game;
 std::shared_ptr<PreparationOperation> g_preparation_operation;
 std::jthread g_preparation_worker;
 std::uint32_t g_next_operation_id = 1;
@@ -157,6 +167,7 @@ void set_report(const std::wstring& text) {
 
 void invalidate_inspected_iso() {
     g_inspected_iso.reset();
+    g_ready_game.reset();
     EnableWindow(g_extract_button, FALSE);
     EnableWindow(g_play_button, FALSE);
 }
@@ -216,6 +227,8 @@ void start_preparation(const HWND window) {
         return;
     }
 
+    g_ready_game.reset();
+
     std::filesystem::path games_directory;
     try {
         games_directory = openrc::application_paths().local_data / L"games";
@@ -226,7 +239,9 @@ void start_preparation(const HWND window) {
     }
 
     const auto image_path = *g_inspected_iso;
-    auto operation = std::make_shared<PreparationOperation>(next_operation_id());
+    auto operation = std::make_shared<PreparationOperation>(
+        next_operation_id(),
+        image_path);
     g_preparation_operation = operation;
     set_preparation_controls(window, true);
     set_status(L"Preparing game files...");
@@ -347,6 +362,7 @@ void finish_preparation(const HWND window, const std::uint32_t operation_id) {
 
     set_preparation_controls(window, false);
     if (outcome == PreparationOutcome::succeeded && result) {
+        g_ready_game = ReadyGame{operation->image_path, *result};
         std::wostringstream report;
         report << (result->already_prepared
                        ? L"Game files were already prepared."
@@ -359,6 +375,7 @@ void finish_preparation(const HWND window, const std::uint32_t operation_id) {
         set_status(result->already_prepared
             ? L"Game files are ready."
             : L"Game files prepared successfully.");
+        EnableWindow(g_play_button, TRUE);
     } else if (outcome == PreparationOutcome::cancelled) {
         set_status(L"Game-file preparation cancelled.");
         set_report(L"Preparation was cancelled. No partial installation was activated.");
@@ -366,7 +383,6 @@ void finish_preparation(const HWND window, const std::uint32_t operation_id) {
         set_status(L"Game-file preparation failed.");
         set_report(to_wide(std::string("Error: ") + error_message));
     }
-    EnableWindow(g_play_button, FALSE);
 }
 
 void poll_preparation(const HWND window) {
@@ -423,15 +439,28 @@ void inspect_selected_iso() {
     set_status(L"Inspecting disc image...");
     invalidate_inspected_iso();
 
+    std::error_code filesystem_error;
+    auto image_path = std::filesystem::absolute(
+        std::filesystem::path(path_text),
+        filesystem_error);
+    if (filesystem_error) {
+        set_status(L"Disc inspection failed.");
+        set_report(to_wide(
+            std::string("Error: Cannot make the ISO path absolute: ") +
+            filesystem_error.message()));
+        return;
+    }
+    image_path = image_path.lexically_normal();
+
     std::string settings_warning;
     try {
-        save_selected_iso();
+        openrc::save_launcher_settings(openrc::LauncherSettings{image_path});
     } catch (const std::exception& error) {
         settings_warning = std::string("Could not save launcher settings: ") + error.what();
     }
 
     try {
-        const auto report = openrc::inspect_disc(std::filesystem::path(path_text));
+        const auto report = openrc::inspect_disc(image_path);
         auto report_text = to_wide(openrc::format_disc_report(report));
         for (std::size_t position = 0; (position = report_text.find(L'\n', position)) != std::wstring::npos;) {
             report_text.replace(position, 1, L"\r\n");
@@ -443,7 +472,7 @@ void inspect_selected_iso() {
         set_report(report_text);
 
         if (report.supported_build) {
-            g_inspected_iso = std::filesystem::path(path_text);
+            g_inspected_iso = image_path;
             EnableWindow(g_extract_button, TRUE);
             set_status(L"Supported Ratchet & Clank executable detected. Click Prepare game files.");
         } else {
@@ -456,6 +485,198 @@ void inspect_selected_iso() {
             error_text += "\n" + settings_warning;
         }
         set_report(to_wide(error_text));
+    }
+}
+
+[[nodiscard]] std::wstring windows_error_text(const DWORD error_code) {
+    wchar_t* message_buffer = nullptr;
+    const auto character_count = FormatMessageW(
+        FORMAT_MESSAGE_ALLOCATE_BUFFER |
+            FORMAT_MESSAGE_FROM_SYSTEM |
+            FORMAT_MESSAGE_IGNORE_INSERTS,
+        nullptr,
+        error_code,
+        0,
+        reinterpret_cast<wchar_t*>(&message_buffer),
+        0,
+        nullptr);
+
+    std::wstring result;
+    if (character_count != 0 && message_buffer != nullptr) {
+        result.assign(message_buffer, character_count);
+        LocalFree(message_buffer);
+        while (!result.empty() &&
+               (result.back() == L'\r' || result.back() == L'\n' ||
+                result.back() == L' ' || result.back() == L'\t')) {
+            result.pop_back();
+        }
+    }
+    if (result.empty()) {
+        result = L"Windows error " + std::to_wstring(error_code);
+    }
+    return result;
+}
+
+[[nodiscard]] std::filesystem::path launcher_executable_path() {
+    std::vector<wchar_t> buffer(512U, L'\0');
+    for (;;) {
+        const auto character_count = GetModuleFileNameW(
+            nullptr,
+            buffer.data(),
+            static_cast<DWORD>(buffer.size()));
+        if (character_count == 0) {
+            const auto error_code = GetLastError();
+            throw std::runtime_error(
+                "Cannot determine the launcher executable path (Windows error " +
+                std::to_string(error_code) + ")");
+        }
+        if (character_count < buffer.size()) {
+            return std::filesystem::path(
+                std::wstring(buffer.data(), character_count));
+        }
+        if (buffer.size() >= 32768U) {
+            throw std::runtime_error("The launcher executable path is too long");
+        }
+        buffer.resize(std::min<std::size_t>(buffer.size() * 2U, 32768U));
+    }
+}
+
+[[nodiscard]] std::wstring quote_windows_argument(const std::wstring_view argument) {
+    std::wstring result;
+    result.push_back(L'"');
+
+    std::size_t backslash_count = 0;
+    for (const auto character : argument) {
+        if (character == L'\\') {
+            ++backslash_count;
+            continue;
+        }
+        if (character == L'"') {
+            result.append(backslash_count * 2U + 1U, L'\\');
+            result.push_back(L'"');
+            backslash_count = 0;
+            continue;
+        }
+        result.append(backslash_count, L'\\');
+        backslash_count = 0;
+        result.push_back(character);
+    }
+
+    result.append(backslash_count * 2U, L'\\');
+    result.push_back(L'"');
+    return result;
+}
+
+[[nodiscard]] std::wstring make_runtime_command_line(
+    const std::filesystem::path& runtime_path,
+    const ReadyGame& ready_game) {
+    const std::vector<std::wstring> arguments{
+        runtime_path.wstring(),
+        L"--disc-image",
+        ready_game.image_path.wstring(),
+        L"--boot-executable",
+        ready_game.preparation.boot_executable_path.wstring(),
+        L"--level",
+        L"0",
+        L"--record",
+        L"0",
+        L"--entry-pair",
+        L"16",
+    };
+
+    std::wstring command_line;
+    for (const auto& argument : arguments) {
+        if (!command_line.empty()) {
+            command_line.push_back(L' ');
+        }
+        command_line += quote_windows_argument(argument);
+    }
+    return command_line;
+}
+
+void launch_runtime() {
+    if (!g_ready_game) {
+        set_status(L"Prepare the game files before starting OpenRC.");
+        set_report(L"No verified prepared game is currently selected.");
+        return;
+    }
+
+    try {
+        std::error_code filesystem_error;
+        if (!std::filesystem::is_regular_file(
+                g_ready_game->image_path,
+                filesystem_error) ||
+            filesystem_error) {
+            set_status(L"The selected disc image is no longer available.");
+            set_report(L"Select and inspect the disc image again before starting OpenRC.");
+            invalidate_inspected_iso();
+            return;
+        }
+
+        filesystem_error.clear();
+        if (!std::filesystem::is_regular_file(
+                g_ready_game->preparation.boot_executable_path,
+                filesystem_error) ||
+            filesystem_error) {
+            set_status(L"The prepared game files are no longer available.");
+            set_report(L"Prepare the game files again before starting OpenRC.");
+            g_ready_game.reset();
+            EnableWindow(g_play_button, FALSE);
+            return;
+        }
+
+        const auto runtime_path =
+            launcher_executable_path().parent_path() / L"openrc-runtime.exe";
+        filesystem_error.clear();
+        if (!std::filesystem::is_regular_file(runtime_path, filesystem_error) ||
+            filesystem_error) {
+            set_status(L"OpenRC runtime was not found.");
+            set_report(
+                L"Expected runtime executable:\r\n" + runtime_path.wstring());
+            return;
+        }
+
+        auto command_line = make_runtime_command_line(runtime_path, *g_ready_game);
+        if (command_line.size() >= 32767U) {
+            set_status(L"Could not start OpenRC runtime.");
+            set_report(L"The runtime command line exceeds the Windows length limit.");
+            return;
+        }
+        std::vector<wchar_t> mutable_command_line(
+            command_line.begin(),
+            command_line.end());
+        mutable_command_line.push_back(L'\0');
+
+        STARTUPINFOW startup_info{};
+        startup_info.cb = sizeof(startup_info);
+        PROCESS_INFORMATION process_info{};
+        const auto runtime_directory = runtime_path.parent_path();
+        if (CreateProcessW(
+                runtime_path.c_str(),
+                mutable_command_line.data(),
+                nullptr,
+                nullptr,
+                FALSE,
+                0,
+                nullptr,
+                runtime_directory.c_str(),
+                &startup_info,
+                &process_info) == FALSE) {
+            const auto error_code = GetLastError();
+            set_status(L"Could not start OpenRC runtime.");
+            set_report(
+                L"Windows could not start:\r\n" + runtime_path.wstring() +
+                L"\r\n\r\nError: " + windows_error_text(error_code));
+            return;
+        }
+
+        CloseHandle(process_info.hThread);
+        CloseHandle(process_info.hProcess);
+        set_status(L"OpenRC runtime started.");
+        set_report(L"The native runtime was started in a separate process.");
+    } catch (const std::exception& error) {
+        set_status(L"Could not start OpenRC runtime.");
+        set_report(to_wide(std::string("Error: ") + error.what()));
     }
 }
 
@@ -672,6 +893,9 @@ LRESULT CALLBACK window_procedure(
             } else {
                 start_preparation(window);
             }
+            return 0;
+        case kPlayButton:
+            launch_runtime();
             return 0;
         case kOpenDataButton:
             open_data_directory(window);

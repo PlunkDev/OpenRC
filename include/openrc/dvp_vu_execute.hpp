@@ -106,6 +106,11 @@ struct DvpVuGifTagV1 {
     std::uint8_t format = 0U;
     std::uint8_t register_count = 0U;
     std::uint64_t payload_qword_count = 0U;
+    // GIFtag REGS descriptors, in transmission order. Only the leading
+    // register_count entries are active. The descriptors occupy the upper
+    // 64 bits of the tag and may independently be indeterminate.
+    std::array<std::uint8_t, 16U> registers{};
+    bool registers_known = false;
 
     [[nodiscard]] bool operator==(const DvpVuGifTagV1&) const = default;
 };
@@ -113,6 +118,8 @@ struct DvpVuGifTagV1 {
 struct DvpVuXgkickTagV1 {
     std::uint16_t memory_qword = 0U;
     DvpVuGifTagV1 tag;
+    // Index of the tag qword in DvpVuXgkickEventV1::packet_qwords.
+    std::uint64_t packet_qword_index = 0U;
 };
 
 struct DvpVuXgkickEventV1 {
@@ -164,6 +171,16 @@ public:
 // Returns an indeterminate state with only the architectural VI0 and VF0
 // constants initialized.
 [[nodiscard]] DvpVuExecutionStateV1 make_dvp_vu_execution_state_v1();
+
+// Replays one exact ordered write range into an existing VU state. All
+// metadata and limits are validated before the first destination is changed,
+// so malformed input cannot leave a partially updated state.
+void apply_scene_block_dvp_vu_writes_v1(
+    DvpVuExecutionStateV1& state,
+    const SceneBlockVuSnapshotV1& snapshot,
+    std::uint64_t first_write_index,
+    std::uint64_t write_count,
+    SceneBlockDvpVuBridgeLimitsV1 limits);
 
 // Replays exactly the requested prefix of VIF writes into owned VU1 memory.
 // The caller still selects the MSCAL entrypoint and supplies TOP explicitly;

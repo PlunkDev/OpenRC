@@ -46,16 +46,27 @@ This roadmap describes technical milestones rather than release dates.
 - [x] expose the bounded VIF stream spanning scene-block sections 0-4
 - [x] execute its bounded UNPACK writes into a conservative neutral VU1 snapshot
 - [x] group VIF/VU commands into exact neutral phases with inherited state
+- [x] reconstruct the exact SceneBlock task preamble and entry-specific packet
+- [x] carry VIF/VU state across the double-buffered 328-qword input banks
+- [x] identify and upload the caller's four-qword frame transform to both banks
+- [x] execute a real record through normal VU termination and complete XGKICKs
+- [x] decode ordered GIF/GS state into known vertices and emitted primitives
+- [x] export the first auto-fit wireframe preview from real scene-block geometry
 - [x] validate the companion index for the shared terminal WadV1 bank
 - [ ] identify the semantic formats inside decoded WAD payloads
 - [ ] inventory R5900, VU0, VU1, IOP, GS, and system-call boundaries
 
 ## Stage 2 — Native level viewer
 
-- parse terrain, collision, instances, models, and textures
-- render Veldin in a native window
-- add free camera and debug visualization
-- compare geometry and transforms with reference captures
+- [x] bind a prepared ELF back to the selected ISO before native execution
+- [x] open a D3D11 window and submit the first decoded SceneBlock triangle batch
+- [x] connect launcher Play to the adjacent native runtime
+- [x] recover entry-16 source XYZ through the game's descriptor/index stream
+- [x] add an isolated debug orbit and decoded-GS comparison view
+- [ ] recover the original per-frame camera transform from its EE caller
+- [ ] parse terrain, collision, instances, models, and textures
+- [ ] render a classified, textured Veldin scene in a native window
+- [ ] compare geometry and transforms with reference captures
 
 ## Stage 3 — First playable vertical slice
 

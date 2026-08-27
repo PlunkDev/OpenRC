@@ -283,6 +283,66 @@ void test_zero_cycle_fields() {
            "raw WL zero did not expand to 256");
 }
 
+void test_inherited_cycle_state_and_validation() {
+    std::vector<std::byte> bytes;
+    append_le32(bytes, make_code(0x8005U, 6U, 0x6eU));
+    // Inherited CL=2/WL=4 consumes four V4_8 vectors for six outputs.
+    append_payload(bytes, 16U, 0x91U);
+    const auto inherited = openrc::parse_scene_block_vif_stream_v1(
+        bytes,
+        openrc::SceneBlockVifCycleStateV1{2U, 4U},
+        kGenerousLimits);
+    expect(inherited.initial_cycle_length == 2U &&
+               inherited.initial_write_length == 4U &&
+               inherited.final_cycle_length == 2U &&
+               inherited.final_write_length == 4U,
+           "inherited STCYCL metadata was not preserved");
+    expect(inherited.commands.size() == 1U &&
+               inherited.commands[0U].output_vector_count == 6U &&
+               inherited.commands[0U].input_vector_count == 4U &&
+               inherited.commands[0U].payload_data_bytes == 16U,
+           "inherited STCYCL did not control the first UNPACK payload");
+
+    std::vector<std::byte> overridden;
+    append_le32(overridden, make_code(0x0101U, 0U, 0x01U));
+    append_le32(overridden, make_code(0x8005U, 1U, 0x6eU));
+    append_payload(overridden, 4U, 0xa1U);
+    const auto override_report = openrc::parse_scene_block_vif_stream_v1(
+        overridden,
+        openrc::SceneBlockVifCycleStateV1{2U, 4U},
+        kGenerousLimits);
+    expect(override_report.initial_cycle_length == 2U &&
+               override_report.initial_write_length == 4U &&
+               override_report.final_cycle_length == 1U &&
+               override_report.final_write_length == 1U &&
+               override_report.commands[1U].input_vector_count == 1U,
+           "an explicit STCYCL did not override inherited state");
+
+    std::vector<std::byte> zero_cycle;
+    append_le32(zero_cycle, make_code(0x8005U, 4U, 0x6eU));
+    const auto zero_report = openrc::parse_scene_block_vif_stream_v1(
+        zero_cycle,
+        openrc::SceneBlockVifCycleStateV1{0U, 256U},
+        kGenerousLimits);
+    expect(zero_report.commands[0U].input_vector_count == 0U &&
+               zero_report.commands[0U].payload_data_bytes == 0U,
+           "inherited raw CL zero unexpectedly consumed input");
+
+    std::vector<std::byte> nop;
+    append_le32(nop, make_code(0U, 0U, 0x00U));
+    for (const auto invalid : std::array<openrc::SceneBlockVifCycleStateV1, 3U>{
+             openrc::SceneBlockVifCycleStateV1{256U, 1U},
+             openrc::SceneBlockVifCycleStateV1{1U, 0U},
+             openrc::SceneBlockVifCycleStateV1{1U, 257U}}) {
+        expect_vif_error(
+            [&] {
+                (void)openrc::parse_scene_block_vif_stream_v1(
+                    nop, invalid, kGenerousLimits);
+            },
+            "invalid inherited STCYCL state was accepted");
+    }
+}
+
 void test_mandatory_and_aggregate_limits() {
     const auto bytes = valid_all_command_stream();
     for (const auto limits : std::array<openrc::SceneBlockVifLimits, 3U>{
@@ -428,6 +488,7 @@ int main() {
         test_all_commands_ranges_and_accounting();
         test_fill_cycle_and_num_zero();
         test_zero_cycle_fields();
+        test_inherited_cycle_state_and_validation();
         test_mandatory_and_aggregate_limits();
         test_opcode_and_reserved_field_rejections();
         test_truncation_overshoot_and_padding_rejections();

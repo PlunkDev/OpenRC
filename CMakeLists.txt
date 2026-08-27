@@ -9,6 +9,12 @@ project(
 
 option(OPENRC_BUILD_TESTS "Build OpenRC tests" ON)
 option(OPENRC_BUILD_LAUNCHER "Build the graphical launcher" ON)
+option(OPENRC_BUILD_RUNTIME "Build the native Windows runtime" ON)
+option(
+    OPENRC_STATIC_MINGW_RUNTIME
+    "Statically link the MinGW C++ and unwind runtimes into executables"
+    ON
+)
 
 add_library(openrc_core STATIC
     src/core/boundary_table.cpp
@@ -18,6 +24,7 @@ add_library(openrc_core STATIC
     src/core/dvp_vu.cpp
     src/core/dvp_vu_execute.cpp
     src/core/elf.cpp
+    src/core/gif_gs.cpp
     src/core/hash.cpp
     src/core/iso9660.cpp
     src/core/map_art.cpp
@@ -26,6 +33,10 @@ add_library(openrc_core STATIC
     src/core/ps_adpcm.cpp
     src/core/ps2_save_bundle.cpp
     src/core/scene_block_directory.cpp
+    src/core/scene_block_geometry.cpp
+    src/core/scene_block_runtime.cpp
+    src/core/scene_block_task.cpp
+    src/core/scene_block_task_execute.cpp
     src/core/scene_block_vif.cpp
     src/core/scene_block_vu.cpp
     src/core/scene_block_vu_phase.cpp
@@ -93,6 +104,38 @@ if(OPENRC_BUILD_LAUNCHER)
     endif()
 endif()
 
+if(OPENRC_BUILD_RUNTIME AND WIN32)
+    add_executable(openrc-runtime WIN32
+        src/runtime/windows_main.cpp
+        src/runtime/d3d11_renderer.cpp
+        src/runtime/scene_geometry.cpp
+        src/runtime/openrc-runtime.manifest
+    )
+    target_compile_definitions(openrc-runtime PRIVATE
+        UNICODE
+        _UNICODE
+        NOMINMAX
+        WIN32_LEAN_AND_MEAN
+    )
+    target_link_libraries(openrc-runtime PRIVATE
+        openrc_core
+        d3d11
+        dxgi
+        shell32
+        user32
+        gdi32
+    )
+    target_compile_features(openrc-runtime PRIVATE cxx_std_20)
+    if(MINGW)
+        target_link_options(openrc-runtime PRIVATE -municode)
+    endif()
+    if(MSVC)
+        target_compile_options(openrc-runtime PRIVATE /W4 /permissive- /utf-8)
+    else()
+        target_compile_options(openrc-runtime PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+endif()
+
 if(OPENRC_BUILD_TESTS)
     include(CTest)
     add_executable(openrc-disc-tests tests/disc_tests.cpp)
@@ -151,6 +194,20 @@ if(OPENRC_BUILD_TESTS)
     target_compile_features(openrc-scene-block-directory-tests PRIVATE cxx_std_20)
 
     add_executable(
+        openrc-scene-block-task-tests
+        tests/scene_block_task_tests.cpp
+    )
+    target_link_libraries(openrc-scene-block-task-tests PRIVATE openrc_core)
+    target_compile_features(openrc-scene-block-task-tests PRIVATE cxx_std_20)
+
+    add_executable(
+        openrc-scene-block-task-execute-tests
+        tests/scene_block_task_execute_tests.cpp
+    )
+    target_link_libraries(openrc-scene-block-task-execute-tests PRIVATE openrc_core)
+    target_compile_features(openrc-scene-block-task-execute-tests PRIVATE cxx_std_20)
+
+    add_executable(
         openrc-scene-block-vif-tests
         tests/scene_block_vif_tests.cpp
     )
@@ -192,6 +249,8 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-sblk-audio-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-vagp-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-scene-block-directory-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-scene-block-task-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-scene-block-task-execute-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-scene-block-vif-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-scene-block-vu-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-scene-block-vu-phase-tests PRIVATE /W4 /permissive- /utf-8)
@@ -210,6 +269,8 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-sblk-audio-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-vagp-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-scene-block-directory-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-scene-block-task-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-scene-block-task-execute-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-scene-block-vif-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-scene-block-vu-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-scene-block-vu-phase-tests PRIVATE -Wall -Wextra -Wpedantic)
@@ -229,6 +290,8 @@ if(OPENRC_BUILD_TESTS)
     add_test(NAME sblk-audio COMMAND openrc-sblk-audio-tests)
     add_test(NAME vagp COMMAND openrc-vagp-tests)
     add_test(NAME scene-block-directory COMMAND openrc-scene-block-directory-tests)
+    add_test(NAME scene-block-task COMMAND openrc-scene-block-task-tests)
+    add_test(NAME scene-block-task-execute COMMAND openrc-scene-block-task-execute-tests)
     add_test(NAME scene-block-vif COMMAND openrc-scene-block-vif-tests)
     add_test(NAME scene-block-vu COMMAND openrc-scene-block-vu-tests)
     add_test(NAME scene-block-vu-phase COMMAND openrc-scene-block-vu-phase-tests)
@@ -248,6 +311,34 @@ if(OPENRC_BUILD_TESTS)
     )
     target_link_libraries(openrc-dvp-vu-execute-tests PRIVATE openrc_core)
     target_compile_features(openrc-dvp-vu-execute-tests PRIVATE cxx_std_20)
+
+    add_executable(openrc-gif-gs-tests tests/gif_gs_tests.cpp)
+    target_link_libraries(openrc-gif-gs-tests PRIVATE openrc_core)
+    target_compile_features(openrc-gif-gs-tests PRIVATE cxx_std_20)
+
+    add_executable(
+        openrc-scene-block-geometry-tests
+        tests/scene_block_geometry_tests.cpp
+    )
+    target_link_libraries(openrc-scene-block-geometry-tests PRIVATE openrc_core)
+    target_compile_features(
+        openrc-scene-block-geometry-tests
+        PRIVATE
+        cxx_std_20
+    )
+
+    add_executable(
+        openrc-scene-geometry-tests
+        tests/scene_geometry_tests.cpp
+        src/runtime/scene_geometry.cpp
+    )
+    target_include_directories(
+        openrc-scene-geometry-tests
+        PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/runtime"
+    )
+    target_link_libraries(openrc-scene-geometry-tests PRIVATE openrc_core)
+    target_compile_features(openrc-scene-geometry-tests PRIVATE cxx_std_20)
 
     add_executable(openrc-hash-tests tests/hash_tests.cpp)
     target_link_libraries(openrc-hash-tests PRIVATE openrc_core)
@@ -269,6 +360,9 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-elf-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-dvp-vu-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-dvp-vu-execute-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-gif-gs-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-scene-block-geometry-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-scene-geometry-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-hash-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-iso9660-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-preparation-tests PRIVATE /W4 /permissive- /utf-8)
@@ -277,6 +371,9 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-elf-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-dvp-vu-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-dvp-vu-execute-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-gif-gs-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-scene-block-geometry-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-scene-geometry-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-hash-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-iso9660-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-preparation-tests PRIVATE -Wall -Wextra -Wpedantic)
@@ -286,8 +383,29 @@ if(OPENRC_BUILD_TESTS)
     add_test(NAME elf-inspector COMMAND openrc-elf-tests)
     add_test(NAME dvp-vu COMMAND openrc-dvp-vu-tests)
     add_test(NAME dvp-vu-execute COMMAND openrc-dvp-vu-execute-tests)
+    add_test(NAME gif-gs COMMAND openrc-gif-gs-tests)
+    add_test(NAME scene-block-geometry COMMAND openrc-scene-block-geometry-tests)
+    add_test(NAME scene-geometry COMMAND openrc-scene-geometry-tests)
     add_test(NAME sha256 COMMAND openrc-hash-tests)
     add_test(NAME iso9660-reader COMMAND openrc-iso9660-tests)
     add_test(NAME preparation COMMAND openrc-preparation-tests)
     add_test(NAME settings-migration COMMAND openrc-settings-tests)
+endif()
+
+# LLVM-MinGW otherwise leaves every executable dependent on libc++.dll and
+# libunwind.dll from the compiler directory. Keeping the runtime static makes
+# local builds and the launcher directly runnable without modifying PATH or
+# distributing architecture-specific compiler DLLs beside each executable.
+if(MINGW AND OPENRC_STATIC_MINGW_RUNTIME)
+    get_property(
+        openrc_directory_targets
+        DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        PROPERTY BUILDSYSTEM_TARGETS
+    )
+    foreach(openrc_target IN LISTS openrc_directory_targets)
+        get_target_property(openrc_target_type "${openrc_target}" TYPE)
+        if(openrc_target_type STREQUAL "EXECUTABLE")
+            target_link_options("${openrc_target}" PRIVATE -static)
+        endif()
+    endforeach()
 endif()

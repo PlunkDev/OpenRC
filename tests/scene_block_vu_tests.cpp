@@ -243,6 +243,74 @@ void test_control_state_and_empty_memory() {
     }
 }
 
+void test_continuation_inherits_complete_vif_state() {
+    std::vector<std::byte> setup;
+    append_stcycl(setup, 2U, 4U);
+    append_stmod(setup, openrc::SceneBlockVuAdditionMode::offset);
+    append_strow(setup, {10U, 20U, 30U, 40U});
+    const auto first = openrc::execute_scene_block_vu_v1(
+        setup,
+        openrc::SceneBlockVuExecutionOptionsV1{328U},
+        kGenerousLimits);
+
+    std::vector<std::byte> continuation;
+    append_unpack_code(
+        continuation,
+        openrc::SceneBlockVifOpcode::unpack_v4_8,
+        5U,
+        6U,
+        true,
+        true);
+    const auto data = payload8({
+        1U, 2U, 3U, 4U,
+        5U, 6U, 7U, 8U,
+        9U, 10U, 11U, 12U,
+        13U, 14U, 15U, 16U,
+    });
+    continuation.insert(continuation.end(), data.begin(), data.end());
+
+    const auto second = openrc::execute_scene_block_vu_from_state_v1(
+        continuation,
+        first.final_state,
+        kGenerousLimits);
+    expect(second.initial_state.tops_qword == 328U &&
+               second.initial_state.cycle_length == 2U &&
+               second.initial_state.write_length == 4U &&
+               second.initial_state.addition_mode ==
+                   openrc::SceneBlockVuAdditionMode::offset &&
+               second.initial_state.row == first.final_state.row,
+           "continuation snapshot did not preserve its complete initial state");
+    expect(second.stream.initial_cycle_length == 2U &&
+               second.stream.initial_write_length == 4U &&
+               second.writes.size() == 6U,
+           "continuation parser did not inherit STCYCL");
+    expect(second.writes[0U].destination_qword == 333U &&
+               second.writes[5U].destination_qword == 338U,
+           "continuation did not apply inherited TOPS");
+    expect_known_vector(
+        second.memory[333U].lanes,
+        {11U, 22U, 33U, 44U},
+        "continuation did not apply inherited ROW in offset mode");
+    expect_indeterminate_vector(
+        second.memory[335U].lanes,
+        "fill-generated continuation vector should remain indeterminate");
+    expect(second.final_state.cycle_length == 2U &&
+               second.final_state.write_length == 4U &&
+               second.final_state.addition_mode ==
+                   openrc::SceneBlockVuAdditionMode::offset &&
+               second.final_state.row == first.final_state.row,
+           "continuation unexpectedly discarded inherited control state");
+
+    auto invalid = first.final_state;
+    invalid.write_length = 0U;
+    expect_vu_error(
+        [&] {
+            (void)openrc::execute_scene_block_vu_from_state_v1(
+                continuation, invalid, kGenerousLimits);
+        },
+        "invalid inherited VIF state was accepted");
+}
+
 void check_single_unpack(
     const openrc::SceneBlockVifOpcode opcode,
     const bool unsigned_data,
@@ -286,12 +354,15 @@ void check_single_unpack(
 
     for (std::size_t lane = 0U; lane < 4U; ++lane) {
         const bool known = lane < known_lanes;
+        const bool v3_w =
+            opcode == openrc::SceneBlockVifOpcode::unpack_v3_16 &&
+            lane == 3U;
         const auto& lane_write = write.lanes[lane];
         expect(
             lane_write.source ==
-                (known
-                     ? openrc::SceneBlockVuLaneSource::payload
-                     : openrc::SceneBlockVuLaneSource::v3_w_indeterminate),
+                (v3_w
+                     ? openrc::SceneBlockVuLaneSource::v3_w_lookahead
+                     : openrc::SceneBlockVuLaneSource::payload),
             "single UNPACK lane source is wrong");
         const auto expected_range = known
             ? openrc::SceneBlockVifRange{
@@ -332,6 +403,10 @@ void check_single_unpack(
 }
 
 void test_unpack_formats_and_signedness() {
+    constexpr std::array<std::uint32_t, 4U> kSignedV3{
+        0xffff8000U, 0xffffffffU, 0x00007fffU, 0x00000000U};
+    constexpr std::array<std::uint32_t, 4U> kUnsignedV3{
+        0x00008000U, 0x0000ffffU, 0x00007fffU, 0x00000000U};
     constexpr std::array<std::uint32_t, 4U> kSigned16{
         0xffff8000U, 0xffffffffU, 0x00007fffU, 0x00000001U};
     constexpr std::array<std::uint32_t, 4U> kUnsigned16{
@@ -348,15 +423,15 @@ void test_unpack_formats_and_signedness() {
         openrc::SceneBlockVifOpcode::unpack_v3_16,
         false,
         v3_payload,
-        kSigned16,
-        3U,
+        kSignedV3,
+        4U,
         2U);
     check_single_unpack(
         openrc::SceneBlockVifOpcode::unpack_v3_16,
         true,
         v3_payload,
-        kUnsigned16,
-        3U,
+        kUnsignedV3,
+        4U,
         2U);
 
     const auto v4_32_payload =
@@ -408,6 +483,62 @@ void test_unpack_formats_and_signedness() {
         kUnsigned8,
         4U,
         1U);
+}
+
+void test_v3_lookahead_spill_qword_boundary_and_padding() {
+    std::vector<std::byte> bytes;
+    append_unpack_code(
+        bytes,
+        openrc::SceneBlockVifOpcode::unpack_v3_16,
+        7U,
+        3U,
+        true,
+        false);
+    const auto payload = payload16({
+        1U, 2U, 3U,
+        101U, 102U, 103U,
+        201U, 202U, 203U});
+    bytes.insert(bytes.end(), payload.begin(), payload.end());
+    pad_to_four(bytes);
+
+    const auto snapshot = openrc::execute_scene_block_vu_v1(
+        bytes,
+        openrc::SceneBlockVuExecutionOptionsV1{0U},
+        kGenerousLimits);
+    expect(snapshot.writes.size() == 3U,
+           "V3 lookahead fixture has the wrong write count");
+    expect_known_vector(snapshot.memory[7U].lanes, {1U, 2U, 3U, 101U},
+                        "V3 did not spill the next vector's X into W");
+    expect_known_vector(snapshot.memory[8U].lanes,
+                        {101U, 102U, 103U, 0U},
+                        "V3 did not zero W at a source qword boundary");
+    expect_known_vector(snapshot.memory[9U].lanes,
+                        {201U, 202U, 203U, 0U},
+                        "V3 did not read its zero alignment padding into W");
+
+    const auto& spill = snapshot.writes[0U].lanes[3U];
+    expect(spill.source ==
+               openrc::SceneBlockVuLaneSource::v3_w_lookahead &&
+               spill.source_range == openrc::SceneBlockVifRange{10U, 2U},
+           "V3 spill has the wrong source provenance");
+    expect_value(spill.unpacked_value, true, 101U,
+                 "V3 spill decoded the wrong value");
+
+    const auto& boundary = snapshot.writes[1U].lanes[3U];
+    expect(boundary.source == openrc::SceneBlockVuLaneSource::
+                                  v3_w_qword_boundary_zero &&
+               boundary.source_range == openrc::SceneBlockVifRange{0U, 0U},
+           "V3 qword-boundary zero has the wrong source provenance");
+    expect_value(boundary.unpacked_value, true, 0U,
+                 "V3 qword-boundary W was not a known zero");
+
+    const auto& padding = snapshot.writes[2U].lanes[3U];
+    expect(padding.source ==
+               openrc::SceneBlockVuLaneSource::v3_w_lookahead &&
+               padding.source_range == openrc::SceneBlockVifRange{22U, 2U},
+           "V3 padding lookahead has the wrong source provenance");
+    expect_value(padding.unpacked_value, true, 0U,
+                 "V3 padding lookahead was not a known zero");
 }
 
 void test_strow_and_addition_modes() {
@@ -524,7 +655,7 @@ void test_strow_and_addition_modes() {
            "MODE fixture aggregate counters are wrong");
 }
 
-void test_v3_unknown_overwrite_and_difference_propagation() {
+void test_v3_padding_and_difference_propagation() {
     std::vector<std::byte> bytes;
     append_strow(bytes, {10U, 20U, 30U, 40U});
     append_stmod(bytes, openrc::SceneBlockVuAdditionMode::difference);
@@ -571,39 +702,39 @@ void test_v3_unknown_overwrite_and_difference_propagation() {
     expect(snapshot.memory[5U].last_write_index ==
                std::optional<std::uint64_t>{1U},
            "V3 overwrite provenance is wrong");
-    expect(known_mask(snapshot.memory[5U]) == 0x07U,
-           "V3 overwrite did not clear the prior known W lane");
+    expect(known_mask(snapshot.memory[5U]) == 0x0fU,
+           "V3 overwrite did not retain all known lanes");
     expect_value(snapshot.memory[5U].lanes[0U], true, 111U,
                  "V3 MODE 2 X result is wrong");
     expect_value(snapshot.memory[5U].lanes[1U], true, 222U,
                  "V3 MODE 2 Y result is wrong");
     expect_value(snapshot.memory[5U].lanes[2U], true, 333U,
                  "V3 MODE 2 Z result is wrong");
-    expect_value(snapshot.memory[5U].lanes[3U], false, 0U,
-                 "V3 W was treated as known");
+    expect_value(snapshot.memory[5U].lanes[3U], true, 440U,
+                 "V3 padding W did not add a known zero");
 
     const auto& v3_w = snapshot.writes[1U].lanes[3U];
-    expect(v3_w.source == openrc::SceneBlockVuLaneSource::v3_w_indeterminate,
+    expect(v3_w.source == openrc::SceneBlockVuLaneSource::v3_w_lookahead,
            "V3 W has the wrong lane source");
-    expect(v3_w.source_range == openrc::SceneBlockVifRange{0U, 0U},
-           "V3 W has a payload source range");
+    expect(v3_w.source_range == openrc::SceneBlockVifRange{54U, 2U},
+           "V3 W padding has the wrong source range");
     expect_value(v3_w.row_before, true, 440U,
                  "V3 W ROW provenance is wrong");
-    expect_value(v3_w.unpacked_value, false, 0U,
-                 "V3 W unpacked value is known");
-    expect_value(v3_w.written_value, false, 0U,
-                 "V3 W MODE 2 result is known");
+    expect_value(v3_w.unpacked_value, true, 0U,
+                 "V3 W padding was not decoded as known zero");
+    expect_value(v3_w.written_value, true, 440U,
+                 "V3 W MODE 2 result is wrong");
 
-    expect(known_mask(snapshot.memory[6U]) == 0x07U,
-           "unknown difference ROW did not propagate to the next W");
+    expect(known_mask(snapshot.memory[6U]) == 0x0fU,
+           "known V3 padding did not preserve the next W");
     expect_value(snapshot.memory[6U].lanes[0U], true, 112U,
                  "post-V3 difference X is wrong");
     expect_value(snapshot.memory[6U].lanes[1U], true, 223U,
                  "post-V3 difference Y is wrong");
     expect_value(snapshot.memory[6U].lanes[2U], true, 334U,
                  "post-V3 difference Z is wrong");
-    expect_value(snapshot.memory[6U].lanes[3U], false, 0U,
-                 "post-V3 difference W did not remain unknown");
+    expect_value(snapshot.memory[6U].lanes[3U], true, 441U,
+                 "post-V3 difference W is wrong");
     expect(
         snapshot.writes[2U].lanes[3U].source ==
             openrc::SceneBlockVuLaneSource::payload &&
@@ -612,10 +743,10 @@ void test_v3_unknown_overwrite_and_difference_propagation() {
         "known payload after V3 has the wrong W source provenance");
     expect_value(snapshot.writes[2U].lanes[3U].unpacked_value, true, 1U,
                  "known payload after V3 decoded incorrectly");
-    expect_value(snapshot.writes[2U].lanes[3U].row_before, false, 0U,
-                 "V3 MODE 2 did not poison ROW.W");
-    expect_value(snapshot.final_state.row[3U], false, 0U,
-                 "unknown ROW.W did not survive to final state");
+    expect_value(snapshot.writes[2U].lanes[3U].row_before, true, 440U,
+                 "V3 MODE 2 did not preserve ROW.W");
+    expect_value(snapshot.final_state.row[3U], true, 441U,
+                 "known ROW.W did not survive to final state");
     expect(snapshot.total_vector_writes == 3U &&
                snapshot.unique_qword_writes == 2U &&
                snapshot.overwrite_vector_writes == 1U,
@@ -1165,9 +1296,11 @@ void test_limits_and_errors() {
 int main() {
     try {
         test_control_state_and_empty_memory();
+        test_continuation_inherits_complete_vif_state();
         test_unpack_formats_and_signedness();
         test_strow_and_addition_modes();
-        test_v3_unknown_overwrite_and_difference_propagation();
+        test_v3_lookahead_spill_qword_boundary_and_padding();
+        test_v3_padding_and_difference_propagation();
         test_skip_cycle_addressing();
         test_fill_cycle_unknown_and_source_mapping();
         test_fill_difference_poisoning();

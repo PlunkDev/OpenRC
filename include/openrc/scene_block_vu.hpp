@@ -38,14 +38,22 @@ enum class SceneBlockVuAdditionMode : std::uint8_t {
 enum class SceneBlockVuLaneSource : std::uint8_t {
     payload = 0,
     cycle_fill_indeterminate = 1,
-    v3_w_indeterminate = 2,
+    // V3-16 is fetched through the V4 unpack path on the VIF hardware. Its W
+    // lane therefore comes from the 16-bit element immediately following Z.
+    v3_w_lookahead = 2,
+    // When that lookahead would begin at the next 128-bit source qword, VIF
+    // supplies a known zero instead of fetching across the qword boundary.
+    v3_w_qword_boundary_zero = 3,
+    // A bounded public input can end before the otherwise-required lookahead
+    // halfword. Its value cannot be reconstructed without those source bytes.
+    v3_w_unavailable = 4,
 };
 
 struct SceneBlockVuLaneWriteV1 {
     SceneBlockVuLaneSource source =
         SceneBlockVuLaneSource::cycle_fill_indeterminate;
-    // Exact input coordinates for a consumed payload component. The range is
-    // empty for values which the public VIF contract leaves indeterminate.
+    // Exact input coordinates for a consumed payload component or V3
+    // lookahead. The range is empty for generated or indeterminate values.
     SceneBlockVifRange source_range;
     SceneBlockVuValueV1 unpacked_value;
     SceneBlockVuValueV1 row_before;
@@ -109,6 +117,8 @@ struct SceneBlockVuSnapshotV1 {
     std::uint64_t overwrite_vector_writes = 0;
     // Number of writes whose unwrapped destination was at least 1024.
     std::uint64_t wrapped_vector_writes = 0;
+    // Appended for source compatibility with positional V1 aggregate users.
+    SceneBlockVuStateV1 initial_state;
 };
 
 class SceneBlockVuError final : public std::runtime_error {
@@ -121,6 +131,15 @@ public:
 [[nodiscard]] SceneBlockVuSnapshotV1 execute_scene_block_vu_v1(
     std::span<const std::byte> bytes,
     SceneBlockVuExecutionOptionsV1 options,
+    SceneBlockVuLimits limits);
+
+// Executes a VIF continuation from the complete inherited control state.
+// Memory begins untouched because UNPACK values depend on ROW/mode rather
+// than previous destination contents; ordered writes can then be replayed
+// into a carried DVP VU state.
+[[nodiscard]] SceneBlockVuSnapshotV1 execute_scene_block_vu_from_state_v1(
+    std::span<const std::byte> bytes,
+    SceneBlockVuStateV1 initial_state,
     SceneBlockVuLimits limits);
 
 } // namespace openrc

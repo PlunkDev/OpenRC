@@ -33,6 +33,16 @@ struct SceneBlockVifLimits {
     std::uint64_t max_payload_bytes = 0;
 };
 
+struct SceneBlockVifCycleStateV1 {
+    // CL retains its raw eight-bit value, including zero. WL uses the
+    // effective value 256 for a raw zero STCYCL field.
+    std::uint16_t cycle_length = 1;
+    std::uint16_t write_length = 1;
+
+    [[nodiscard]] bool
+    operator==(const SceneBlockVifCycleStateV1&) const = default;
+};
+
 struct SceneBlockVifRange {
     // Offsets are relative to the beginning of the passed VIF stream.
     std::uint64_t offset = 0;
@@ -77,6 +87,9 @@ struct SceneBlockVifStreamV1 {
     std::uint16_t final_cycle_length = 1;
     std::uint16_t final_write_length = 1;
     std::vector<SceneBlockVifCommandV1> commands;
+    // Appended for source compatibility with positional V1 aggregate users.
+    std::uint16_t initial_cycle_length = 1;
+    std::uint16_t initial_write_length = 1;
 };
 
 class SceneBlockVifError final : public std::runtime_error {
@@ -89,6 +102,12 @@ public:
 // ranges: it neither copies payload bytes nor stores pointers into input.
 [[nodiscard]] SceneBlockVifStreamV1 parse_scene_block_vif_stream_v1(
     std::span<const std::byte> bytes,
+    SceneBlockVifLimits limits);
+
+// Parses a continuation whose first UNPACK observes inherited STCYCL state.
+[[nodiscard]] SceneBlockVifStreamV1 parse_scene_block_vif_stream_v1(
+    std::span<const std::byte> bytes,
+    SceneBlockVifCycleStateV1 initial_cycle,
     SceneBlockVifLimits limits);
 
 } // namespace openrc

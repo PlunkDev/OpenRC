@@ -25,9 +25,10 @@ if (-not $compiler -or -not $make -or -not $cmake) {
     ('-DCMAKE_CXX_COMPILER=' + $compiler) `
     ('-DCMAKE_MAKE_PROGRAM=' + $make) `
     ('-DCMAKE_BUILD_TYPE=' + $Configuration) `
-    '-DCMAKE_EXE_LINKER_FLAGS=-static' `
+    '-DOPENRC_STATIC_MINGW_RUNTIME=ON' `
     '-DOPENRC_BUILD_TESTS=ON' `
-    '-DOPENRC_BUILD_LAUNCHER=ON'
+    '-DOPENRC_BUILD_LAUNCHER=ON' `
+    '-DOPENRC_BUILD_RUNTIME=ON'
 if ($LASTEXITCODE -ne 0) { throw 'CMake configuration failed.' }
 
 & $cmake --build $buildRoot --parallel

@@ -24,6 +24,10 @@ openrc_core
 ├── bounded zero-copy SceneBlock VIF command parsing across sections 0-4
 ├── conservative SceneBlock VIF execution with VU1 memory/write provenance
 ├── neutral SceneBlock VIF/VU phases with inherited state and exact qword runs
+├── exact SceneBlock task preamble/record execution with dual-bank frame input
+├── stateful XGKICK GIF/GS decoding and primitive/raster-state assembly
+├── entry-16 source XYZ recovery with VIF/VU provenance and GS-color validation
+├── profile-bound reusable ISO/ELF/SceneBlock runtime loading and execution
 ├── CompanionTerminalWadIndexV1 validation of the shared terminal WAD bank
 ├── bounded 2FIP indexed-texture parsing and RGBA/TGA conversion
 ├── neutral seven-region boundary-table parsing
@@ -40,7 +44,8 @@ openrc_core
 
 openrc-cli
 ├── disc inspection and inventory
-├── TOC, WAD/bundle/companion, scene-block/VIF/VU, 2FIP, MapArt, PS2D, VAGp, and SBlk diagnostics
+├── TOC, WAD/bundle/companion, scene-block/VIF/VU/GS, 2FIP, MapArt, PS2D, VAGp, and SBlk diagnostics
+├── auto-fit wireframe TGA export from a selected real SceneBlock invocation
 ├── prepared-game extraction
 └── ELF, DVP overlay/VU microprogram, and IOP/IRX inspection and diagnostics
 
@@ -49,7 +54,15 @@ openrc-launcher
 ├── disc inspection
 ├── asynchronous Prepare/Cancel and progress
 ├── data-directory access
-└── future runtime entry point
+└── verified adjacent-runtime process launch
+
+openrc-runtime
+├── named ISO/ELF/level/record/entry process contract
+├── exact ISO-to-prepared-ELF SHA-256 binding before scene access
+├── emitted GS-triangle conversion with raster-context coordinates
+├── recovered-source 3D wireframe with bounded debug orbit controls
+├── Tab comparison against the decoded GS 2D output
+└── native D3D11 submission, auto-fit resize, and WARP fallback
 ```
 
 ## Planned components
@@ -113,13 +126,21 @@ pair, and the confirmed four-pair STATUS/CLIP and seven-pair Q visibility are
 modeled. Stores are queued, while a diagnostic XGKICK mode commits older
 stores and copies a bounded, VU-RAM-wrapped GIFtag sequence through EOP.
 
-This is not yet a cycle- or bit-exact VU1. General FMAC/load scoreboarding,
-the VU multiplier's exact rounding, live PATH1 arbitration, geometry meaning,
-GS state, and rendering remain future layers. The SceneBlock bridge can replay
-an explicit VIF-write prefix and keeps UNPACK TOPS separate from XTOP, but a
-real task invocation additionally requires its static constant seed, exact
-entry-specific DMA/VIF packet, entry-0 poststate, and carried state between
-records.
+This is not yet a cycle- or bit-exact VU1. General FMAC/load scoreboarding, the
+VU multiplier's exact rounding, and live PATH1 arbitration remain future
+layers. Exact SceneBlock task execution now includes its constant seed,
+four-qword frame transform in both input banks, entry-specific DMA/VIF packet,
+entry-0 poststate, and carried BASE/OFFSET/DBF plus VIF/VU state. Complete
+XGKICK events feed a bounded stateful GIF/GS decoder which assembles typed
+vertices and primitive emissions. A profile-bound owning loader now shares
+that exact ISO/ELF verification and execution path with the first native D3D11
+viewer. For entry 16, a profile-bound recovery layer follows the record's
+qword-250 vertex indices through descriptor W pointers to signed source XYZ and
+adjacent RGBA, retaining the last VIF write for every hop. The viewer uses the
+decoded GS primitives as topology and can orbit the recovered source mesh, but
+that orbit is isolated PC-side diagnostic state: it never rewrites the VU frame
+transform or claims to reproduce the original camera. Scene classification,
+textures, the live game camera, and gameplay remain outside this layer.
 
 The current CFG is deliberately context-insensitive and folds each decoded
 delay pair into its transfer block. It rejects an instruction-run start,

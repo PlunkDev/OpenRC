@@ -1147,6 +1147,19 @@ capture_xgkick_packet(const DvpVuExecutionStateV1& state,
             static_cast<std::uint8_t>((low64 >> 60U) & 0x0fU);
         tag.register_count =
             raw_register_count == 0U ? 16U : raw_register_count;
+        if (fully_known(tag_qword.lanes[2U]) &&
+            fully_known(tag_qword.lanes[3U])) {
+            const auto high64 =
+                static_cast<std::uint64_t>(tag_qword.lanes[2U].bits) |
+                (static_cast<std::uint64_t>(tag_qword.lanes[3U].bits)
+                 << 32U);
+            for (std::size_t index = 0U; index < tag.registers.size();
+                 ++index) {
+                tag.registers[index] = static_cast<std::uint8_t>(
+                    (high64 >> (index * 4U)) & 0x0fU);
+            }
+            tag.registers_known = true;
+        }
 
         const auto register_items =
             static_cast<std::uint64_t>(tag.nloop) *
@@ -1165,7 +1178,11 @@ capture_xgkick_packet(const DvpVuExecutionStateV1& state,
         default:
             return DvpVuTerminationV1::xgkick_qword_limit;
         }
-        event.tags.push_back(DvpVuXgkickTagV1{tag_address, tag});
+        event.tags.push_back(DvpVuXgkickTagV1{
+            tag_address,
+            tag,
+            static_cast<std::uint64_t>(event.packet_qwords.size() - 1U),
+        });
 
         for (std::uint64_t index = 0U; index < tag.payload_qword_count;
              ++index) {
@@ -1665,15 +1682,67 @@ DvpVuExecutionStateV1 make_dvp_vu_execution_state_v1() {
     return state;
 }
 
-SceneBlockDvpVuInvocationV1 make_scene_block_dvp_vu_invocation_v1(
+void apply_scene_block_dvp_vu_writes_v1(
+    DvpVuExecutionStateV1& state,
     const SceneBlockVuSnapshotV1& snapshot,
-    const DvpVuProgramV1& program,
-    const SceneBlockDvpVuInvocationOptionsV1 options,
+    const std::uint64_t first_write_index,
+    const std::uint64_t write_count,
     const SceneBlockDvpVuBridgeLimitsV1 limits) {
     if (limits.max_replayed_writes == 0U) {
         throw DvpVuExecutionError(
             "SceneBlock DVP VU bridge replay limit must be non-zero");
     }
+
+    const auto available_writes =
+        static_cast<std::uint64_t>(snapshot.writes.size());
+    if (first_write_index > available_writes ||
+        write_count > available_writes - first_write_index) {
+        throw DvpVuExecutionError(
+            "SceneBlock DVP VU write range exceeds the snapshot");
+    }
+    if (write_count > limits.max_replayed_writes) {
+        throw DvpVuExecutionError(
+            "SceneBlock DVP VU bridge replay limit exceeded");
+    }
+
+    for (std::uint64_t offset = 0U; offset < write_count; ++offset) {
+        const auto& write = snapshot.writes[static_cast<std::size_t>(
+            first_write_index + offset)];
+        if (write.destination_qword >= kDvpVuDataMemoryQwordCount) {
+            throw DvpVuExecutionError(
+                "SceneBlock snapshot contains an invalid VU1 address");
+        }
+        for (const auto& lane : write.lanes) {
+            switch (lane.written_value.state) {
+            case SceneBlockVuValueState::indeterminate:
+            case SceneBlockVuValueState::known:
+                break;
+            default:
+                throw DvpVuExecutionError(
+                    "SceneBlock snapshot contains an invalid lane state");
+            }
+        }
+    }
+
+    for (std::uint64_t offset = 0U; offset < write_count; ++offset) {
+        const auto& write = snapshot.writes[static_cast<std::size_t>(
+            first_write_index + offset)];
+        auto& destination = state.data_memory[write.destination_qword];
+        for (std::size_t lane = 0U; lane < kDvpVuLaneCount; ++lane) {
+            const auto& source = write.lanes[lane].written_value;
+            destination.lanes[lane] =
+                source.state == SceneBlockVuValueState::known
+                    ? known_word(source.bits)
+                    : DvpVuWordV1{};
+        }
+    }
+}
+
+SceneBlockDvpVuInvocationV1 make_scene_block_dvp_vu_invocation_v1(
+    const SceneBlockVuSnapshotV1& snapshot,
+    const DvpVuProgramV1& program,
+    const SceneBlockDvpVuInvocationOptionsV1 options,
+    const SceneBlockDvpVuBridgeLimitsV1 limits) {
     if (options.write_prefix_count > snapshot.writes.size()) {
         throw DvpVuExecutionError(
             "SceneBlock DVP VU write prefix exceeds the snapshot");
@@ -1699,23 +1768,11 @@ SceneBlockDvpVuInvocationV1 make_scene_block_dvp_vu_invocation_v1(
         options.xtop_qword.bits & 0x03ffU,
         (options.xtop_qword.known_mask & 0x03ffU) | 0xfffffc00U,
     };
-    for (std::uint64_t index = 0U; index < options.write_prefix_count;
-         ++index) {
-        const auto& write = snapshot.writes[static_cast<std::size_t>(index)];
-        if (write.destination_qword >= kDvpVuDataMemoryQwordCount) {
-            throw DvpVuExecutionError(
-                "SceneBlock snapshot contains an invalid VU1 address");
-        }
-        auto& destination =
-            invocation.initial_state.data_memory[write.destination_qword];
-        for (std::size_t lane = 0U; lane < kDvpVuLaneCount; ++lane) {
-            const auto& source = write.lanes[lane].written_value;
-            destination.lanes[lane] =
-                source.state == SceneBlockVuValueState::known
-                    ? known_word(source.bits)
-                    : DvpVuWordV1{};
-        }
-    }
+    apply_scene_block_dvp_vu_writes_v1(invocation.initial_state,
+                                        snapshot,
+                                        0U,
+                                        options.write_prefix_count,
+                                        limits);
     invocation.applied_write_count = options.write_prefix_count;
     invocation.entrypoint_address = options.entrypoint_address;
     invocation.unpack_tops_qword = snapshot.final_state.tops_qword;

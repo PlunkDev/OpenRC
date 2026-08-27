@@ -59,10 +59,26 @@ Stage 1 is in progress. The repository currently provides:
   register/RAM state, paired upper/lower reads, branch and E delay slots,
   confirmed STATUS/CLIP/Q latencies, conservative VU memory operations, and
   synchronous bounded XGKICK/GIFtag packet snapshots;
+- exact SceneBlock task initialization and record execution with carried
+  BASE/OFFSET/DBF, VIF control state, both input banks, and the caller-provided
+  four-qword frame transform;
+- a stateful bounded GIF/GS stream decoder with primitive assembly, vertex
+  attributes, raster-context snapshots, and optional auto-fit wireframe TGA
+  export from real XGKICK output;
+- exact entry-16 source-geometry recovery through the record's own
+  index-to-descriptor-to-position chain, retaining VIF write provenance and
+  validating every recovered RGBA value against the decoded GS stream;
+- a profile-bound SceneBlock runtime loader that revalidates the user's ISO
+  against its prepared boot ELF before exposing reusable decoded level data;
+- a native Windows D3D11 level-viewer window that submits the first real
+  SceneBlock triangle batch to the GPU, defaults to an auto-fit recovered-source
+  3D orbit view, retains the decoded GS projection for comparison, and falls
+  back from hardware rendering to WARP;
 - recognition of the PAL (`SCES-50916`) reference executable and detection of
   the NTSC-U/C (`SCUS-97199`) release;
 - a native Windows launcher with disc inspection, asynchronous Prepare,
-  progress, and cancellation support that remembers the selected image;
+  progress, cancellation, and a Play action that starts the verified adjacent
+  runtime with the prepared game files;
 - application directories following the `PlunkDev/OpenRC` convention;
 - synthetic ISO, ELF, SHA-256, disc, WAD, bundle, 2FIP, boundary-table,
   MapArtV1, PS2 save-bundle, PS ADPCM, VAGp, SBlk/audio, scene-block,
@@ -71,8 +87,14 @@ Stage 1 is in progress. The repository currently provides:
   no copyrighted game data.
 
 **Prepare game files** becomes available after the supported reference
-executable is detected. **Play** remains disabled because the native runtime
-does not exist yet.
+executable is detected. After preparation succeeds, **Play** starts the native
+level viewer with level 0, record 0, and SceneBlock entry pair 16.
+
+The initial viewer opens in **recovered source 3D (debug orbit)** mode. Drag the
+left mouse button or use the arrow keys to orbit, use the mouse wheel or `+/-`
+to zoom, press `R` to reset, and press `Tab` to compare the decoded GS 2D
+output. This camera belongs only to the diagnostic viewer; it is not presented
+as Ratchet & Clank's original gameplay camera.
 
 ## Build on Windows
 
@@ -89,6 +111,7 @@ The executables will normally be located at:
 ```text
 build/Debug/openrc-cli.exe
 build/Debug/openrc-launcher.exe
+build/Debug/openrc-runtime.exe
 ```
 
 Inspect a disc from the command line:
@@ -110,6 +133,7 @@ build/Debug/openrc-cli.exe map-art local/ratchet-and-clank.iso 0 map-art.tga
 build/Debug/openrc-cli.exe ps2-save local/ratchet-and-clank.iso
 build/Debug/openrc-cli.exe sblk local/ratchet-and-clank.iso 0
 build/Debug/openrc-cli.exe scene-blocks local/ratchet-and-clank.iso 0
+build/Debug/openrc-cli.exe scene-block-vu-run local/ratchet-and-clank.iso path/to/prepared/files/SCES_509.16 0 0 16 scene-block.tga
 build/Debug/openrc-cli.exe companion-wads local/ratchet-and-clank.iso 0
 build/Debug/openrc-cli.exe wad-bundle local/ratchet-and-clank.iso 14365 162
 build/Debug/openrc-cli.exe twofip local/ratchet-and-clank.iso 100 texture.tga
@@ -117,6 +141,7 @@ build/Debug/openrc-cli.exe prepare local/ratchet-and-clank.iso
 build/Debug/openrc-cli.exe elf path/to/prepared/files/SCES_509.16
 build/Debug/openrc-cli.exe dvp-vu path/to/prepared/files/SCES_509.16 2,6,8,10,14,16,20 11,12,13,14,15,16,17,18
 build/Debug/openrc-cli.exe dvp-vu-run path/to/prepared/files/SCES_509.16 2 11,12,13,14,15,16,17,18 0
+build/Debug/openrc-runtime.exe --disc-image local/ratchet-and-clank.iso --boot-executable path/to/prepared/files/SCES_509.16 --level 0 --record 0 --entry-pair 16
 ```
 
 The `wad-bundle` LBA and sector count above identify a container in the exact
@@ -141,17 +166,28 @@ its neutral block directory, exact chain, eight-section layouts, and bounded
 VIF stream across sections 0-4, then cross-checks the declared count against
 the independent extent-3 table. The report includes exact opcode, payload,
 alignment, and conservative VU1 write totals. VU addresses are reported
-relative to an explicitly supplied diagnostic `TOPS=0`; unknown V3/fill lanes
-remain unknown. It also reports exact neutral command phases and their
+relative to an explicitly supplied diagnostic `TOPS=0`; V3-16 W follows the
+hardware V4-path lookahead/boundary-zero behavior while fill lanes remain
+unknown. It also reports exact neutral command phases and their
 destination coverage without treating the two corpus-observed phase skeletons
 as an acceptance grammar. It does not yet label those blocks as terrain,
 collision, or models.
-The DVP VU layer remains diagnostic rather than a renderer. The decoder owns
-neutral program metadata; the bounded-functional executor can run that program
-from an explicit partially known state, propagate unknown values, execute one
-delay pair, and snapshot bounded GIF packets at XGKICK. It does not infer
-geometry semantics, emulate bit-exact VU floating point or live PATH1
-arbitration, or submit work to a native renderer.
+`scene-block-vu-run` reconstructs the confirmed task preamble and one selected
+record packet, seeds both frame-transform banks, executes overlay group `55907`,
+and decodes its complete ordered XGKICK stream into GS writes, vertices, and
+primitive emissions. Its optional TGA is an auto-fit diagnostic wireframe. The
+current identity frame transform is deterministic debug input, not a claim to
+reproduce the game's live camera.
+
+The native D3D11 window is still a diagnostic level viewer, not a playable
+runtime. For the confirmed entry-16 path it follows the game's VU-memory
+indirection and recovers signed source XYZ for each GS vertex, while using only
+the already-decoded emitted triangle topology. The tested invocation contains
+80 submitted vertices, 73 unique descriptors, and 71 unique source positions.
+An isolated debug orbit can inspect that 3D mesh, while `Tab` retains the exact
+GS-output comparison. The DVP VU layer still does not emulate bit-exact VU
+floating point or live PATH1 arbitration, and the geometry is not yet
+classified as terrain, collision, or models.
 
 `dvp-vu` accepts comma-separated decimal VU pair addresses and ELF overlay
 section indices, with at most 128 values in either list. The example selects
@@ -160,12 +196,11 @@ seven decoded dispatcher entrypoints and all eight chunks of overlay group
 `6,8,10,14,16,20` in that program; its later MSCAL 2 follows an upload of the
 separate group `903379`.
 
-`dvp-vu-run` is intentionally a microcode-only diagnostic. It supplies the
-requested VIF1 TOP but leaves other registers and RAM indeterminate, stops
-after the first XGKICK, and returns a nonzero code for an indeterminate,
-unsupported, unmapped, or limit termination. The exact SceneBlock task packet,
-static qwords 656-670, and carried state between MSCAL calls are the next
-runtime seam; TOP is never silently substituted with the VIF UNPACK TOPS.
+`dvp-vu-run` remains the intentionally incomplete microcode-only diagnostic.
+It supplies the requested VIF1 TOP but leaves other registers and RAM
+indeterminate and returns a nonzero code for an indeterminate, unsupported,
+unmapped, or limit termination. Exact task execution belongs to
+`scene-block-vu-run`; TOP is never silently substituted with VIF UNPACK TOPS.
 
 `companion-wads` validates the independent subrange-2 index into that decoded
 buffer, checks every exact WadV1 range and zero alignment gap, and then

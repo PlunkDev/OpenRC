@@ -311,13 +311,15 @@ and
 [UNPACK implementation](https://github.com/PCSX2/pcsx2/blob/3e29183a37e74cbc8c17bda8afb63c2d9bc6fd14/pcsx2/Vif_Unpack.cpp).
 
 The snapshot does not invent values which the evidence cannot establish.
-V3-16 W is retained as indeterminate, as are STCYCL fill-generated vectors;
-unknown values propagate through row arithmetic and overwrites. Every output
-write preserves its command and output-vector indices, optional consumed-input
-index, unwrapped and wrapped destinations, addition mode, and exact per-lane
-source range. Final qwords retain their write count and an index back to the
-last ordered write, so deliberate overlap remains auditable without retaining
-payload pointers.
+V3-16 uses the same hardware unpack path as V4: W reads the immediately
+following 16-bit element, becomes a known zero when that lookahead begins at a
+new 128-bit source qword, and remains unknown only when the caller's bounded
+input omits required lookahead bytes. STCYCL fill-generated vectors remain
+unknown. Every output write preserves its command and output-vector indices,
+optional consumed-input index, unwrapped and wrapped destinations, addition
+mode, and exact per-lane source range. Final qwords retain their write count and
+an index back to the last ordered write, so deliberate overlap remains
+auditable without retaining payload pointers.
 
 With explicit diagnostic `TOPS=0`, the complete corpus executes 3,602,759
 vector writes into relative qword addresses 0-327. Summed independently per
@@ -325,10 +327,10 @@ stream, 3,106,660 qword destinations are unique and 496,099 writes overwrite
 an earlier value; every stream contains overlap and every observed overwrite
 is V4-8 over V4-8. No write wraps at this diagnostic TOPS. All observed UNPACK
 commands request external TOPS, so these addresses are intentionally reported
-as relative diagnostics rather than claimed runtime VU1 locations. The final
-per-stream snapshots contain 2,083,563 fully known and 1,023,097 partially
-known written qwords, with no wholly indeterminate written qword; the partial
-count exactly matches the observed V3-16 writes whose W lane remains unknown.
+as relative diagnostics rather than claimed runtime VU1 locations. The older
+partial-qword totals based on an always-unknown V3 W model are no longer used
+as reference facts; provenance now distinguishes payload, lookahead,
+qword-boundary zero, unavailable lookahead, and cycle-fill sources.
 
 `SceneBlockVuCommandPhaseV1` adds a derived, neutral partition over this
 ordered snapshot. A phase contains the maximal non-NOP control prefix followed
@@ -423,6 +425,46 @@ zero-filled guess. The executor models paired pre-state reads, one branch/E
 delay pair, STATUS/CLIP latency 4, Q latency 7, queued stores, and bounded
 synchronous XGKICK/GIFtag snapshots; full FMAC/load scoreboarding and live
 PATH1 transfer remain outside this milestone.
+
+The EE caller at `0x2346C0` constructs a four-qword frame transform and calls
+helper `0x234BA0` with destinations 5 and 333 and a count of four. That helper
+emits `STCYCL 4/4` plus unsigned V4-32 UNPACK, proving that VU RAM `5..8` and
+`333..336` are shared frame inputs for the two 328-qword record banks. Modeling
+those uploads removes the last unknown dependency in the tested level-0 record
+0, entry-16 path. With a deterministic identity debug transform, the real path
+terminates normally after 1,832 instruction pairs, produces two complete
+XGKICK packets, and decodes to 80 fully known vertices and 62 emitted
+triangle-strip primitives. This is a diagnostic camera input, not the game's
+live runtime camera.
+
+The GIF/GS decoder consumes all complete XGKICK events as one ordered stream.
+It carries attributes and pending primitive assembly between events, applies
+PRIM resets even for repeated values, ignores PRE and other tag fields for
+`NLOOP=0`, dispatches A+D on address bits 0..6, and snapshots the selected
+XYOFFSET/SCISSOR context on vertices and primitives. The CLI can rasterize the
+emitted known-XY primitives into an auto-fit wireframe TGA. The same decoded
+result now feeds the first native D3D11 viewer: the tested level-0, record-0,
+entry-16 invocation uploads 80 known vertices and draws 62 wireframe triangles
+in a resizable GPU-backed window.
+
+The same invocation now has a separately validated pre-projection source path.
+VU RAM qwords `250..269` contain the 80 per-submit descriptor indices. Each
+selected descriptor's W lane points to one signed XYZ qword, and the immediately
+following qword supplies RGBA. Following that chain produces 80 vertices in GS
+order, 73 unique descriptor qwords, and 71 unique position qwords; recovered
+RGBA agrees with the decoded GS vertex on all 80 submissions. Position XYZ is
+interpreted as signed integer input to the confirmed `ITOF0` path, without an
+invented `/16` scale. The public recovery result retains the index qword/lane,
+descriptor W lane, position/color qwords, and their last VIF write indices.
+
+With identity diagnostic frame input, the affine stage computes
+`q5*x + q6*y + q7*z + q8`, and the later DIV by the resulting W followed by
+MULQ confirms that qwords `5..8` are a full homogeneous transform into the
+pre-viewport projection path. Recovering the live values uploaded by the EE
+caller remains separate work. The native viewer therefore uses an isolated
+PC-side Z-up debug orbit for the source mesh and keeps the decoded GS 2D output
+behind `Tab`; neither mode is claimed to be the original gameplay camera or a
+classified/playable Veldin scene.
 
 The eight chunks form one continuous decoded instruction run. None of the 243
 control transfers has a missing delay slot, and no instruction-run boundary,
@@ -645,8 +687,8 @@ section identifiers and record layout follow the public
 The `.DVP.overlay.*` sections in this executable are placeholder ranges, not
 the code source. The image also contains paths such as
 `cdrom0:\DATA\LEVELS\LEVEL`, `cdrom0:\CODE\I5\PARAM.TXT;1`, and the
-`occ_sample_deltas.dat`/`occ_samp.dat` resources. The confirmed `55907` bytes
-now feed the bounded neutral decoder and its control/access inventory. Relating
-those facts to SceneBlock data and eventual GS output remains future work,
-alongside remaining audio and asset-format analysis; no semantic geometry or
-renderer is claimed at this stage.
+`occ_sample_deltas.dat`/`occ_samp.dat` resources. The confirmed `55907`
+bytes feed the bounded neutral decoder, exact SceneBlock task execution,
+ordered GS output, and the native diagnostic wireframe viewer. Assigning
+gameplay semantics to that geometry remains future work alongside the
+remaining audio and asset-format analysis.

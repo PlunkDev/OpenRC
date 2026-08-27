@@ -206,6 +206,13 @@ void validate_command_encoding(const SceneBlockVifCommandV1& command) {
 }
 
 void validate_stream_layout(const SceneBlockVifStreamV1& stream) {
+    if (stream.initial_cycle_length >
+            static_cast<std::uint16_t>(
+                std::numeric_limits<std::uint8_t>::max()) ||
+        stream.initial_write_length == 0U ||
+        stream.initial_write_length > kSceneBlockVifMaximumVectorCount) {
+        fail("Phase stream has invalid initial STCYCL metadata");
+    }
     std::uint64_t next_packet = 0U;
     std::uint64_t total_payload = 0U;
     std::uint64_t total_padding = 0U;
@@ -457,7 +464,40 @@ void validate_write(const SceneBlockVifStreamV1& stream,
                 SceneBlockVuLaneSource::cycle_fill_indeterminate;
         } else if (command.opcode == SceneBlockVifOpcode::unpack_v3_16 &&
                    lane_index == 3U) {
-            expected_lane_source = SceneBlockVuLaneSource::v3_w_indeterminate;
+            const auto lookahead_offset = checked_add(
+                command.payload_range.offset,
+                checked_multiply(checked_add(input_index, 1U,
+                                             "a phase V3 input index"),
+                                 vector_bytes,
+                                 "a phase V3 W lookahead offset"),
+                "a phase V3 W lookahead offset");
+            if ((lookahead_offset & 0x0fU) == 0U) {
+                expected_lane_source =
+                    SceneBlockVuLaneSource::v3_w_qword_boundary_zero;
+                expected_unpacked = SceneBlockVuValueV1{
+                    SceneBlockVuValueState::known,
+                    0U};
+            } else {
+                const auto source_end = checked_add(
+                    lookahead_offset,
+                    component_bytes,
+                    "a phase V3 W lookahead end");
+                if (source_end > stream.input_bytes) {
+                    expected_lane_source =
+                        SceneBlockVuLaneSource::v3_w_unavailable;
+                } else {
+                    expected_lane_source =
+                        SceneBlockVuLaneSource::v3_w_lookahead;
+                    expected_unpacked = lane.unpacked_value;
+                    if (expected_unpacked.state !=
+                        SceneBlockVuValueState::known) {
+                        fail("A phase V3 W lookahead is unexpectedly indeterminate");
+                    }
+                    expected_source = SceneBlockVifRange{
+                        lookahead_offset,
+                        component_bytes};
+                }
+            }
         } else {
             expected_lane_source = SceneBlockVuLaneSource::payload;
             expected_unpacked = lane.unpacked_value;
@@ -536,7 +576,14 @@ make_qword_runs(const std::array<bool, kSceneBlockVuMemoryQwordCount>& seen) {
 std::vector<SceneBlockVuCommandPhaseV1>
 group_scene_block_vu_phases_v1(const SceneBlockVuSnapshotV1& snapshot) {
     validate_stream_layout(snapshot.stream);
+    validate_state(snapshot.initial_state, "The initial phase snapshot state");
     validate_state(snapshot.final_state, "The final phase snapshot state");
+    if (snapshot.stream.initial_cycle_length !=
+            snapshot.initial_state.cycle_length ||
+        snapshot.stream.initial_write_length !=
+            snapshot.initial_state.write_length) {
+        fail("The phase stream initial STCYCL metadata disagrees with the snapshot");
+    }
 
     const auto write_size = host_size_as_u64(snapshot.writes.size(),
                                              "The phase snapshot write count");
@@ -548,8 +595,7 @@ group_scene_block_vu_phases_v1(const SceneBlockVuSnapshotV1& snapshot) {
     std::vector<SceneBlockVuCommandPhaseV1> phases;
     phases.reserve(bounds.size());
 
-    SceneBlockVuStateV1 state;
-    state.tops_qword = snapshot.final_state.tops_qword;
+    SceneBlockVuStateV1 state = snapshot.initial_state;
     std::size_t write_cursor = 0U;
     std::array<bool, kSceneBlockVuMemoryQwordCount> globally_seen{};
     std::array<std::uint64_t, kSceneBlockVuMemoryQwordCount> write_counts{};

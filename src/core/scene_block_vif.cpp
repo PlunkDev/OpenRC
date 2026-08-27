@@ -130,10 +130,27 @@ void require_zero_padding(
 SceneBlockVifStreamV1 parse_scene_block_vif_stream_v1(
     const std::span<const std::byte> bytes,
     const SceneBlockVifLimits limits) {
+    return parse_scene_block_vif_stream_v1(
+        bytes,
+        SceneBlockVifCycleStateV1{},
+        limits);
+}
+
+SceneBlockVifStreamV1 parse_scene_block_vif_stream_v1(
+    const std::span<const std::byte> bytes,
+    const SceneBlockVifCycleStateV1 initial_cycle,
+    const SceneBlockVifLimits limits) {
     if (limits.max_input_bytes == 0U ||
         limits.max_commands == 0U ||
         limits.max_payload_bytes == 0U) {
         fail("SceneBlockVifStreamV1 caller limits must all be non-zero");
+    }
+    if (initial_cycle.cycle_length >
+            static_cast<std::uint16_t>(
+                std::numeric_limits<std::uint8_t>::max()) ||
+        initial_cycle.write_length == 0U ||
+        initial_cycle.write_length > kSceneBlockVifMaximumVectorCount) {
+        fail("SceneBlockVifStreamV1 initial STCYCL state is invalid");
     }
 
     const auto input_bytes = static_cast<std::uint64_t>(bytes.size());
@@ -146,8 +163,10 @@ SceneBlockVifStreamV1 parse_scene_block_vif_stream_v1(
 
     SceneBlockVifStreamV1 result;
     result.input_bytes = input_bytes;
-    std::uint16_t cycle_length = 1U;
-    std::uint16_t write_length = 1U;
+    result.initial_cycle_length = initial_cycle.cycle_length;
+    result.initial_write_length = initial_cycle.write_length;
+    std::uint16_t cycle_length = initial_cycle.cycle_length;
+    std::uint16_t write_length = initial_cycle.write_length;
     std::uint64_t position = 0U;
 
     while (position < input_bytes) {

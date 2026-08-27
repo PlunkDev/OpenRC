@@ -5,11 +5,14 @@
 #include "openrc/dvp_vu.hpp"
 #include "openrc/dvp_vu_execute.hpp"
 #include "openrc/elf.hpp"
+#include "openrc/gif_gs.hpp"
+#include "openrc/hash.hpp"
 #include "openrc/map_art.hpp"
 #include "openrc/paths.hpp"
 #include "openrc/preparation.hpp"
 #include "openrc/ps2_save_bundle.hpp"
 #include "openrc/scene_block_directory.hpp"
+#include "openrc/scene_block_task_execute.hpp"
 #include "openrc/scene_block_vif.hpp"
 #include "openrc/scene_block_vu.hpp"
 #include "openrc/scene_block_vu_phase.hpp"
@@ -24,6 +27,7 @@
 #include <array>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -90,6 +94,8 @@ void print_usage() {
         << "  openrc-cli ps2-save <disc.iso>                   Inspect the PS2D save/icon bundle\n"
         << "  openrc-cli sblk <disc.iso> <level-id>            Inspect a level SBlk audio bank\n"
         << "  openrc-cli scene-blocks <disc.iso> <level-id>    Inspect a level scene-block directory\n"
+        << "  openrc-cli scene-block-vu-run <disc.iso> <elf> <level-id> <record> <entry-pair> [output.tga]\n"
+        << "                                                    Execute and optionally export an auto-fit wireframe\n"
         << "  openrc-cli companion-wads <disc.iso> <level-id>  Inspect the terminal common WAD index\n"
         << "  openrc-cli wad-bundle <disc.iso> <lba> <sectors> Inspect a WadBundleV1 (64 MiB cap)\n"
         << "  openrc-cli twofip <disc.iso> <global-slot> [output.tga]\n"
@@ -582,6 +588,446 @@ private:
     }
     output << value;
     return output.str();
+}
+
+void print_dvp_gif_registers(const openrc::DvpVuGifTagV1& tag) {
+    if (!tag.registers_known) {
+        std::cout << "indeterminate";
+        return;
+    }
+    for (std::size_t index = 0U; index < tag.register_count; ++index) {
+        if (index != 0U) {
+            std::cout << ',';
+        }
+        std::cout << hexadecimal(tag.registers[index], 1);
+    }
+}
+
+[[nodiscard]] std::string_view gif_gs_topology_name(
+    const openrc::GifGsPrimitiveTopologyV1 topology) noexcept {
+    switch (topology) {
+    case openrc::GifGsPrimitiveTopologyV1::point:
+        return "points";
+    case openrc::GifGsPrimitiveTopologyV1::line_list:
+        return "line-list";
+    case openrc::GifGsPrimitiveTopologyV1::line_strip:
+        return "line-strip";
+    case openrc::GifGsPrimitiveTopologyV1::triangle_list:
+        return "triangle-list";
+    case openrc::GifGsPrimitiveTopologyV1::triangle_strip:
+        return "triangle-strip";
+    case openrc::GifGsPrimitiveTopologyV1::triangle_fan:
+        return "triangle-fan";
+    case openrc::GifGsPrimitiveTopologyV1::sprite:
+        return "sprites";
+    case openrc::GifGsPrimitiveTopologyV1::invalid:
+        return "invalid";
+    }
+    return "unknown";
+}
+
+[[nodiscard]] std::string_view gif_gs_address_name(
+    const std::uint8_t address) noexcept {
+    switch (address) {
+    case 0x00U:
+        return "PRIM";
+    case 0x18U:
+        return "XYOFFSET_1";
+    case 0x19U:
+        return "XYOFFSET_2";
+    case 0x1aU:
+        return "PRMODECONT";
+    case 0x1bU:
+        return "PRMODE";
+    case 0x40U:
+        return "SCISSOR_1";
+    case 0x41U:
+        return "SCISSOR_2";
+    default:
+        return {};
+    }
+}
+
+[[nodiscard]] openrc::TwoFipImage make_gif_gs_wireframe_image(
+    const openrc::GifGsDecodeResultV1& report) {
+    constexpr std::uint32_t kWidth = 1280U;
+    constexpr std::uint32_t kHeight = 720U;
+    constexpr int kMargin = 32;
+
+    std::optional<std::uint16_t> minimum_x;
+    std::optional<std::uint16_t> maximum_x;
+    std::optional<std::uint16_t> minimum_y;
+    std::optional<std::uint16_t> maximum_y;
+    std::uint64_t emitted_count = 0U;
+    for (const auto& primitive : report.primitives) {
+        if (primitive.emission != openrc::GifGsPrimitiveEmissionV1::emitted) {
+            continue;
+        }
+        ++emitted_count;
+        if (primitive.vertex_count == 0U ||
+            primitive.vertex_count > primitive.vertex_indices.size()) {
+            throw std::runtime_error(
+                "An emitted GS primitive has an invalid vertex count");
+        }
+        for (std::size_t index = 0U; index < primitive.vertex_count; ++index) {
+            const auto vertex_index = primitive.vertex_indices[index];
+            if (vertex_index >= report.vertices.size()) {
+                throw std::runtime_error(
+                    "An emitted GS primitive references a missing vertex");
+            }
+            const auto& vertex = report.vertices[
+                static_cast<std::size_t>(vertex_index)];
+            if (!vertex.x || !vertex.y) {
+                throw std::runtime_error(
+                    "An emitted GS primitive has indeterminate XY coordinates");
+            }
+            minimum_x = minimum_x ? std::min(*minimum_x, *vertex.x) : vertex.x;
+            maximum_x = maximum_x ? std::max(*maximum_x, *vertex.x) : vertex.x;
+            minimum_y = minimum_y ? std::min(*minimum_y, *vertex.y) : vertex.y;
+            maximum_y = maximum_y ? std::max(*maximum_y, *vertex.y) : vertex.y;
+        }
+    }
+    if (emitted_count == 0U || !minimum_x || !minimum_y) {
+        throw std::runtime_error(
+            "The decoded GS stream has no emitted known-XY geometry");
+    }
+
+    openrc::TwoFipImage image;
+    image.width = kWidth;
+    image.height = kHeight;
+    image.pixel_storage_format = openrc::kTwoFipPsmT8Format;
+    image.trailing_header_fields = {0U, 0U, 1U};
+    image.palette[0U] = openrc::TwoFipColor{5U, 8U, 18U, 0x80U};
+    image.palette[1U] = openrc::TwoFipColor{38U, 210U, 255U, 0x80U};
+    image.palette[2U] = openrc::TwoFipColor{255U, 246U, 190U, 0x80U};
+    image.indices.resize(static_cast<std::size_t>(kWidth) * kHeight, 0U);
+
+    const auto x_range = std::max<std::uint32_t>(
+        1U, static_cast<std::uint32_t>(*maximum_x - *minimum_x));
+    const auto y_range = std::max<std::uint32_t>(
+        1U, static_cast<std::uint32_t>(*maximum_y - *minimum_y));
+    const auto drawable_width = static_cast<double>(kWidth - 2U * kMargin);
+    const auto drawable_height = static_cast<double>(kHeight - 2U * kMargin);
+    const auto scale = std::min(
+        drawable_width / static_cast<double>(x_range),
+        drawable_height / static_cast<double>(y_range));
+    const auto used_width = static_cast<double>(x_range) * scale;
+    const auto used_height = static_cast<double>(y_range) * scale;
+    const auto x_padding =
+        (static_cast<double>(kWidth) - used_width) * 0.5;
+    const auto y_padding =
+        (static_cast<double>(kHeight) - used_height) * 0.5;
+
+    const auto project = [&](const openrc::GifGsVertexV1& vertex) {
+        const auto x = static_cast<int>(std::llround(
+            x_padding + static_cast<double>(*vertex.x - *minimum_x) * scale));
+        const auto y_from_bottom = static_cast<int>(std::llround(
+            y_padding + static_cast<double>(*vertex.y - *minimum_y) * scale));
+        return std::array<int, 2U>{
+            std::clamp(x, 0, static_cast<int>(kWidth) - 1),
+            std::clamp(static_cast<int>(kHeight) - 1 - y_from_bottom,
+                       0,
+                       static_cast<int>(kHeight) - 1),
+        };
+    };
+    const auto put_pixel = [&](const int x,
+                               const int y,
+                               const std::uint8_t color) {
+        if (x < 0 || y < 0 || x >= static_cast<int>(kWidth) ||
+            y >= static_cast<int>(kHeight)) {
+            return;
+        }
+        image.indices[static_cast<std::size_t>(y) * kWidth +
+                      static_cast<std::size_t>(x)] = color;
+    };
+    const auto draw_line = [&](std::array<int, 2U> from,
+                               const std::array<int, 2U> to) {
+        const auto delta_x = std::abs(to[0U] - from[0U]);
+        const auto step_x = from[0U] < to[0U] ? 1 : -1;
+        const auto delta_y = -std::abs(to[1U] - from[1U]);
+        const auto step_y = from[1U] < to[1U] ? 1 : -1;
+        auto error = delta_x + delta_y;
+        for (;;) {
+            put_pixel(from[0U], from[1U], 1U);
+            if (from == to) {
+                break;
+            }
+            const auto twice_error = 2 * error;
+            if (twice_error >= delta_y) {
+                error += delta_y;
+                from[0U] += step_x;
+            }
+            if (twice_error <= delta_x) {
+                error += delta_x;
+                from[1U] += step_y;
+            }
+        }
+    };
+
+    for (const auto& primitive : report.primitives) {
+        if (primitive.emission != openrc::GifGsPrimitiveEmissionV1::emitted) {
+            continue;
+        }
+        std::array<std::array<int, 2U>, 3U> points{};
+        for (std::size_t index = 0U; index < primitive.vertex_count; ++index) {
+            points[index] = project(report.vertices[static_cast<std::size_t>(
+                primitive.vertex_indices[index])]);
+        }
+        if (primitive.vertex_count == 1U) {
+            put_pixel(points[0U][0U], points[0U][1U], 2U);
+        } else {
+            for (std::size_t index = 1U; index < primitive.vertex_count;
+                 ++index) {
+                draw_line(points[index - 1U], points[index]);
+            }
+            if (primitive.vertex_count == 3U) {
+                draw_line(points[2U], points[0U]);
+            }
+        }
+        for (std::size_t index = 0U; index < primitive.vertex_count; ++index) {
+            for (int offset_y = -1; offset_y <= 1; ++offset_y) {
+                for (int offset_x = -1; offset_x <= 1; ++offset_x) {
+                    put_pixel(points[index][0U] + offset_x,
+                              points[index][1U] + offset_y,
+                              2U);
+                }
+            }
+        }
+    }
+    return image;
+}
+
+void print_gif_gs_decode_report(const openrc::GifGsDecodeResultV1& report) {
+    std::array<std::uint64_t, 8U> opportunity_topologies{};
+    std::array<std::uint64_t, 8U> emitted_topologies{};
+    for (const auto& primitive : report.primitives) {
+        const auto index = static_cast<std::size_t>(primitive.topology);
+        if (index < opportunity_topologies.size()) {
+            ++opportunity_topologies[index];
+        }
+        if (primitive.emission != openrc::GifGsPrimitiveEmissionV1::emitted) {
+            continue;
+        }
+        if (index < emitted_topologies.size()) {
+            ++emitted_topologies[index];
+        }
+    }
+
+    std::array<std::uint64_t, 128U> addressed_registers{};
+    for (const auto& write : report.addressed_writes) {
+        if (write.dispatched_address) {
+            ++addressed_registers[*write.dispatched_address];
+        }
+    }
+
+    std::array<std::uint32_t, 4U> st_known_all{};
+    std::array<std::uint32_t, 4U> st_known_any{};
+    std::array<std::uint32_t, 4U> xyz_known_all{};
+    std::array<std::uint32_t, 4U> xyz_known_any{};
+    st_known_all.fill(0xffffffffU);
+    xyz_known_all.fill(0xffffffffU);
+    std::uint64_t st_write_count = 0U;
+    std::uint64_t xyz_write_count = 0U;
+    for (const auto& write : report.register_writes) {
+        auto* known_all = static_cast<std::array<std::uint32_t, 4U>*>(nullptr);
+        auto* known_any = static_cast<std::array<std::uint32_t, 4U>*>(nullptr);
+        if (write.descriptor == openrc::GifGsRegisterDescriptorV1::st) {
+            known_all = &st_known_all;
+            known_any = &st_known_any;
+            ++st_write_count;
+        } else if (
+            write.descriptor == openrc::GifGsRegisterDescriptorV1::xyzf2) {
+            known_all = &xyz_known_all;
+            known_any = &xyz_known_any;
+            ++xyz_write_count;
+        }
+        if (known_all == nullptr) {
+            continue;
+        }
+        for (std::size_t lane = 0U; lane < known_all->size(); ++lane) {
+            (*known_all)[lane] &= write.payload.lanes[lane].known_mask;
+            (*known_any)[lane] |= write.payload.lanes[lane].known_mask;
+        }
+    }
+
+    std::array<std::uint64_t, 3U> known_xyz{};
+    std::array<std::uint64_t, 3U> known_stq{};
+    std::array<std::uint64_t, 4U> known_rgba{};
+    std::uint64_t submitted_vertices = 0U;
+    std::uint64_t suppressed_vertices = 0U;
+    std::uint64_t indeterminate_vertices = 0U;
+    std::optional<std::uint16_t> minimum_x;
+    std::optional<std::uint16_t> maximum_x;
+    std::optional<std::uint16_t> minimum_y;
+    std::optional<std::uint16_t> maximum_y;
+    std::optional<std::uint32_t> minimum_z;
+    std::optional<std::uint32_t> maximum_z;
+    for (const auto& vertex : report.vertices) {
+        if (vertex.x) {
+            ++known_xyz[0U];
+            minimum_x = minimum_x ? std::min(*minimum_x, *vertex.x) : vertex.x;
+            maximum_x = maximum_x ? std::max(*maximum_x, *vertex.x) : vertex.x;
+        }
+        if (vertex.y) {
+            ++known_xyz[1U];
+            minimum_y = minimum_y ? std::min(*minimum_y, *vertex.y) : vertex.y;
+            maximum_y = maximum_y ? std::max(*maximum_y, *vertex.y) : vertex.y;
+        }
+        if (vertex.z) {
+            ++known_xyz[2U];
+            minimum_z = minimum_z ? std::min(*minimum_z, *vertex.z) : vertex.z;
+            maximum_z = maximum_z ? std::max(*maximum_z, *vertex.z) : vertex.z;
+        }
+        known_stq[0U] += vertex.texture.s.has_value() ? 1U : 0U;
+        known_stq[1U] += vertex.texture.t.has_value() ? 1U : 0U;
+        known_stq[2U] += vertex.texture.q.has_value() ? 1U : 0U;
+        known_rgba[0U] += vertex.color.r.has_value() ? 1U : 0U;
+        known_rgba[1U] += vertex.color.g.has_value() ? 1U : 0U;
+        known_rgba[2U] += vertex.color.b.has_value() ? 1U : 0U;
+        known_rgba[3U] += vertex.color.a.has_value() ? 1U : 0U;
+        switch (vertex.kick) {
+        case openrc::GifGsVertexKickV1::submitted:
+            ++submitted_vertices;
+            break;
+        case openrc::GifGsVertexKickV1::suppressed:
+            ++suppressed_vertices;
+            break;
+        case openrc::GifGsVertexKickV1::indeterminate:
+            ++indeterminate_vertices;
+            break;
+        }
+    }
+
+    std::cout
+        << "\nDecoded GS stream:\n"
+        << "  Register writes:    " << report.register_writes.size() << '\n'
+        << "  A+D writes:         " << report.addressed_writes.size() << '\n'
+        << "  Vertices:           " << report.vertices.size() << '\n'
+        << "  Vertex kicks:       " << submitted_vertices << " submitted, "
+        << suppressed_vertices << " ADC/suppressed, "
+        << indeterminate_vertices << " indeterminate\n"
+        << "  Primitive groups:   " << report.primitives.size() << '\n'
+        << "  Primitive emission: " << report.emitted_primitive_count
+        << " emitted, " << report.suppressed_primitive_count
+        << " suppressed, " << report.indeterminate_primitive_count
+        << " indeterminate\n"
+        << "  Pending vertices:   " << report.unassembled_vertex_count << '\n'
+        << "  Known X/Y/Z:        " << known_xyz[0U] << '/' << known_xyz[1U]
+        << '/' << known_xyz[2U] << " of " << report.vertices.size() << '\n'
+        << "  Known S/T/Q:        " << known_stq[0U] << '/' << known_stq[1U]
+        << '/' << known_stq[2U] << " of " << report.vertices.size() << '\n'
+        << "  Known R/G/B/A:      " << known_rgba[0U] << '/' << known_rgba[1U]
+        << '/' << known_rgba[2U] << '/' << known_rgba[3U] << " of "
+        << report.vertices.size() << '\n'
+        << "  Unsupported writes: " << report.unsupported_register_write_count
+        << '\n'
+        << "  Unresolved A+D:     " << report.unresolved_addressed_write_count
+        << '\n'
+        << "  Topology groups:    ";
+
+    bool wrote_topology = false;
+    for (std::size_t index = 0U; index < opportunity_topologies.size(); ++index) {
+        if (opportunity_topologies[index] == 0U) {
+            continue;
+        }
+        if (wrote_topology) {
+            std::cout << ", ";
+        }
+        std::cout
+            << gif_gs_topology_name(
+                   static_cast<openrc::GifGsPrimitiveTopologyV1>(index))
+            << '=' << opportunity_topologies[index];
+        wrote_topology = true;
+    }
+    if (!wrote_topology) {
+        std::cout << "none";
+    }
+    std::cout << '\n';
+
+    std::cout << "  Emitted topology:   ";
+    wrote_topology = false;
+    for (std::size_t index = 0U; index < emitted_topologies.size(); ++index) {
+        if (emitted_topologies[index] == 0U) {
+            continue;
+        }
+        if (wrote_topology) {
+            std::cout << ", ";
+        }
+        std::cout
+            << gif_gs_topology_name(
+                   static_cast<openrc::GifGsPrimitiveTopologyV1>(index))
+            << '=' << emitted_topologies[index];
+        wrote_topology = true;
+    }
+    if (!wrote_topology) {
+        std::cout << "none";
+    }
+    std::cout << '\n';
+
+    if (minimum_x && minimum_y) {
+        std::cout
+            << "  Raw XYZ bounds:     X " << *minimum_x << ".." << *maximum_x
+            << ", Y " << *minimum_y << ".." << *maximum_y;
+        if (minimum_z) {
+            std::cout << ", Z " << *minimum_z << ".." << *maximum_z;
+        } else {
+            std::cout << ", Z indeterminate";
+        }
+        std::cout << '\n';
+    }
+
+    const auto print_masks =
+        [](const std::string_view label,
+           const std::uint64_t count,
+           const std::array<std::uint32_t, 4U>& known_all,
+           const std::array<std::uint32_t, 4U>& known_any) {
+            if (count == 0U) {
+                return;
+            }
+            std::cout << "  " << label << " masks all: ";
+            for (std::size_t lane = 0U; lane < known_all.size(); ++lane) {
+                if (lane != 0U) {
+                    std::cout << '/';
+                }
+                std::cout << hexadecimal(known_all[lane], 8);
+            }
+            std::cout << ", any: ";
+            for (std::size_t lane = 0U; lane < known_any.size(); ++lane) {
+                if (lane != 0U) {
+                    std::cout << '/';
+                }
+                std::cout << hexadecimal(known_any[lane], 8);
+            }
+            std::cout << '\n';
+        };
+    print_masks("ST", st_write_count, st_known_all, st_known_any);
+    print_masks("XYZF2", xyz_write_count, xyz_known_all, xyz_known_any);
+
+    std::cout << "  A+D registers:      ";
+    bool wrote_address = false;
+    for (std::size_t address = 0U;
+         address < addressed_registers.size();
+         ++address) {
+        if (addressed_registers[address] == 0U) {
+            continue;
+        }
+        if (wrote_address) {
+            std::cout << ", ";
+        }
+        const auto name =
+            gif_gs_address_name(static_cast<std::uint8_t>(address));
+        if (!name.empty()) {
+            std::cout << name << '(' << hexadecimal(address, 2) << ')';
+        } else {
+            std::cout << hexadecimal(address, 2);
+        }
+        std::cout << '=' << addressed_registers[address];
+        wrote_address = true;
+    }
+    if (!wrote_address) {
+        std::cout << "none";
+    }
+    std::cout << '\n';
 }
 
 int run(const std::vector<std::filesystem::path>& arguments) {
@@ -1595,6 +2041,504 @@ int run(const std::vector<std::filesystem::path>& arguments) {
         }
     }
 
+    if (command == "scene-block-vu-run") {
+        if (arguments.size() != 6U && arguments.size() != 7U) {
+            std::cerr
+                << "error: scene-block-vu-run expects an ISO path, an ELF "
+                   "path, a level ID, a record index, and one VU pair "
+                   "entrypoint, plus an optional TGA output path\n";
+            return kUsageError;
+        }
+
+        const auto level_value = parse_decimal_argument(arguments[3]);
+        const auto record_value = parse_decimal_argument(arguments[4]);
+        const auto entrypoint_value = parse_decimal_argument(arguments[5]);
+        constexpr std::array<std::uint16_t, 6U> kTaskEntrypoints{
+            6U, 8U, 10U, 14U, 16U, 20U};
+        if (!level_value || *level_value >= openrc::kDiscTocLevelCount ||
+            !record_value || !entrypoint_value ||
+            *entrypoint_value > std::numeric_limits<std::uint16_t>::max() ||
+            std::find(kTaskEntrypoints.begin(),
+                      kTaskEntrypoints.end(),
+                      static_cast<std::uint16_t>(*entrypoint_value)) ==
+                kTaskEntrypoints.end()) {
+            std::cerr
+                << "error: level ID must be 0.."
+                << (openrc::kDiscTocLevelCount - 1U)
+                << ", record must be a decimal index, and entry-pair must "
+                   "be one of 6,8,10,14,16,20\n";
+            return kUsageError;
+        }
+        const auto level_id = static_cast<std::uint32_t>(*level_value);
+        const auto entrypoint =
+            static_cast<std::uint16_t>(*entrypoint_value);
+
+        try {
+            const auto disc_report = openrc::inspect_disc(arguments[1]);
+            const auto assets = openrc::inspect_disc_toc_assets(arguments[1]);
+            const auto level_assets = std::find_if(
+                assets.levels.begin(),
+                assets.levels.end(),
+                [level_id](const openrc::DiscTocLevelAssets& candidate) {
+                    return candidate.level_id == level_id;
+                });
+            const auto level_layout = std::find_if(
+                assets.layout.levels.begin(),
+                assets.layout.levels.end(),
+                [level_id](const openrc::DiscTocLevelDescriptor& candidate) {
+                    return candidate.level_id == level_id;
+                });
+            if (level_assets == assets.levels.end() ||
+                level_layout == assets.layout.levels.end()) {
+                throw std::runtime_error(
+                    "The requested level is absent from DiscTocV1");
+            }
+
+            constexpr std::size_t kSceneBlockSubrangeIndex = 10U;
+            const auto& subrange =
+                level_assets->primary_extent0
+                    .subranges[kSceneBlockSubrangeIndex];
+            if (subrange.byte_size == 0U ||
+                subrange.signature != openrc::DiscTocSignature::wad) {
+                throw std::runtime_error(
+                    "The level's scene-block subrange is not a non-empty WadV1");
+            }
+            const auto& primary_extent =
+                level_layout->primary_extents.front();
+            const auto primary_bytes = read_disc_extent(
+                arguments[1],
+                primary_extent.lba,
+                primary_extent.sectors,
+                kMaximumCliDecodedWadBytes);
+            const auto subrange_offset =
+                static_cast<std::uint64_t>(subrange.relative_offset);
+            const auto subrange_size =
+                static_cast<std::uint64_t>(subrange.byte_size);
+            if (subrange_offset > primary_bytes.size() ||
+                subrange_size > primary_bytes.size() - subrange_offset) {
+                throw std::runtime_error(
+                    "The scene-block WadV1 subrange lies outside primary extent 0");
+            }
+            const auto logical_wad =
+                std::span<const std::byte>(primary_bytes)
+                    .subspan(static_cast<std::size_t>(subrange_offset),
+                             static_cast<std::size_t>(subrange_size));
+            const auto decoded = openrc::decode_wad_bytes(
+                logical_wad, kMaximumCliDecodedWadBytes);
+            const auto directory = openrc::parse_scene_block_directory_v1(
+                decoded.bytes,
+                openrc::SceneBlockDirectoryLimits{
+                    kMaximumCliDecodedWadBytes,
+                    1'000'000U,
+                    kMaximumCliDecodedWadBytes,
+                });
+            const auto companion_count =
+                level_assets->primary_extent3.tables.front().size();
+            if (static_cast<std::uint64_t>(companion_count) !=
+                directory.record_count) {
+                throw std::runtime_error(
+                    "The scene-block record count does not match companion extent-3 table 0");
+            }
+            if (*record_value >= directory.entries.size()) {
+                throw std::runtime_error(
+                    "The requested scene-block record index is out of range");
+            }
+
+            const auto elf_bytes =
+                read_bounded_binary_file(arguments[2], kMaximumCliElfBytes);
+            openrc::Sha256 elf_hash;
+            elf_hash.update(std::span<const std::byte>(elf_bytes));
+            const auto elf_sha256 = openrc::hex_digest(elf_hash.finish());
+            if (disc_report.boot_sha256.empty()) {
+                throw std::runtime_error(
+                    "The ISO boot executable has no SHA-256 identity");
+            }
+            if (elf_sha256 != disc_report.boot_sha256) {
+                throw std::runtime_error(
+                    "The supplied ELF does not match the boot executable in the ISO");
+            }
+            const auto elf =
+                openrc::inspect_elf(std::span<const std::byte>(elf_bytes));
+            if (!elf.dvp_overlay_table) {
+                throw std::runtime_error(
+                    "The executable has no DVP overlay table");
+            }
+
+            std::vector<openrc::ElfDvpOverlay> selected_overlays;
+            for (const auto& overlay : elf.dvp_overlay_table->overlays) {
+                if (overlay.name.find(".55907.") != std::string::npos) {
+                    selected_overlays.push_back(overlay);
+                }
+            }
+            std::sort(
+                selected_overlays.begin(),
+                selected_overlays.end(),
+                [](const openrc::ElfDvpOverlay& left,
+                   const openrc::ElfDvpOverlay& right) {
+                    return left.virtual_memory_address <
+                        right.virtual_memory_address;
+                });
+            constexpr std::array<std::uint32_t, 8U> kExpectedOverlayAddresses{
+                0x0000U,
+                0x0800U,
+                0x1000U,
+                0x1800U,
+                0x2000U,
+                0x2800U,
+                0x3000U,
+                0x3800U,
+            };
+            constexpr std::array<std::uint32_t, 8U> kExpectedOverlaySizes{
+                0x0800U,
+                0x0800U,
+                0x0800U,
+                0x0800U,
+                0x0800U,
+                0x0800U,
+                0x0800U,
+                0x0260U,
+            };
+            if (selected_overlays.size() !=
+                kExpectedOverlayAddresses.size()) {
+                throw std::runtime_error(
+                    "DVP program 55907 does not have its exact eight overlay chunks");
+            }
+            for (std::size_t index = 0U;
+                 index < selected_overlays.size();
+                 ++index) {
+                if (selected_overlays[index].virtual_memory_address !=
+                        kExpectedOverlayAddresses[index] ||
+                    selected_overlays[index].size !=
+                        kExpectedOverlaySizes[index]) {
+                    throw std::runtime_error(
+                        "DVP program 55907 has an unexpected VU address layout");
+                }
+            }
+
+            const std::array<std::uint16_t, 2U> entrypoints{0U, entrypoint};
+            const auto program = openrc::decode_dvp_vu_program_v1(
+                std::span<const std::byte>(elf_bytes),
+                std::span<const openrc::ElfDvpOverlay>(selected_overlays),
+                std::span<const std::uint16_t>(entrypoints),
+                openrc::DvpVuLimits{
+                    kMaximumCliElfBytes,
+                    kMaximumCliDvpVuListItems,
+                    openrc::kDvpVu1MicroMemoryBytes,
+                    kMaximumCliDvpVuListItems,
+                    2U * openrc::kDvpVu1InstructionCount,
+                    8U * openrc::kDvpVu1InstructionCount,
+                });
+
+            constexpr std::uint32_t kTaskPreambleVirtualAddress = 0x001deac0U;
+            constexpr std::uint64_t kTaskPreambleBytes =
+                openrc::kSceneBlockTaskPreambleQwordCount * 16U;
+            const auto preamble_end =
+                static_cast<std::uint64_t>(kTaskPreambleVirtualAddress) +
+                kTaskPreambleBytes;
+            std::optional<std::span<const std::byte>> preamble_bytes;
+            for (const auto& segment : elf.program_headers) {
+                constexpr std::uint32_t kLoadSegmentType = 1U;
+                if (segment.type != kLoadSegmentType) {
+                    continue;
+                }
+                const auto segment_begin =
+                    static_cast<std::uint64_t>(segment.virtual_address);
+                const auto segment_end =
+                    segment_begin + static_cast<std::uint64_t>(segment.file_size);
+                if (kTaskPreambleVirtualAddress < segment_begin ||
+                    preamble_end > segment_end) {
+                    continue;
+                }
+                if (preamble_bytes) {
+                    throw std::runtime_error(
+                        "The SceneBlock task preamble maps to multiple PT_LOAD segments");
+                }
+                const auto file_offset =
+                    static_cast<std::uint64_t>(segment.file_offset) +
+                    (static_cast<std::uint64_t>(
+                         kTaskPreambleVirtualAddress) -
+                     segment_begin);
+                if (file_offset > elf_bytes.size() ||
+                    kTaskPreambleBytes > elf_bytes.size() - file_offset ||
+                    file_offset > std::numeric_limits<std::size_t>::max()) {
+                    throw std::runtime_error(
+                        "The SceneBlock task preamble lies outside the ELF bytes");
+                }
+                preamble_bytes =
+                    std::span<const std::byte>(elf_bytes)
+                        .subspan(static_cast<std::size_t>(file_offset),
+                                 static_cast<std::size_t>(kTaskPreambleBytes));
+            }
+            if (!preamble_bytes) {
+                throw std::runtime_error(
+                    "The SceneBlock task preamble VA is not file-backed by PT_LOAD");
+            }
+            const auto preamble =
+                openrc::parse_scene_block_task_preamble_v1(*preamble_bytes);
+
+            constexpr openrc::DvpVuExecutionLimitsV1 kExecutionLimits{
+                1'000'000U,
+                64U,
+                1024U,
+                65'536U,
+            };
+            openrc::SceneBlockTaskFrameInputV1 frame_input;
+            for (std::size_t row = 0U;
+                 row < frame_input.transform_qwords.size();
+                 ++row) {
+                for (std::size_t lane = 0U;
+                     lane < frame_input.transform_qwords[row].lanes.size();
+                     ++lane) {
+                    frame_input.transform_qwords[row].lanes[lane] =
+                        openrc::DvpVuWordV1{
+                            row == lane ? 0x3f800000U : 0U,
+                            std::numeric_limits<std::uint32_t>::max(),
+                        };
+                }
+            }
+            const auto initialized =
+                openrc::initialize_scene_block_task_execution_v1(
+                    program, preamble, frame_input, kExecutionLimits);
+
+            std::cout
+                << "OpenRC real SceneBlock task execution\n"
+                << "Image:               "
+                << openrc::path_to_utf8(arguments[1]) << '\n'
+                << "Executable:          "
+                << openrc::path_to_utf8(arguments[2]) << '\n'
+                << "Executable SHA-256:  " << elf_sha256 << '\n'
+                << "Level/record:        " << level_id << '/'
+                << *record_value << '\n'
+                << "Companion pairs:     " << companion_count << '\n'
+                << "State basis:         frame transform + entry 0 + selected "
+                   "record (no prior records)\n"
+                << "Frame transform:     deterministic identity debug seed\n"
+                << "Entrypoint pair:     "
+                << hexadecimal(entrypoint, 3) << '\n'
+                << "DVP overlay chunks:  ";
+            for (std::size_t index = 0U;
+                 index < selected_overlays.size();
+                 ++index) {
+                if (index != 0U) {
+                    std::cout << ',';
+                }
+                std::cout << selected_overlays[index].overlay_section_index;
+            }
+            std::cout
+                << '\n'
+                << "Preamble VA:         "
+                << hexadecimal(kTaskPreambleVirtualAddress, 8) << '\n'
+                << "Initialization:      "
+                << dvp_vu_termination_name(
+                       initialized.vu_execution.termination)
+                << '\n'
+                << "Initialization pairs:"
+                << ' ' << initialized.vu_execution.executed_instruction_pairs
+                << '\n';
+            if (!initialized.ready_state) {
+                if (initialized.vu_execution.stopped_instruction_address) {
+                    std::cout
+                        << "Initialization stop: "
+                        << hexadecimal(
+                               *initialized.vu_execution
+                                    .stopped_instruction_address,
+                               3)
+                        << '\n';
+                }
+                return kOperationError;
+            }
+
+            const auto execution = openrc::execute_scene_block_task_record_v1(
+                directory.entries[static_cast<std::size_t>(*record_value)],
+                entrypoint,
+                program,
+                *initialized.ready_state,
+                openrc::SceneBlockTaskExecutionLimitsV1{
+                    openrc::SceneBlockTaskBuildLimitsV1{
+                        kMaximumCliDecodedWadBytes,
+                        openrc::kSceneBlockTaskMaximumDmaReferences,
+                        kMaximumCliDecodedWadBytes,
+                        openrc::SceneBlockVifLimits{
+                            kMaximumCliDecodedWadBytes,
+                            1'000'000U,
+                            kMaximumCliDecodedWadBytes,
+                        },
+                    },
+                    1'000'000U,
+                    openrc::SceneBlockDvpVuBridgeLimitsV1{1'000'000U},
+                    kExecutionLimits,
+                });
+
+            std::array<std::uint64_t, openrc::kSceneBlockVuLaneCount>
+                known_vif_lanes{};
+            std::array<std::uint64_t, 5U> vif_lane_sources{};
+            for (const auto& write : execution.vif_execution.writes) {
+                for (std::size_t lane = 0U; lane < write.lanes.size(); ++lane) {
+                    if (write.lanes[lane].written_value.state ==
+                        openrc::SceneBlockVuValueState::known) {
+                        ++known_vif_lanes[lane];
+                    }
+                    const auto source_index =
+                        static_cast<std::size_t>(write.lanes[lane].source);
+                    if (source_index < vif_lane_sources.size()) {
+                        ++vif_lane_sources[source_index];
+                    }
+                }
+            }
+
+            std::cout
+                << "TOP/next TOPS:       " << execution.top_qword << '/'
+                << execution.next_tops_qword << '\n'
+                << "DMA references:      "
+                << execution.invocation.dma_references.size() << '\n'
+                << "Referenced bytes:    "
+                << execution.invocation.total_reference_bytes << '\n'
+                << "Expanded VIF bytes:  "
+                << execution.invocation.vif_bytes.size() << '\n'
+                << "VIF commands/writes: "
+                << execution.vif_execution.stream.commands.size() << '/'
+                << execution.vif_execution.writes.size() << '\n'
+                << "Known VIF X/Y/Z/W:   " << known_vif_lanes[0U] << '/'
+                << known_vif_lanes[1U] << '/' << known_vif_lanes[2U] << '/'
+                << known_vif_lanes[3U] << " of "
+                << execution.vif_execution.writes.size() << '\n'
+                << "VIF payload/fill/V3-spill/V3-zero/V3-missing: "
+                << vif_lane_sources[0U] << '/' << vif_lane_sources[1U] << '/'
+                << vif_lane_sources[2U] << '/' << vif_lane_sources[3U] << '/'
+                << vif_lane_sources[4U] << '\n'
+                << "Final VIF CL/WL:     "
+                << execution.vif_execution.final_state.cycle_length << '/'
+                << execution.vif_execution.final_state.write_length << '\n'
+                << "Termination:         "
+                << dvp_vu_termination_name(execution.vu_execution.termination)
+                << '\n'
+                << "Executed pairs:      "
+                << execution.vu_execution.executed_instruction_pairs << '\n'
+                << "Final PC:            "
+                << hexadecimal(execution.vu_execution.final_state.pc, 3)
+                << '\n';
+            if (execution.vu_execution.stopped_instruction_address) {
+                std::cout
+                    << "Stopped instruction:"
+                    << ' '
+                    << hexadecimal(
+                           *execution.vu_execution.stopped_instruction_address,
+                           3)
+                    << '\n';
+            }
+            std::cout
+                << "XGKICK events:       "
+                << execution.vu_execution.xgkick_events.size() << '\n'
+                << "Warnings:            ";
+            if (execution.vu_execution.warnings.empty()) {
+                std::cout << "none";
+            } else {
+                for (std::size_t index = 0U;
+                     index < execution.vu_execution.warnings.size();
+                     ++index) {
+                    if (index != 0U) {
+                        std::cout << ',';
+                    }
+                    std::cout << dvp_vu_warning_name(
+                        execution.vu_execution.warnings[index]);
+                }
+            }
+            std::cout << '\n';
+
+            std::optional<openrc::GifGsDecodeResultV1> gs_decode;
+            const auto& xgkick_events =
+                execution.vu_execution.xgkick_events;
+            const bool complete_gs_stream =
+                !xgkick_events.empty() &&
+                std::all_of(
+                    xgkick_events.begin(),
+                    xgkick_events.end(),
+                    [](const openrc::DvpVuXgkickEventV1& event) {
+                        return event.packet_complete;
+                    });
+            if (complete_gs_stream) {
+                gs_decode = openrc::decode_dvp_vu_xgkick_gs_stream_v1(
+                    std::span<const openrc::DvpVuXgkickEventV1>{
+                        xgkick_events.data(), xgkick_events.size()},
+                    openrc::GifGsDecodeLimitsV1{
+                        65'536U,
+                        1'000'000U,
+                        1'000'000U,
+                        1'000'000U,
+                        1'000'000U,
+                        64U,
+                    });
+            }
+
+            for (std::size_t event_index = 0U;
+                 event_index < execution.vu_execution.xgkick_events.size();
+                 ++event_index) {
+                const auto& event =
+                    execution.vu_execution.xgkick_events[event_index];
+                std::cout
+                    << "XGKICK " << event_index
+                    << " pc=" << hexadecimal(event.instruction_address, 3)
+                    << " base=";
+                if ((event.base_qword.known_mask & 0x03ffU) == 0x03ffU) {
+                    std::cout << (event.base_qword.bits & 0x03ffU);
+                } else {
+                    std::cout << "indeterminate";
+                }
+                std::cout
+                    << " qwords=" << event.packet_qwords.size()
+                    << " tags=" << event.tags.size()
+                    << " complete="
+                    << (event.packet_complete ? "yes" : "no") << '\n';
+                for (std::size_t tag_index = 0U;
+                     tag_index < event.tags.size();
+                     ++tag_index) {
+                    const auto& tag = event.tags[tag_index];
+                    std::cout
+                        << "  tag " << tag_index
+                        << " memory=" << tag.memory_qword
+                        << " nloop=" << tag.tag.nloop
+                        << " eop=" << (tag.tag.eop ? 1 : 0)
+                        << " flg="
+                        << static_cast<unsigned int>(tag.tag.format)
+                        << " nreg="
+                        << static_cast<unsigned int>(tag.tag.register_count)
+                        << " regs=";
+                    print_dvp_gif_registers(tag.tag);
+                    std::cout
+                        << " payload-qwords="
+                    << tag.tag.payload_qword_count << '\n';
+                }
+            }
+            if (gs_decode) {
+                print_gif_gs_decode_report(*gs_decode);
+            } else if (!xgkick_events.empty()) {
+                std::cout
+                    << "\nDecoded GS stream: skipped because an XGKICK "
+                       "packet is incomplete\n";
+            }
+            if (arguments.size() == 7U) {
+                if (!gs_decode) {
+                    throw std::runtime_error(
+                        "Cannot export a wireframe without a complete decoded GS stream");
+                }
+                const auto image = make_gif_gs_wireframe_image(*gs_decode);
+                const auto tga = openrc::encode_two_fip_tga(image);
+                write_new_binary_file(arguments[6], tga);
+                std::cout
+                    << "\nWireframe TGA:       "
+                    << openrc::path_to_utf8(arguments[6]) << '\n'
+                    << "Wireframe size:      " << image.width << 'x'
+                    << image.height << '\n'
+                    << "Wireframe bytes:     " << tga.size() << '\n';
+            }
+
+            return execution.ready_state ? 0 : kOperationError;
+        } catch (const std::exception& error) {
+            std::cerr << "error: " << error.what() << '\n';
+            return kOperationError;
+        }
+    }
+
     if (command == "companion-wads") {
         if (arguments.size() != 3) {
             std::cerr
@@ -2419,6 +3363,9 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                         << " nreg="
                         << static_cast<unsigned int>(
                                tag.tag.register_count)
+                        << " regs=";
+                    print_dvp_gif_registers(tag.tag);
+                    std::cout
                         << " payload-qwords="
                         << tag.tag.payload_qword_count
                         << '\n';

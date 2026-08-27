@@ -102,6 +102,41 @@ void validate_range(
     return known_value(left.bits + right.bits);
 }
 
+void validate_value(const SceneBlockVuValueV1 value,
+                    const char* const description) {
+    switch (value.state) {
+    case SceneBlockVuValueState::indeterminate:
+    case SceneBlockVuValueState::known:
+        return;
+    default:
+        fail(std::string(description) + " contains an invalid lane state");
+    }
+}
+
+void validate_initial_state(const SceneBlockVuStateV1& state) {
+    if (state.tops_qword >= kSceneBlockVuMemoryQwordCount) {
+        fail("SceneBlock VU initial TOPS must be in the 0..1023 qword range");
+    }
+    if (state.cycle_length >
+            static_cast<std::uint16_t>(
+                std::numeric_limits<std::uint8_t>::max()) ||
+        state.write_length == 0U ||
+        state.write_length > kSceneBlockVifMaximumVectorCount) {
+        fail("SceneBlock VU initial STCYCL state is invalid");
+    }
+    switch (state.addition_mode) {
+    case SceneBlockVuAdditionMode::normal:
+    case SceneBlockVuAdditionMode::offset:
+    case SceneBlockVuAdditionMode::difference:
+        break;
+    default:
+        fail("SceneBlock VU initial STMOD state is invalid");
+    }
+    for (const auto value : state.row) {
+        validate_value(value, "SceneBlock VU initial ROW");
+    }
+}
+
 [[nodiscard]] std::uint16_t effective_num(
     const std::uint8_t raw_num) noexcept {
     return raw_num == 0U
@@ -516,8 +551,42 @@ void execute_unpack(
             } else if (
                 command.opcode == SceneBlockVifOpcode::unpack_v3_16 &&
                 lane_index == 3U) {
-                lane.source =
-                    SceneBlockVuLaneSource::v3_w_indeterminate;
+                // The PS2 VIF implements V3 through its V4 unpack path. W is
+                // consequently the halfword immediately following Z (usually
+                // the next vector's X, or the command's alignment padding).
+                // The hardware does not carry that lookahead across a 128-bit
+                // source boundary; in that one case it supplies zero.
+                const auto lookahead_offset = checked_add(
+                    input_offset,
+                    input_bytes_per_vector,
+                    "a SceneBlock VU V3 W lookahead offset");
+                if ((lookahead_offset & 0x0fU) == 0U) {
+                    lane.source = SceneBlockVuLaneSource::
+                        v3_w_qword_boundary_zero;
+                    lane.unpacked_value = SceneBlockVuValueV1{
+                        SceneBlockVuValueState::known,
+                        0U};
+                } else {
+                    const auto lookahead_end = checked_add(
+                        lookahead_offset,
+                        component_bytes,
+                        "a SceneBlock VU V3 W lookahead end");
+                    if (lookahead_end > bytes.size()) {
+                        lane.source =
+                            SceneBlockVuLaneSource::v3_w_unavailable;
+                    } else {
+                        lane.source =
+                            SceneBlockVuLaneSource::v3_w_lookahead;
+                        lane.source_range = SceneBlockVifRange{
+                            lookahead_offset,
+                            component_bytes};
+                        lane.unpacked_value = read_component(
+                            bytes,
+                            lane.source_range,
+                            command.component_bits,
+                            command.unsigned_data);
+                    }
+                }
             } else {
                 if (lane_index >= command.component_count) {
                     fail("A SceneBlock VU lane exceeds its UNPACK component count");
@@ -617,13 +686,29 @@ SceneBlockVuSnapshotV1 execute_scene_block_vu_v1(
     if (options.tops_qword >= kSceneBlockVuMemoryQwordCount) {
         fail("SceneBlock VU TOPS must be in the 0..1023 qword range");
     }
+    SceneBlockVuStateV1 initial_state;
+    initial_state.tops_qword = options.tops_qword;
+    return execute_scene_block_vu_from_state_v1(bytes, initial_state, limits);
+}
+
+SceneBlockVuSnapshotV1 execute_scene_block_vu_from_state_v1(
+    const std::span<const std::byte> bytes,
+    const SceneBlockVuStateV1 initial_state,
+    const SceneBlockVuLimits limits) {
+    validate_initial_state(initial_state);
     if (limits.max_vector_writes == 0U) {
         fail("SceneBlock VU max_vector_writes must be non-zero");
     }
 
     SceneBlockVuSnapshotV1 result;
     try {
-        result.stream = parse_scene_block_vif_stream_v1(bytes, limits.vif);
+        result.stream = parse_scene_block_vif_stream_v1(
+            bytes,
+            SceneBlockVifCycleStateV1{
+                initial_state.cycle_length,
+                initial_state.write_length,
+            },
+            limits.vif);
     } catch (const SceneBlockVifError& error) {
         fail(
             "Invalid SceneBlock VIF stream for VU execution: " +
@@ -638,8 +723,8 @@ SceneBlockVuSnapshotV1 execute_scene_block_vu_v1(
         result.total_vector_writes,
         "The SceneBlock VU vector-write count"));
 
-    SceneBlockVuStateV1 state;
-    state.tops_qword = options.tops_qword;
+    result.initial_state = initial_state;
+    auto state = initial_state;
 
     for (std::size_t index = 0;
          index < result.stream.commands.size();

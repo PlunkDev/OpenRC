@@ -270,8 +270,8 @@ void test_bridge_replays_exact_prefix_and_preserves_unknown_lane() {
            "V3 prefix y lane should be known");
     expect(first.initial_state.data_memory[7].lanes[2] == known_word(0x33U),
            "V3 prefix z lane should be known");
-    expect(first.initial_state.data_memory[7].lanes[3].known_mask == 0U,
-           "V3 prefix w lane must remain indeterminate");
+    expect(first.initial_state.data_memory[7].lanes[3] == known_word(0U),
+           "V3 prefix w lane should read its zero alignment padding");
 
     const auto second = openrc::make_scene_block_dvp_vu_invocation_v1(
         snapshot,
@@ -284,6 +284,61 @@ void test_bridge_replays_exact_prefix_and_preserves_unknown_lane() {
         second.initial_state.data_memory[7] ==
             known_vector({0x11111111U, 0x22222222U, 0x33333333U, 0x44444444U}),
         "later prefix write should replace every destination lane");
+}
+
+void test_apply_writes_preserves_existing_state_and_is_transactional() {
+    const auto snapshot = make_bridge_snapshot();
+    auto state = openrc::make_dvp_vu_execution_state_v1();
+    state.data_memory[7U] = known_vector({90U, 91U, 92U, 93U});
+    state.data_memory[8U] = known_vector({80U, 81U, 82U, 83U});
+    state.vf[1U] = known_vector({70U, 71U, 72U, 73U});
+
+    openrc::apply_scene_block_dvp_vu_writes_v1(
+        state,
+        snapshot,
+        0U,
+        1U,
+        openrc::SceneBlockDvpVuBridgeLimitsV1{2U});
+    expect(state.data_memory[7U].lanes[0] == known_word(0x11U) &&
+               state.data_memory[7U].lanes[1] == known_word(0x22U) &&
+               state.data_memory[7U].lanes[2] == known_word(0x33U) &&
+               state.data_memory[7U].lanes[3] == known_word(0U),
+           "write replay should preserve the known V3 padding lane");
+    expect(state.data_memory[8U] ==
+               known_vector({80U, 81U, 82U, 83U}) &&
+               state.vf[1U] == known_vector({70U, 71U, 72U, 73U}),
+           "write replay must preserve unrelated RAM and registers");
+
+    openrc::apply_scene_block_dvp_vu_writes_v1(
+        state,
+        snapshot,
+        1U,
+        1U,
+        openrc::SceneBlockDvpVuBridgeLimitsV1{2U});
+    expect(state.data_memory[7U] ==
+               known_vector(
+                   {0x11111111U, 0x22222222U, 0x33333333U, 0x44444444U}),
+           "a later replay range should overwrite the same destination");
+
+    auto malformed = snapshot;
+    malformed.writes[1U].destination_qword =
+        static_cast<std::uint16_t>(openrc::kDvpVuDataMemoryQwordCount);
+    auto transactional_state = openrc::make_dvp_vu_execution_state_v1();
+    transactional_state.data_memory[7U] =
+        known_vector({50U, 51U, 52U, 53U});
+    expect_execution_error(
+        [&transactional_state, &malformed] {
+            openrc::apply_scene_block_dvp_vu_writes_v1(
+                transactional_state,
+                malformed,
+                0U,
+                2U,
+                openrc::SceneBlockDvpVuBridgeLimitsV1{2U});
+        },
+        "malformed later write should reject the whole replay range");
+    expect(transactional_state.data_memory[7U] ==
+               known_vector({50U, 51U, 52U, 53U}),
+           "failed preflight must not apply an earlier valid write");
 }
 
 void test_branch_executes_one_delay_pair() {
@@ -546,6 +601,15 @@ void test_xgkick_copies_multitag_packet() {
            "first packed GIFtag should describe one payload qword");
     expect(event.tags[1].tag.eop && event.tags[1].tag.payload_qword_count == 2U,
            "second packed GIFtag should end after two payload qwords");
+    expect(event.tags[0].packet_qword_index == 0U &&
+               event.tags[1].packet_qword_index == 2U,
+           "GIFtag packet indices do not identify their copied qwords");
+    expect(event.tags[0].tag.registers_known &&
+               event.tags[0].tag.registers[0U] == 0U &&
+               event.tags[1].tag.registers_known &&
+               event.tags[1].tag.registers[0U] == 0U &&
+               event.tags[1].tag.registers[1U] == 0U,
+           "known GIFtag REGS descriptors were not retained");
 }
 
 void test_execution_and_xgkick_limits_are_independent() {
@@ -591,6 +655,7 @@ void test_execution_and_xgkick_limits_are_independent() {
 int main() {
     try {
         test_bridge_replays_exact_prefix_and_preserves_unknown_lane();
+        test_apply_writes_preserves_existing_state_and_is_transactional();
         test_branch_executes_one_delay_pair();
         test_e_delay_lq_warns_and_commits();
         test_status_latency_and_same_pair_snapshot();
