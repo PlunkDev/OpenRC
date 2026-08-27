@@ -457,14 +457,32 @@ interpreted as signed integer input to the confirmed `ITOF0` path, without an
 invented `/16` scale. The public recovery result retains the index qword/lane,
 descriptor W lane, position/color qwords, and their last VIF write indices.
 
+The qword-250 address is specific to record 0, not a level-wide constant. Across
+all 460 Veldin records, every one of the 263 entry-16 executions that reaches a
+normal E termination has exactly one unsigned V4-8 UNPACK whose output-vector
+count equals `ceil(GS vertices / 4)`. Its first written qword is the descriptor
+index base; the observed bases span qwords 157..293. Following the same
+index/descriptor-W/position/adjacent-color chain from that derived base gives
+exact RGBA agreement for every submission in all 263 records. Their merged
+source geometry contains 22,428 vertices and 18,660 emitted triangles, with
+bounds `(94915, 74933, 6144)` through `(238337, 314859, 44553)` in the recovered
+signed source coordinates.
+
+Entry 16 decodes complete GS events for 325 records in total, yielding 24,954
+raster vertices and 20,782 emitted triangles. The additional 62 records stop on
+still-indeterminate runtime memory after a partial captured pass and do not have
+a complete exact source-index candidate; 135 records produce no XGKICK event in
+this standalone pass. Full-level mode preserves those distinctions rather than
+zero-filling or claiming that the raw aggregate is a complete gameplay frame.
+
 With identity diagnostic frame input, the affine stage computes
 `q5*x + q6*y + q7*z + q8`, and the later DIV by the resulting W followed by
 MULQ confirms that qwords `5..8` are a full homogeneous transform into the
 pre-viewport projection path. Recovering the live values uploaded by the EE
 caller remains separate work. The native viewer therefore uses an isolated
-PC-side Z-up debug orbit for the source mesh and keeps the decoded GS 2D output
-behind `Tab`; neither mode is claimed to be the original gameplay camera or a
-classified/playable Veldin scene.
+PC-side Z-up debug orbit for the merged source mesh and keeps the aggregate
+decoded GS 2D output behind `Tab`; neither mode is claimed to be the original
+gameplay camera or a classified/playable Veldin scene.
 
 The eight chunks form one continuous decoded instruction run. None of the 243
 control transfers has a missing delay slot, and no instruction-run boundary,

@@ -27,6 +27,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -34,6 +35,9 @@ namespace {
 constexpr wchar_t kWindowClassName[] = L"PlunkDev.OpenRC.Runtime.Window";
 constexpr wchar_t kApplicationName[] = L"OpenRC native level viewer";
 constexpr std::uint64_t kMaximumRuntimeBytes = 64U * 1024U * 1024U;
+constexpr std::uint64_t kMaximumAggregateRecords = 4096U;
+constexpr std::uint64_t kMaximumAggregateVertices = 1'000'000U;
+constexpr std::uint64_t kMaximumAggregateTriangleIndices = 3'000'000U;
 
 struct RuntimeArguments {
     std::filesystem::path disc_image;
@@ -41,6 +45,7 @@ struct RuntimeArguments {
     std::uint32_t level_id = 0U;
     std::uint64_t record_index = 0U;
     std::uint16_t entrypoint = 16U;
+    bool all_records = false;
     bool show_help = false;
 };
 
@@ -55,7 +60,49 @@ struct WindowState {
 struct LoadedSceneGeometry {
     openrc::runtime::SceneGeometryV1 raster;
     std::optional<openrc::runtime::SceneGeometry3dV1> source;
+    std::uint64_t total_record_count = 0U;
+    std::uint64_t decoded_record_count = 0U;
+    std::uint64_t raster_record_count = 0U;
+    std::uint64_t source_record_count = 0U;
+    std::uint64_t no_event_record_count = 0U;
+    std::uint64_t incomplete_stream_record_count = 0U;
+    std::uint64_t unavailable_source_record_count = 0U;
 };
+
+void add_aggregate_size(
+    std::uint64_t& total,
+    const std::uint64_t addition,
+    const std::uint64_t limit,
+    const char* const message) {
+    if (total > limit || addition > limit - total) {
+        throw std::runtime_error(message);
+    }
+    total += addition;
+}
+
+void validate_source_geometry_result(
+    const openrc::SceneBlockRuntimeExecutionV1& execution,
+    const std::uint16_t entrypoint) {
+    const auto has_source = execution.source_geometry.has_value();
+    const auto status = execution.source_geometry_status;
+    if (entrypoint == openrc::kSceneBlockSourceGeometryEntrypointV1) {
+        if (status ==
+                openrc::SceneBlockRuntimeSourceGeometryStatusV1::not_attempted ||
+            (status ==
+                 openrc::SceneBlockRuntimeSourceGeometryStatusV1::recovered) !=
+                has_source) {
+            throw std::runtime_error(
+                "The SceneBlock source-geometry result is inconsistent");
+        }
+        return;
+    }
+    if (status !=
+            openrc::SceneBlockRuntimeSourceGeometryStatusV1::not_attempted ||
+        has_source) {
+        throw std::runtime_error(
+            "A non-entry-16 record unexpectedly returned source geometry");
+    }
+}
 
 [[nodiscard]] std::wstring utf8_to_wide(const std::string_view value) {
     if (value.empty()) {
@@ -163,12 +210,20 @@ parse_unsigned_decimal(const std::wstring_view text) noexcept {
             result.level_id = static_cast<std::uint32_t>(*parsed);
             saw_level = true;
         } else if (name == L"--record") {
-            const auto parsed = parse_unsigned_decimal(value);
-            if (saw_record || !parsed) {
+            if (saw_record) {
                 throw std::runtime_error(
-                    "--record must be one unsigned decimal value");
+                    "--record must be supplied at most once");
             }
-            result.record_index = *parsed;
+            if (value == L"all") {
+                result.all_records = true;
+            } else {
+                const auto parsed = parse_unsigned_decimal(value);
+                if (!parsed) {
+                    throw std::runtime_error(
+                        "--record must be one unsigned decimal value or all");
+                }
+                result.record_index = *parsed;
+            }
             saw_record = true;
         } else if (name == L"--entry-pair") {
             const auto parsed = parse_unsigned_decimal(value);
@@ -270,12 +325,145 @@ load_scene_geometry(const RuntimeArguments& arguments) {
         arguments.boot_executable,
         arguments.level_id,
         make_load_limits());
-    const auto execution = openrc::execute_scene_block_runtime_record_v1(
-        assets,
-        arguments.record_index,
-        arguments.entrypoint,
-        make_identity_frame_input(),
-        make_execution_limits());
+
+    const auto load_one_record = [&](const std::uint64_t record_index) {
+        return openrc::execute_scene_block_runtime_record_v1(
+            assets,
+            record_index,
+            arguments.entrypoint,
+            make_identity_frame_input(),
+            make_execution_limits());
+    };
+
+    if (arguments.all_records) {
+        if (assets.directory.entries.empty()) {
+            throw std::runtime_error(
+                "The selected level has no SceneBlock records");
+        }
+        if (assets.directory.entries.size() > kMaximumAggregateRecords) {
+            throw std::runtime_error(
+                "The selected level exceeds the full-level record limit");
+        }
+
+        std::vector<openrc::runtime::SceneGeometryV1> raster_batches;
+        std::vector<openrc::runtime::SceneGeometry3dV1> source_batches;
+        raster_batches.reserve(assets.directory.entries.size());
+        source_batches.reserve(assets.directory.entries.size());
+
+        LoadedSceneGeometry result;
+        result.total_record_count = assets.directory.entries.size();
+        std::uint64_t raster_vertex_count = 0U;
+        std::uint64_t raster_index_count = 0U;
+        std::uint64_t source_vertex_count = 0U;
+        std::uint64_t source_index_count = 0U;
+        for (std::size_t record_index = 0U;
+             record_index < assets.directory.entries.size();
+             ++record_index) {
+            const auto execution = load_one_record(record_index);
+            switch (execution.gs_status) {
+            case openrc::SceneBlockRuntimeGsStatusV1::not_attempted:
+                throw std::runtime_error(
+                    "A full-level SceneBlock record was not executed");
+            case openrc::SceneBlockRuntimeGsStatusV1::no_events:
+                ++result.no_event_record_count;
+                continue;
+            case openrc::SceneBlockRuntimeGsStatusV1::incomplete_stream:
+                ++result.incomplete_stream_record_count;
+                continue;
+            case openrc::SceneBlockRuntimeGsStatusV1::decoded:
+                break;
+            }
+            if (!execution.gs) {
+                throw std::runtime_error(
+                    "A decoded full-level GS stream is unavailable");
+            }
+            ++result.decoded_record_count;
+            validate_source_geometry_result(execution, arguments.entrypoint);
+
+            const auto has_emitted_triangle = std::ranges::any_of(
+                execution.gs->primitives,
+                [](const openrc::GifGsPrimitiveV1& primitive) {
+                    const auto topology = primitive.topology;
+                    return primitive.emission ==
+                               openrc::GifGsPrimitiveEmissionV1::emitted &&
+                        primitive.vertex_count == 3U &&
+                        (topology ==
+                             openrc::GifGsPrimitiveTopologyV1::triangle_list ||
+                         topology ==
+                             openrc::GifGsPrimitiveTopologyV1::triangle_strip ||
+                         topology ==
+                             openrc::GifGsPrimitiveTopologyV1::triangle_fan);
+                });
+            if (!has_emitted_triangle) {
+                continue;
+            }
+
+            auto raster_geometry =
+                openrc::runtime::build_scene_geometry_v1(*execution.gs);
+            add_aggregate_size(
+                raster_vertex_count,
+                raster_geometry.vertices.size(),
+                kMaximumAggregateVertices,
+                "The full-level raster geometry exceeds its vertex limit");
+            add_aggregate_size(
+                raster_index_count,
+                raster_geometry.triangle_indices.size(),
+                kMaximumAggregateTriangleIndices,
+                "The full-level raster geometry exceeds its index limit");
+            raster_batches.push_back(std::move(raster_geometry));
+            ++result.raster_record_count;
+            if (execution.source_geometry_status ==
+                    openrc::SceneBlockRuntimeSourceGeometryStatusV1::recovered &&
+                execution.source_geometry) {
+                auto source_geometry =
+                    openrc::runtime::build_scene_geometry_3d_v1(
+                        *execution.source_geometry,
+                        *execution.gs);
+                add_aggregate_size(
+                    source_vertex_count,
+                    source_geometry.vertices.size(),
+                    kMaximumAggregateVertices,
+                    "The full-level source geometry exceeds its vertex limit");
+                add_aggregate_size(
+                    source_index_count,
+                    source_geometry.triangle_indices.size(),
+                    kMaximumAggregateTriangleIndices,
+                    "The full-level source geometry exceeds its index limit");
+                source_batches.push_back(std::move(source_geometry));
+                ++result.source_record_count;
+            } else if (execution.source_geometry_status ==
+                       openrc::SceneBlockRuntimeSourceGeometryStatusV1::
+                           unavailable_layout) {
+                ++result.unavailable_source_record_count;
+            }
+        }
+
+        if (raster_batches.empty()) {
+            throw std::runtime_error(
+                "No full-level SceneBlock record produced triangle geometry");
+        }
+        if (arguments.entrypoint ==
+                openrc::kSceneBlockSourceGeometryEntrypointV1 &&
+            result.source_record_count +
+                    result.unavailable_source_record_count !=
+                result.raster_record_count) {
+            throw std::runtime_error(
+                "The full-level source-geometry record counts are inconsistent");
+        }
+        constexpr openrc::runtime::SceneGeometryMergeLimitsV1 merge_limits{
+            kMaximumAggregateVertices,
+            kMaximumAggregateTriangleIndices,
+        };
+        result.raster = openrc::runtime::merge_scene_geometries_v1(
+            raster_batches, merge_limits);
+        if (!source_batches.empty()) {
+            result.source = openrc::runtime::merge_scene_geometries_3d_v1(
+                source_batches, merge_limits);
+        }
+        return result;
+    }
+
+    const auto execution = load_one_record(arguments.record_index);
 
     if (!execution.initialization.ready_state) {
         throw std::runtime_error(
@@ -302,12 +490,24 @@ load_scene_geometry(const RuntimeArguments& arguments) {
         }
         throw std::runtime_error("The decoded GS stream is unavailable");
     }
+    validate_source_geometry_result(execution, arguments.entrypoint);
+    if (execution.source_geometry_status ==
+        openrc::SceneBlockRuntimeSourceGeometryStatusV1::unavailable_layout) {
+        throw std::runtime_error(
+            "The selected SceneBlock record has no recoverable source geometry: " +
+            execution.source_geometry_diagnostic.value_or(
+                "no diagnostic was supplied"));
+    }
     LoadedSceneGeometry result;
     result.raster = openrc::runtime::build_scene_geometry_v1(*execution.gs);
+    result.total_record_count = 1U;
+    result.decoded_record_count = 1U;
+    result.raster_record_count = 1U;
     if (execution.source_geometry) {
         result.source = openrc::runtime::build_scene_geometry_3d_v1(
             *execution.source_geometry,
             *execution.gs);
+        result.source_record_count = 1U;
     }
     return result;
 }
@@ -492,6 +692,32 @@ LRESULT CALLBACK window_procedure(
 [[nodiscard]] std::wstring make_window_title(
     const RuntimeArguments& arguments,
     const LoadedSceneGeometry& geometry) {
+    if (arguments.all_records) {
+        if (arguments.entrypoint !=
+            openrc::kSceneBlockSourceGeometryEntrypointV1) {
+            return std::wstring(L"OpenRC - Level ") +
+                std::to_wstring(arguments.level_id) +
+                L", all records - GS " +
+                std::to_wstring(geometry.raster_record_count) + L"/" +
+                std::to_wstring(geometry.total_record_count) + L", " +
+                std::to_wstring(geometry.raster.emitted_triangle_count) +
+                L" triangles";
+        }
+        const auto non_drawing_record_count =
+            geometry.total_record_count - geometry.raster_record_count;
+        const auto source_triangle_count = geometry.source
+            ? geometry.source->emitted_triangle_count
+            : 0U;
+        return std::wstring(L"OpenRC - Level ") +
+            std::to_wstring(arguments.level_id) +
+            L", all records - source " +
+            std::to_wstring(geometry.source_record_count) + L", GS-only " +
+            std::to_wstring(geometry.unavailable_source_record_count) +
+            L", non-drawing " +
+            std::to_wstring(non_drawing_record_count) + L", triangles " +
+            std::to_wstring(source_triangle_count) + L" source / " +
+            std::to_wstring(geometry.raster.emitted_triangle_count) + L" GS";
+    }
     return std::wstring(L"OpenRC - Level ") +
         std::to_wstring(arguments.level_id) + L", record " +
         std::to_wstring(arguments.record_index) + L", entry " +
@@ -547,8 +773,10 @@ constexpr wchar_t kUsageText[] =
     L"  --boot-executable <prepared ELF>\n\n"
     L"Optional:\n"
     L"  --level <0..18>\n"
-    L"  --record <index>\n"
+    L"  --record <index|all>\n"
     L"  --entry-pair <6,8,10,14,16,20>\n\n"
+    L"Using --record all independently executes and merges every supported "
+    L"record in the selected level.\n\n"
     L"Recovered 3D debug view (entry 16):\n"
     L"  drag or arrow keys - orbit\n"
     L"  mouse wheel or +/- - zoom\n"

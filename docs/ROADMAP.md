@@ -63,6 +63,7 @@ This roadmap describes technical milestones rather than release dates.
 - [x] connect launcher Play to the adjacent native runtime
 - [x] recover entry-16 source XYZ through the game's descriptor/index stream
 - [x] add an isolated debug orbit and decoded-GS comparison view
+- [x] independently execute and merge all supported records for a raw level view
 - [ ] recover the original per-frame camera transform from its EE caller
 - [ ] parse terrain, collision, instances, models, and textures
 - [ ] render a classified, textured Veldin scene in a native window

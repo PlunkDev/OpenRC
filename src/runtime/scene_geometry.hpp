@@ -4,6 +4,7 @@
 #include "openrc/scene_block_geometry.hpp"
 
 #include <cstdint>
+#include <span>
 #include <stdexcept>
 #include <vector>
 
@@ -60,6 +61,11 @@ public:
     using std::runtime_error::runtime_error;
 };
 
+struct SceneGeometryMergeLimitsV1 {
+    std::uint64_t max_vertices = 0U;
+    std::uint64_t max_triangle_indices = 0U;
+};
+
 // Converts already-decoded, emitted GS primitives to the one static triangle
 // batch consumed by the first D3D11 preview. Coordinates retain the decoder's
 // per-vertex raster snapshot and are expressed in GS pixels.
@@ -72,5 +78,17 @@ build_scene_geometry_v1(const GifGsDecodeResultV1& decoded);
 [[nodiscard]] SceneGeometry3dV1 build_scene_geometry_3d_v1(
     const SceneBlockSourceGeometryV1& source,
     const GifGsDecodeResultV1& decoded);
+
+// Merges complete triangle batches without changing the index order inside
+// any input batch. Every input is validated before the result is allocated;
+// index offsets, counters, host sizes, and caller-provided aggregate limits
+// are checked rather than allowed to wrap.
+[[nodiscard]] SceneGeometryV1 merge_scene_geometries_v1(
+    std::span<const SceneGeometryV1> geometries,
+    SceneGeometryMergeLimitsV1 limits);
+
+[[nodiscard]] SceneGeometry3dV1 merge_scene_geometries_3d_v1(
+    std::span<const SceneGeometry3dV1> geometries,
+    SceneGeometryMergeLimitsV1 limits);
 
 } // namespace openrc::runtime

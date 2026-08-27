@@ -1,10 +1,14 @@
 #include "scene_geometry.hpp"
 
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
+#include <span>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -66,6 +70,45 @@ void expect_geometry_error(Callback&& callback, const std::string& message) {
     vertex.z = z;
     vertex.rgba = rgba;
     return vertex;
+}
+
+[[nodiscard]] openrc::runtime::SceneGeometryV1 make_runtime_raster_triangle(
+    const float x_offset,
+    const float y_offset) {
+    openrc::runtime::SceneGeometryV1 result;
+    result.vertices = {
+        {x_offset - 4.0F, y_offset + 2.0F, 0xff000001U},
+        {x_offset + 1.0F, y_offset + 8.0F, 0xff000002U},
+        {x_offset, y_offset - 3.0F, 0xff000003U},
+    };
+    result.triangle_indices = {0U, 1U, 2U};
+    result.minimum_x = x_offset - 4.0F;
+    result.maximum_x = x_offset + 1.0F;
+    result.minimum_y = y_offset - 3.0F;
+    result.maximum_y = y_offset + 8.0F;
+    result.emitted_triangle_count = 1U;
+    return result;
+}
+
+[[nodiscard]] openrc::runtime::SceneGeometry3dV1 make_runtime_source_triangle(
+    const float x_offset,
+    const float y_offset,
+    const float z_offset) {
+    openrc::runtime::SceneGeometry3dV1 result;
+    result.vertices = {
+        {x_offset - 4.0F, y_offset + 2.0F, z_offset + 5.0F, 0xff000001U},
+        {x_offset + 1.0F, y_offset + 8.0F, z_offset - 6.0F, 0xff000002U},
+        {x_offset, y_offset - 3.0F, z_offset + 7.0F, 0xff000003U},
+    };
+    result.triangle_indices = {0U, 1U, 2U};
+    result.minimum_x = x_offset - 4.0F;
+    result.maximum_x = x_offset + 1.0F;
+    result.minimum_y = y_offset - 3.0F;
+    result.maximum_y = y_offset + 8.0F;
+    result.minimum_z = z_offset - 6.0F;
+    result.maximum_z = z_offset + 7.0F;
+    result.emitted_triangle_count = 1U;
+    return result;
 }
 
 void test_emitted_triangles_are_remapped_with_raster_offsets() {
@@ -269,6 +312,151 @@ void test_source_geometry_requires_one_to_one_gs_provenance() {
         "a reordered source-to-GS mapping was accepted");
 }
 
+void test_raster_geometries_merge_indices_bounds_and_counters() {
+    auto first = make_runtime_raster_triangle(0.0F, 0.0F);
+    first.skipped_non_triangle_count = 2U;
+    first.vertices_without_complete_xy_offset = 1U;
+    first.vertices_with_fallback_color = 1U;
+
+    auto second = make_runtime_raster_triangle(20.0F, 30.0F);
+    second.triangle_indices = {2U, 0U, 1U};
+    second.skipped_non_triangle_count = 3U;
+    second.vertices_without_complete_xy_offset = 2U;
+
+    const std::array inputs{first, second};
+    const auto merged = openrc::runtime::merge_scene_geometries_v1(
+        std::span<const openrc::runtime::SceneGeometryV1>(inputs),
+        {6U, 6U});
+
+    expect(merged.vertices.size() == 6U,
+           "the raster merge lost or duplicated vertices");
+    expect(
+        merged.triangle_indices ==
+            std::vector<std::uint32_t>{0U, 1U, 2U, 5U, 3U, 4U},
+        "the raster merge did not apply the checked vertex-index offset");
+    expect(merged.vertices[3U].x == 16.0F &&
+               merged.vertices[5U].y == 27.0F,
+           "the raster merge changed vertex order or coordinates");
+    expect(merged.minimum_x == -4.0F && merged.maximum_x == 21.0F &&
+               merged.minimum_y == -3.0F && merged.maximum_y == 38.0F,
+           "the raster merge bounds are incorrect");
+    expect(merged.emitted_triangle_count == 2U &&
+               merged.skipped_non_triangle_count == 5U &&
+               merged.vertices_without_complete_xy_offset == 3U &&
+               merged.vertices_with_fallback_color == 1U,
+           "the raster merge counters were not added exactly");
+}
+
+void test_source_geometries_merge_indices_bounds_and_counters() {
+    auto first = make_runtime_source_triangle(0.0F, 0.0F, 0.0F);
+    first.skipped_non_triangle_count = 4U;
+    auto second = make_runtime_source_triangle(20.0F, 30.0F, -40.0F);
+    second.triangle_indices = {1U, 2U, 0U};
+    second.skipped_non_triangle_count = 5U;
+
+    const std::array inputs{first, second};
+    const auto merged = openrc::runtime::merge_scene_geometries_3d_v1(
+        std::span<const openrc::runtime::SceneGeometry3dV1>(inputs),
+        {6U, 6U});
+
+    expect(merged.vertices.size() == 6U,
+           "the source merge lost or duplicated vertices");
+    expect(
+        merged.triangle_indices ==
+            std::vector<std::uint32_t>{0U, 1U, 2U, 4U, 5U, 3U},
+        "the source merge did not apply the checked vertex-index offset");
+    expect(merged.minimum_x == -4.0F && merged.maximum_x == 21.0F &&
+               merged.minimum_y == -3.0F && merged.maximum_y == 38.0F &&
+               merged.minimum_z == -46.0F && merged.maximum_z == 7.0F,
+           "the source merge bounds are incorrect");
+    expect(merged.emitted_triangle_count == 2U &&
+               merged.skipped_non_triangle_count == 9U,
+           "the source merge counters were not added exactly");
+}
+
+void test_geometry_merge_limits_and_malformed_inputs_are_rejected() {
+    const auto raster = make_runtime_raster_triangle(0.0F, 0.0F);
+    const std::array raster_inputs{raster};
+    const auto raster_span =
+        std::span<const openrc::runtime::SceneGeometryV1>(raster_inputs);
+
+    expect_geometry_error(
+        [&] {
+            static_cast<void>(openrc::runtime::merge_scene_geometries_v1(
+                raster_span, {2U, 3U}));
+        },
+        "the raster merge vertex limit was not enforced");
+    expect_geometry_error(
+        [&] {
+            static_cast<void>(openrc::runtime::merge_scene_geometries_v1(
+                raster_span, {3U, 2U}));
+        },
+        "the raster merge index limit was not enforced");
+    expect_geometry_error(
+        [&] {
+            static_cast<void>(openrc::runtime::merge_scene_geometries_v1(
+                raster_span, {0U, 3U}));
+        },
+        "a zero raster merge limit was accepted");
+    expect_geometry_error(
+        [&] {
+            static_cast<void>(openrc::runtime::merge_scene_geometries_v1(
+                {}, {3U, 3U}));
+        },
+        "an empty raster geometry list was accepted");
+
+    auto bad_index = raster;
+    bad_index.triangle_indices[2U] = 3U;
+    const std::array bad_index_inputs{bad_index};
+    expect_geometry_error(
+        [&] {
+            static_cast<void>(openrc::runtime::merge_scene_geometries_v1(
+                std::span<const openrc::runtime::SceneGeometryV1>(
+                    bad_index_inputs),
+                {3U, 3U}));
+        },
+        "an out-of-range raster merge index was accepted");
+
+    auto bad_bounds = raster;
+    bad_bounds.maximum_x += 1.0F;
+    const std::array bad_bounds_inputs{bad_bounds};
+    expect_geometry_error(
+        [&] {
+            static_cast<void>(openrc::runtime::merge_scene_geometries_v1(
+                std::span<const openrc::runtime::SceneGeometryV1>(
+                    bad_bounds_inputs),
+                {3U, 3U}));
+        },
+        "incorrect raster merge bounds were accepted");
+
+    auto counter_left = raster;
+    auto counter_right = raster;
+    counter_left.skipped_non_triangle_count =
+        std::numeric_limits<std::uint64_t>::max();
+    counter_right.skipped_non_triangle_count = 1U;
+    const std::array counter_inputs{counter_left, counter_right};
+    expect_geometry_error(
+        [&] {
+            static_cast<void>(openrc::runtime::merge_scene_geometries_v1(
+                std::span<const openrc::runtime::SceneGeometryV1>(
+                    counter_inputs),
+                {6U, 6U}));
+        },
+        "a raster merge diagnostic-counter overflow was accepted");
+
+    auto source = make_runtime_source_triangle(0.0F, 0.0F, 0.0F);
+    source.triangle_indices[1U] = 3U;
+    const std::array source_inputs{source};
+    expect_geometry_error(
+        [&] {
+            static_cast<void>(openrc::runtime::merge_scene_geometries_3d_v1(
+                std::span<const openrc::runtime::SceneGeometry3dV1>(
+                    source_inputs),
+                {3U, 3U}));
+        },
+        "an out-of-range source merge index was accepted");
+}
+
 } // namespace
 
 int main() {
@@ -279,6 +467,9 @@ int main() {
         test_malformed_emitted_geometry_is_rejected();
         test_source_geometry_uses_gs_topology_without_screen_coordinates();
         test_source_geometry_requires_one_to_one_gs_provenance();
+        test_raster_geometries_merge_indices_bounds_and_counters();
+        test_source_geometries_merge_indices_bounds_and_counters();
+        test_geometry_merge_limits_and_malformed_inputs_are_rejected();
         std::cout << "scene geometry tests passed\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {

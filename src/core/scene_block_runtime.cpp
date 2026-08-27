@@ -464,12 +464,22 @@ SceneBlockRuntimeExecutionV1 execute_scene_block_runtime_record_v1(
       std::span<const DvpVuXgkickEventV1>(events), limits.gs);
   result.gs_status = SceneBlockRuntimeGsStatusV1::decoded;
   if (entrypoint_address == kSceneBlockSourceGeometryEntrypointV1) {
-    result.source_geometry = recover_scene_block_source_geometry_v1(
-        *result.initialization.ready_state, *result.record, *result.gs,
-        SceneBlockSourceGeometryLimitsV1{
-            limits.gs.max_vertices,
-            limits.task.bridge,
-        });
+    if (result.record->vu_execution.termination !=
+        DvpVuTerminationV1::program_end) {
+      result.source_geometry_status =
+          SceneBlockRuntimeSourceGeometryStatusV1::unavailable_layout;
+      result.source_geometry_diagnostic =
+          "The record did not reach normal VU E termination";
+    } else {
+      result.source_geometry = recover_scene_block_source_geometry_v1(
+          *result.initialization.ready_state, *result.record, *result.gs,
+          SceneBlockSourceGeometryLimitsV1{
+              limits.gs.max_vertices,
+              limits.task.bridge,
+          });
+      result.source_geometry_status =
+          SceneBlockRuntimeSourceGeometryStatusV1::recovered;
+    }
   }
   return result;
 }

@@ -65,15 +65,15 @@ Stage 1 is in progress. The repository currently provides:
 - a stateful bounded GIF/GS stream decoder with primitive assembly, vertex
   attributes, raster-context snapshots, and optional auto-fit wireframe TGA
   export from real XGKICK output;
-- exact entry-16 source-geometry recovery through the record's own
-  index-to-descriptor-to-position chain, retaining VIF write provenance and
-  validating every recovered RGBA value against the decoded GS stream;
+- exact entry-16 source-geometry recovery through each record's matched V4-8
+  index stream and index-to-descriptor-to-position chain, retaining VIF write
+  provenance and validating every recovered RGBA value against decoded GS;
 - a profile-bound SceneBlock runtime loader that revalidates the user's ISO
   against its prepared boot ELF before exposing reusable decoded level data;
-- a native Windows D3D11 level-viewer window that submits the first real
-  SceneBlock triangle batch to the GPU, defaults to an auto-fit recovered-source
-  3D orbit view, retains the decoded GS projection for comparison, and falls
-  back from hardware rendering to WARP;
+- a native Windows D3D11 level-viewer window that independently executes and
+  merges every supported SceneBlock record in the selected level, defaults to
+  an auto-fit recovered-source 3D orbit view, retains the aggregate decoded GS
+  projection for comparison, and falls back from hardware rendering to WARP;
 - recognition of the PAL (`SCES-50916`) reference executable and detection of
   the NTSC-U/C (`SCUS-97199`) release;
 - a native Windows launcher with disc inspection, asynchronous Prepare,
@@ -88,7 +88,10 @@ Stage 1 is in progress. The repository currently provides:
 
 **Prepare game files** becomes available after the supported reference
 executable is detected. After preparation succeeds, **Play** starts the native
-level viewer with level 0, record 0, and SceneBlock entry pair 16.
+level viewer with level 0, every record, and SceneBlock entry pair 16. Records
+are executed independently from the same validated entry-0 state; records that
+stop diagnostically after a complete GS packet and non-drawing records are
+counted rather than allowed to abort the aggregate.
 
 The initial viewer opens in **recovered source 3D (debug orbit)** mode. Drag the
 left mouse button or use the arrow keys to orbit, use the mouse wheel or `+/-`
@@ -141,7 +144,7 @@ build/Debug/openrc-cli.exe prepare local/ratchet-and-clank.iso
 build/Debug/openrc-cli.exe elf path/to/prepared/files/SCES_509.16
 build/Debug/openrc-cli.exe dvp-vu path/to/prepared/files/SCES_509.16 2,6,8,10,14,16,20 11,12,13,14,15,16,17,18
 build/Debug/openrc-cli.exe dvp-vu-run path/to/prepared/files/SCES_509.16 2 11,12,13,14,15,16,17,18 0
-build/Debug/openrc-runtime.exe --disc-image local/ratchet-and-clank.iso --boot-executable path/to/prepared/files/SCES_509.16 --level 0 --record 0 --entry-pair 16
+build/Debug/openrc-runtime.exe --disc-image local/ratchet-and-clank.iso --boot-executable path/to/prepared/files/SCES_509.16 --level 0 --record all --entry-pair 16
 ```
 
 The `wad-bundle` LBA and sector count above identify a container in the exact
@@ -182,11 +185,17 @@ reproduce the game's live camera.
 The native D3D11 window is still a diagnostic level viewer, not a playable
 runtime. For the confirmed entry-16 path it follows the game's VU-memory
 indirection and recovers signed source XYZ for each GS vertex, while using only
-the already-decoded emitted triangle topology. The tested invocation contains
-80 submitted vertices, 73 unique descriptors, and 71 unique source positions.
-An isolated debug orbit can inspect that 3D mesh, while `Tab` retains the exact
-GS-output comparison. The DVP VU layer still does not emulate bit-exact VU
-floating point or live PATH1 arbitration, and the geometry is not yet
+the already-decoded emitted triangle topology. On reference Veldin, 460 records
+produce 325 decoded GS streams; 263 normally completed records yield exact
+source geometry, merging to 22,428 vertices and 18,660 triangles. Another 135
+records emit no XGKICK in this pass and 62 stop on still-indeterminate runtime
+state, so this is an honest supported-record aggregate rather than a claim that
+every gameplay render pass is reconstructed. The original record-0 proof still
+contains 80 submitted vertices, 73 unique descriptors, and 71 unique source
+positions. An isolated debug orbit can inspect the merged 3D mesh, while `Tab`
+retains the aggregate GS-output comparison. The DVP VU layer still does not
+emulate bit-exact VU floating point or live PATH1 arbitration, and the geometry
+is not yet
 classified as terrain, collision, or models.
 
 `dvp-vu` accepts comma-separated decimal VU pair addresses and ELF overlay

@@ -579,7 +579,7 @@ void inspect_selected_iso() {
         L"--level",
         L"0",
         L"--record",
-        L"0",
+        L"all",
         L"--entry-pair",
         L"16",
     };
@@ -673,7 +673,9 @@ void launch_runtime() {
         CloseHandle(process_info.hThread);
         CloseHandle(process_info.hProcess);
         set_status(L"OpenRC runtime started.");
-        set_report(L"The native runtime was started in a separate process.");
+        set_report(
+            L"The native runtime is loading all supported Veldin records in "
+            L"a separate process. The first window can take a few seconds.");
     } catch (const std::exception& error) {
         set_status(L"Could not start OpenRC runtime.");
         set_report(to_wide(std::string("Error: ") + error.what()));

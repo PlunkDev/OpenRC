@@ -134,13 +134,18 @@ entry-0 poststate, and carried BASE/OFFSET/DBF plus VIF/VU state. Complete
 XGKICK events feed a bounded stateful GIF/GS decoder which assembles typed
 vertices and primitive emissions. A profile-bound owning loader now shares
 that exact ISO/ELF verification and execution path with the first native D3D11
-viewer. For entry 16, a profile-bound recovery layer follows the record's
-qword-250 vertex indices through descriptor W pointers to signed source XYZ and
-adjacent RGBA, retaining the last VIF write for every hop. The viewer uses the
-decoded GS primitives as topology and can orbit the recovered source mesh, but
-that orbit is isolated PC-side diagnostic state: it never rewrites the VU frame
-transform or claims to reproduce the original camera. Scene classification,
-textures, the live game camera, and gameplay remain outside this layer.
+viewer. For entry 16, a profile-bound recovery layer identifies the one V4-8
+UNPACK whose output count matches the decoded GS submission count, then
+requires its complete index-to-descriptor-W-to-signed-XYZ/adjacent-RGBA chain
+to agree with every decoded GS color. The selected index address is therefore
+derived per record instead of frozen to record 0's qword 250, and every hop
+retains its last VIF write. Full-level mode independently starts every record
+from the same validated entry-0/TOP=0 state, merges complete raster and source
+triangle batches under aggregate limits, and reports diagnostic GS-only records
+separately. The viewer can orbit the merged source mesh, but that orbit is
+isolated PC-side diagnostic state: it never rewrites the VU frame transform or
+claims to reproduce the original camera. Scene classification, textures, the
+live game camera, and gameplay remain outside this layer.
 
 The current CFG is deliberately context-insensitive and folds each decoded
 delay pair into its transfer block. It rejects an instruction-run start,

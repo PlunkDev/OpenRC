@@ -12,7 +12,6 @@
 namespace openrc {
 
 inline constexpr std::uint16_t kSceneBlockSourceGeometryEntrypointV1 = 16U;
-inline constexpr std::uint16_t kSceneBlockSourceIndexFirstQwordV1 = 250U;
 inline constexpr std::uint8_t kSceneBlockSourcePositionPointerLaneV1 = 3U;
 
 struct SceneBlockSourceLaneProvenanceV1 {
@@ -41,7 +40,8 @@ struct SceneBlockSourceVertexV1 {
   std::int32_t z = 0;
   std::array<std::uint8_t, 4U> rgba{};
 
-  // The per-GS-vertex byte in qwords 250 onward selects a descriptor qword.
+  // The per-GS-vertex byte in the record's matched V4-8 index stream selects
+  // a descriptor qword.
   SceneBlockSourceLaneProvenanceV1 descriptor_index_source;
   // The descriptor's W lane selects the signed XYZ qword.
   SceneBlockSourceLaneProvenanceV1 position_pointer_source;
@@ -52,6 +52,7 @@ struct SceneBlockSourceVertexV1 {
 
 struct SceneBlockSourceGeometryV1 {
   std::vector<SceneBlockSourceVertexV1> vertices;
+  std::uint16_t descriptor_index_first_qword = 0U;
   std::uint64_t unique_descriptor_qword_count = 0U;
   std::uint64_t unique_position_qword_count = 0U;
 };
@@ -67,10 +68,11 @@ public:
 };
 
 // Reconstructs the record input RAM from the state produced by entry 0 and
-// follows the confirmed entry-16 index -> descriptor -> position chain. This
-// V1 contract is intentionally restricted to the first (TOP=0) input bank.
-// Every consumed word must be fully known, and the adjacent source RGBA must
-// exactly equal the corresponding decoded GS vertex color.
+// follows the confirmed entry-16 index -> descriptor -> position chain. The
+// index stream is selected from the record's V4-8 UNPACK commands by its
+// exact GS vertex count and full source/GS color agreement, rather than by a
+// record-specific fixed address. This V1 contract is intentionally restricted
+// to the first (TOP=0) input bank. Every consumed word must be fully known.
 [[nodiscard]] SceneBlockSourceGeometryV1
 recover_scene_block_source_geometry_v1(
     const SceneBlockTaskExecutionStateV1 &initialized_state,

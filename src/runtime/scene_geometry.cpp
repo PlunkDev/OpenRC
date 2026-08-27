@@ -1,6 +1,7 @@
 #include "scene_geometry.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <limits>
 
@@ -41,6 +42,142 @@ constexpr std::uint32_t kFallbackColor =
            (static_cast<std::uint32_t>(rgba[1U]) << 8U) |
            (static_cast<std::uint32_t>(rgba[2U]) << 16U) |
            (static_cast<std::uint32_t>(rgba[3U]) << 24U);
+}
+
+[[nodiscard]] std::uint64_t checked_counter_add(
+    const std::uint64_t left,
+    const std::uint64_t right,
+    const char* const message) {
+    if (right > std::numeric_limits<std::uint64_t>::max() - left) {
+        throw SceneGeometryError(message);
+    }
+    return left + right;
+}
+
+void validate_merge_limits(const SceneGeometryMergeLimitsV1 limits) {
+    if (limits.max_vertices == 0U || limits.max_triangle_indices == 0U) {
+        throw SceneGeometryError(
+            "Scene geometry merge limits must be non-zero");
+    }
+}
+
+struct Bounds2d {
+    float minimum_x = 0.0F;
+    float maximum_x = 0.0F;
+    float minimum_y = 0.0F;
+    float maximum_y = 0.0F;
+};
+
+struct Bounds3d {
+    float minimum_x = 0.0F;
+    float maximum_x = 0.0F;
+    float minimum_y = 0.0F;
+    float maximum_y = 0.0F;
+    float minimum_z = 0.0F;
+    float maximum_z = 0.0F;
+};
+
+[[nodiscard]] Bounds2d validate_geometry(
+    const SceneGeometryV1& geometry) {
+    if (geometry.vertices.empty() || geometry.triangle_indices.empty()) {
+        throw SceneGeometryError(
+            "A raster geometry merge input is empty");
+    }
+    if (geometry.triangle_indices.size() % 3U != 0U ||
+        geometry.emitted_triangle_count !=
+            geometry.triangle_indices.size() / 3U) {
+        throw SceneGeometryError(
+            "A raster geometry merge input has inconsistent triangle counts");
+    }
+    if (geometry.vertices_without_complete_xy_offset >
+            geometry.vertices.size() ||
+        geometry.vertices_with_fallback_color > geometry.vertices.size()) {
+        throw SceneGeometryError(
+            "A raster geometry merge input has inconsistent vertex diagnostics");
+    }
+    for (const auto index : geometry.triangle_indices) {
+        if (index >= geometry.vertices.size()) {
+            throw SceneGeometryError(
+                "A raster geometry merge input contains an invalid vertex index");
+        }
+    }
+
+    const auto& first = geometry.vertices.front();
+    if (!std::isfinite(first.x) || !std::isfinite(first.y)) {
+        throw SceneGeometryError(
+            "A raster geometry merge input contains a non-finite vertex");
+    }
+    Bounds2d bounds{first.x, first.x, first.y, first.y};
+    for (const auto& vertex : geometry.vertices) {
+        if (!std::isfinite(vertex.x) || !std::isfinite(vertex.y)) {
+            throw SceneGeometryError(
+                "A raster geometry merge input contains a non-finite vertex");
+        }
+        bounds.minimum_x = std::min(bounds.minimum_x, vertex.x);
+        bounds.maximum_x = std::max(bounds.maximum_x, vertex.x);
+        bounds.minimum_y = std::min(bounds.minimum_y, vertex.y);
+        bounds.maximum_y = std::max(bounds.maximum_y, vertex.y);
+    }
+    if (geometry.minimum_x != bounds.minimum_x ||
+        geometry.maximum_x != bounds.maximum_x ||
+        geometry.minimum_y != bounds.minimum_y ||
+        geometry.maximum_y != bounds.maximum_y) {
+        throw SceneGeometryError(
+            "A raster geometry merge input has incorrect bounds");
+    }
+    return bounds;
+}
+
+[[nodiscard]] Bounds3d validate_geometry(
+    const SceneGeometry3dV1& geometry) {
+    if (geometry.vertices.empty() || geometry.triangle_indices.empty()) {
+        throw SceneGeometryError(
+            "A source geometry merge input is empty");
+    }
+    if (geometry.triangle_indices.size() % 3U != 0U ||
+        geometry.emitted_triangle_count !=
+            geometry.triangle_indices.size() / 3U) {
+        throw SceneGeometryError(
+            "A source geometry merge input has inconsistent triangle counts");
+    }
+    for (const auto index : geometry.triangle_indices) {
+        if (index >= geometry.vertices.size()) {
+            throw SceneGeometryError(
+                "A source geometry merge input contains an invalid vertex index");
+        }
+    }
+
+    const auto& first = geometry.vertices.front();
+    if (!std::isfinite(first.x) || !std::isfinite(first.y) ||
+        !std::isfinite(first.z)) {
+        throw SceneGeometryError(
+            "A source geometry merge input contains a non-finite vertex");
+    }
+    Bounds3d bounds{
+        first.x, first.x, first.y, first.y, first.z, first.z};
+    for (const auto& vertex : geometry.vertices) {
+        if (!std::isfinite(vertex.x) || !std::isfinite(vertex.y) ||
+            !std::isfinite(vertex.z)) {
+            throw SceneGeometryError(
+                "A source geometry merge input contains a non-finite vertex");
+        }
+        bounds.minimum_x = std::min(bounds.minimum_x, vertex.x);
+        bounds.maximum_x = std::max(bounds.maximum_x, vertex.x);
+        bounds.minimum_y = std::min(bounds.minimum_y, vertex.y);
+        bounds.maximum_y = std::max(bounds.maximum_y, vertex.y);
+        bounds.minimum_z = std::min(bounds.minimum_z, vertex.z);
+        bounds.maximum_z = std::max(bounds.maximum_z, vertex.z);
+    }
+    if (geometry.minimum_x != bounds.minimum_x ||
+        geometry.maximum_x != bounds.maximum_x ||
+        geometry.minimum_y != bounds.minimum_y ||
+        geometry.maximum_y != bounds.maximum_y ||
+        geometry.minimum_z != bounds.minimum_z ||
+        geometry.maximum_z != bounds.maximum_z) {
+        throw SceneGeometryError(
+            "A source geometry merge input has incorrect bounds");
+    }
+    return bounds;
 }
 
 } // namespace
@@ -240,6 +377,222 @@ SceneGeometry3dV1 build_scene_geometry_3d_v1(
         throw SceneGeometryError(
             "The decoded GS stream contains no emitted source-space triangle geometry");
     }
+    return result;
+}
+
+SceneGeometryV1 merge_scene_geometries_v1(
+    const std::span<const SceneGeometryV1> geometries,
+    const SceneGeometryMergeLimitsV1 limits) {
+    validate_merge_limits(limits);
+    if (geometries.empty()) {
+        throw SceneGeometryError(
+            "No raster geometries were supplied for merging");
+    }
+
+    std::uint64_t total_vertices = 0U;
+    std::uint64_t total_indices = 0U;
+    std::uint64_t emitted_triangles = 0U;
+    std::uint64_t skipped_non_triangles = 0U;
+    std::uint64_t vertices_without_xy_offset = 0U;
+    std::uint64_t vertices_with_fallback_color = 0U;
+    Bounds2d aggregate_bounds{};
+    bool has_bounds = false;
+
+    for (const auto& geometry : geometries) {
+        total_vertices = checked_counter_add(
+            total_vertices,
+            static_cast<std::uint64_t>(geometry.vertices.size()),
+            "The merged raster vertex count overflows");
+        total_indices = checked_counter_add(
+            total_indices,
+            static_cast<std::uint64_t>(geometry.triangle_indices.size()),
+            "The merged raster index count overflows");
+        if (total_vertices > limits.max_vertices) {
+            throw SceneGeometryError(
+                "The merged raster geometry exceeds its vertex limit");
+        }
+        if (total_indices > limits.max_triangle_indices) {
+            throw SceneGeometryError(
+                "The merged raster geometry exceeds its index limit");
+        }
+        if (total_vertices >= kMissingVertexIndex) {
+            throw SceneGeometryError(
+                "The merged raster geometry exceeds the 32-bit vertex-index range");
+        }
+        const auto bounds = validate_geometry(geometry);
+
+        emitted_triangles = checked_counter_add(
+            emitted_triangles,
+            geometry.emitted_triangle_count,
+            "The merged raster emitted-triangle count overflows");
+        skipped_non_triangles = checked_counter_add(
+            skipped_non_triangles,
+            geometry.skipped_non_triangle_count,
+            "The merged raster skipped-primitive count overflows");
+        vertices_without_xy_offset = checked_counter_add(
+            vertices_without_xy_offset,
+            geometry.vertices_without_complete_xy_offset,
+            "The merged raster missing-XYOFFSET count overflows");
+        vertices_with_fallback_color = checked_counter_add(
+            vertices_with_fallback_color,
+            geometry.vertices_with_fallback_color,
+            "The merged raster fallback-color count overflows");
+
+        if (!has_bounds) {
+            aggregate_bounds = bounds;
+            has_bounds = true;
+        } else {
+            aggregate_bounds.minimum_x = std::min(
+                aggregate_bounds.minimum_x, bounds.minimum_x);
+            aggregate_bounds.maximum_x = std::max(
+                aggregate_bounds.maximum_x, bounds.maximum_x);
+            aggregate_bounds.minimum_y = std::min(
+                aggregate_bounds.minimum_y, bounds.minimum_y);
+            aggregate_bounds.maximum_y = std::max(
+                aggregate_bounds.maximum_y, bounds.maximum_y);
+        }
+    }
+
+    SceneGeometryV1 result;
+    if (total_vertices > result.vertices.max_size() ||
+        total_indices > result.triangle_indices.max_size()) {
+        throw SceneGeometryError(
+            "The merged raster geometry exceeds a host container limit");
+    }
+    result.vertices.reserve(static_cast<std::size_t>(total_vertices));
+    result.triangle_indices.reserve(static_cast<std::size_t>(total_indices));
+    for (const auto& geometry : geometries) {
+        const auto vertex_offset =
+            static_cast<std::uint64_t>(result.vertices.size());
+        result.vertices.insert(
+            result.vertices.end(), geometry.vertices.begin(), geometry.vertices.end());
+        for (const auto index : geometry.triangle_indices) {
+            const auto shifted_index = checked_counter_add(
+                vertex_offset,
+                index,
+                "A merged raster vertex-index offset overflows");
+            if (shifted_index >= kMissingVertexIndex) {
+                throw SceneGeometryError(
+                    "A merged raster vertex index exceeds the 32-bit range");
+            }
+            result.triangle_indices.push_back(
+                static_cast<std::uint32_t>(shifted_index));
+        }
+    }
+
+    result.minimum_x = aggregate_bounds.minimum_x;
+    result.maximum_x = aggregate_bounds.maximum_x;
+    result.minimum_y = aggregate_bounds.minimum_y;
+    result.maximum_y = aggregate_bounds.maximum_y;
+    result.emitted_triangle_count = emitted_triangles;
+    result.skipped_non_triangle_count = skipped_non_triangles;
+    result.vertices_without_complete_xy_offset = vertices_without_xy_offset;
+    result.vertices_with_fallback_color = vertices_with_fallback_color;
+    return result;
+}
+
+SceneGeometry3dV1 merge_scene_geometries_3d_v1(
+    const std::span<const SceneGeometry3dV1> geometries,
+    const SceneGeometryMergeLimitsV1 limits) {
+    validate_merge_limits(limits);
+    if (geometries.empty()) {
+        throw SceneGeometryError(
+            "No source geometries were supplied for merging");
+    }
+
+    std::uint64_t total_vertices = 0U;
+    std::uint64_t total_indices = 0U;
+    std::uint64_t emitted_triangles = 0U;
+    std::uint64_t skipped_non_triangles = 0U;
+    Bounds3d aggregate_bounds{};
+    bool has_bounds = false;
+
+    for (const auto& geometry : geometries) {
+        total_vertices = checked_counter_add(
+            total_vertices,
+            static_cast<std::uint64_t>(geometry.vertices.size()),
+            "The merged source vertex count overflows");
+        total_indices = checked_counter_add(
+            total_indices,
+            static_cast<std::uint64_t>(geometry.triangle_indices.size()),
+            "The merged source index count overflows");
+        if (total_vertices > limits.max_vertices) {
+            throw SceneGeometryError(
+                "The merged source geometry exceeds its vertex limit");
+        }
+        if (total_indices > limits.max_triangle_indices) {
+            throw SceneGeometryError(
+                "The merged source geometry exceeds its index limit");
+        }
+        if (total_vertices >= kMissingVertexIndex) {
+            throw SceneGeometryError(
+                "The merged source geometry exceeds the 32-bit vertex-index range");
+        }
+        const auto bounds = validate_geometry(geometry);
+
+        emitted_triangles = checked_counter_add(
+            emitted_triangles,
+            geometry.emitted_triangle_count,
+            "The merged source emitted-triangle count overflows");
+        skipped_non_triangles = checked_counter_add(
+            skipped_non_triangles,
+            geometry.skipped_non_triangle_count,
+            "The merged source skipped-primitive count overflows");
+
+        if (!has_bounds) {
+            aggregate_bounds = bounds;
+            has_bounds = true;
+        } else {
+            aggregate_bounds.minimum_x = std::min(
+                aggregate_bounds.minimum_x, bounds.minimum_x);
+            aggregate_bounds.maximum_x = std::max(
+                aggregate_bounds.maximum_x, bounds.maximum_x);
+            aggregate_bounds.minimum_y = std::min(
+                aggregate_bounds.minimum_y, bounds.minimum_y);
+            aggregate_bounds.maximum_y = std::max(
+                aggregate_bounds.maximum_y, bounds.maximum_y);
+            aggregate_bounds.minimum_z = std::min(
+                aggregate_bounds.minimum_z, bounds.minimum_z);
+            aggregate_bounds.maximum_z = std::max(
+                aggregate_bounds.maximum_z, bounds.maximum_z);
+        }
+    }
+
+    SceneGeometry3dV1 result;
+    if (total_vertices > result.vertices.max_size() ||
+        total_indices > result.triangle_indices.max_size()) {
+        throw SceneGeometryError(
+            "The merged source geometry exceeds a host container limit");
+    }
+    result.vertices.reserve(static_cast<std::size_t>(total_vertices));
+    result.triangle_indices.reserve(static_cast<std::size_t>(total_indices));
+    for (const auto& geometry : geometries) {
+        const auto vertex_offset =
+            static_cast<std::uint64_t>(result.vertices.size());
+        result.vertices.insert(
+            result.vertices.end(), geometry.vertices.begin(), geometry.vertices.end());
+        for (const auto index : geometry.triangle_indices) {
+            const auto shifted_index = checked_counter_add(
+                vertex_offset,
+                index,
+                "A merged source vertex-index offset overflows");
+            if (shifted_index >= kMissingVertexIndex) {
+                throw SceneGeometryError(
+                    "A merged source vertex index exceeds the 32-bit range");
+            }
+            result.triangle_indices.push_back(
+                static_cast<std::uint32_t>(shifted_index));
+        }
+    }
+
+    result.minimum_x = aggregate_bounds.minimum_x;
+    result.maximum_x = aggregate_bounds.maximum_x;
+    result.minimum_y = aggregate_bounds.minimum_y;
+    result.maximum_y = aggregate_bounds.maximum_y;
+    result.minimum_z = aggregate_bounds.minimum_z;
+    result.maximum_z = aggregate_bounds.maximum_z;
+    result.emitted_triangle_count = emitted_triangles;
+    result.skipped_non_triangle_count = skipped_non_triangles;
     return result;
 }
 

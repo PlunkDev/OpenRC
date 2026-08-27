@@ -77,7 +77,7 @@ struct Fixture {
   openrc::GifGsDecodeResultV1 gs;
 };
 
-[[nodiscard]] Fixture make_fixture() {
+[[nodiscard]] Fixture make_fixture(const std::uint16_t index_qword = 250U) {
   Fixture result;
   result.initialized.vu_state = openrc::make_dvp_vu_execution_state_v1();
   result.initialized.vif_state.tops_qword = 0U;
@@ -100,8 +100,16 @@ struct Fixture {
   append_write(result.record.vif_execution, 200U, {10U, 11U, 12U, 24U});
   append_write(result.record.vif_execution, 201U, {13U, 14U, 15U, 26U});
   append_write(result.record.vif_execution, 202U, {16U, 17U, 18U, 24U});
-  append_write(result.record.vif_execution, 250U,
+  append_write(result.record.vif_execution, index_qword,
                {200U, 201U, 200U, 202U});
+  result.record.vif_execution.stream.commands.resize(2U);
+  auto &index_command = result.record.vif_execution.stream.commands[1U];
+  index_command.opcode = openrc::SceneBlockVifOpcode::unpack_v4_8;
+  index_command.output_vector_count = 1U;
+  index_command.unsigned_data = true;
+  index_command.use_tops = true;
+  result.record.vif_execution.writes.back().command_index = 1U;
+  result.record.vif_execution.writes.back().output_vector_index = 0U;
 
   result.gs.vertices = {
       gs_vertex({1U, 2U, 3U, 4U}),
@@ -127,6 +135,8 @@ void test_reorder_duplicates_and_provenance_are_preserved() {
          "unique descriptor count is incorrect");
   expect(geometry.unique_position_qword_count == 2U,
          "duplicate position references were not retained");
+  expect(geometry.descriptor_index_first_qword == 250U,
+         "the matched descriptor-index stream base is incorrect");
 
   const auto &first = geometry.vertices[0U];
   expect(first.gs_vertex_index == 0U && first.x == -10 && first.y == 20 &&
@@ -159,10 +169,68 @@ void test_reorder_duplicates_and_provenance_are_preserved() {
          "two descriptors sharing a position were collapsed");
 }
 
+void test_index_stream_address_is_derived_from_the_record() {
+  const auto fixture = make_fixture(300U);
+  const auto geometry = openrc::recover_scene_block_source_geometry_v1(
+      fixture.initialized, fixture.record, fixture.gs, limits());
+
+  expect(geometry.descriptor_index_first_qword == 300U &&
+             geometry.vertices[0U].descriptor_index_source.qword == 300U &&
+             geometry.vertices[0U].position_source.qword == 24U,
+         "a non-q250 exact index stream was not derived from its VIF command");
+}
+
+void test_index_stream_crosses_qword_boundary() {
+  auto fixture = make_fixture();
+  append_write(fixture.record.vif_execution, 251U,
+               {201U, 200U, 202U, 201U});
+  fixture.record.vif_execution.writes.back().command_index = 1U;
+  fixture.record.vif_execution.writes.back().output_vector_index = 1U;
+  fixture.record.vif_execution.stream.commands[1U].output_vector_count = 2U;
+  fixture.gs.vertices.push_back(gs_vertex({5U, 6U, 7U, 8U}));
+  fixture.gs.vertices.push_back(gs_vertex({1U, 2U, 3U, 4U}));
+  fixture.gs.vertices.push_back(gs_vertex({1U, 2U, 3U, 4U}));
+  fixture.gs.vertices.push_back(gs_vertex({5U, 6U, 7U, 8U}));
+
+  const auto geometry = openrc::recover_scene_block_source_geometry_v1(
+      fixture.initialized, fixture.record, fixture.gs, limits());
+
+  expect(geometry.vertices.size() == 8U &&
+             geometry.descriptor_index_first_qword == 250U,
+         "a two-qword descriptor-index stream was not recovered");
+  expect(geometry.vertices[4U].descriptor_index_source.qword == 251U &&
+             geometry.vertices[4U].descriptor_index_source.lane == 0U &&
+             geometry.vertices[4U].descriptor_index_source.last_write_index ==
+                 8U &&
+             geometry.vertices[4U].position_source.qword == 26U,
+         "the first descriptor after an index-qword boundary is incorrect");
+  expect(geometry.vertices[7U].descriptor_index_source.qword == 251U &&
+             geometry.vertices[7U].descriptor_index_source.lane == 3U &&
+             geometry.vertices[7U].position_source.qword == 26U,
+         "the last descriptor after an index-qword boundary is incorrect");
+}
+
+void test_first_input_bank_boundary_is_enforced() {
+  const auto last_qword = make_fixture(327U);
+  const auto geometry = openrc::recover_scene_block_source_geometry_v1(
+      last_qword.initialized, last_qword.record, last_qword.gs, limits());
+  expect(geometry.descriptor_index_first_qword == 327U,
+         "q327 was not accepted as the final first-bank index qword");
+
+  const auto second_bank = make_fixture(328U);
+  expect_source_geometry_error(
+      [&] {
+        static_cast<void>(openrc::recover_scene_block_source_geometry_v1(
+            second_bank.initialized, second_bank.record, second_bank.gs,
+            limits()));
+      },
+      "q328 was accepted as a first-bank index qword");
+}
+
 void test_invalid_descriptor_and_position_references_are_rejected() {
   auto descriptor = make_fixture();
   set_write_lane(descriptor.record.vif_execution, 250U, 0U,
-                 {openrc::SceneBlockVuValueState::known, 1024U});
+                 {openrc::SceneBlockVuValueState::known, 328U});
   expect_source_geometry_error(
       [&] {
         static_cast<void>(openrc::recover_scene_block_source_geometry_v1(
@@ -173,13 +241,24 @@ void test_invalid_descriptor_and_position_references_are_rejected() {
 
   auto position = make_fixture();
   set_write_lane(position.record.vif_execution, 200U, 3U,
-                 {openrc::SceneBlockVuValueState::known, 1023U});
+                 {openrc::SceneBlockVuValueState::known, 328U});
   expect_source_geometry_error(
       [&] {
         static_cast<void>(openrc::recover_scene_block_source_geometry_v1(
             position.initialized, position.record, position.gs, limits()));
       },
-      "a position without an adjacent color qword was accepted");
+      "a second-bank position reference was accepted");
+
+  auto color_outside = make_fixture();
+  set_write_lane(color_outside.record.vif_execution, 200U, 3U,
+                 {openrc::SceneBlockVuValueState::known, 327U});
+  expect_source_geometry_error(
+      [&] {
+        static_cast<void>(openrc::recover_scene_block_source_geometry_v1(
+            color_outside.initialized, color_outside.record,
+            color_outside.gs, limits()));
+      },
+      "a position without a first-bank adjacent color qword was accepted");
 }
 
 void test_unknown_words_and_color_mismatches_are_rejected() {
@@ -249,6 +328,92 @@ void test_profile_and_provenance_inconsistency_are_rejected() {
             limits()));
       },
       "inconsistent write provenance was accepted");
+
+  auto output_order = make_fixture();
+  output_order.record.vif_execution.writes.back().output_vector_index = 1U;
+  expect_source_geometry_error(
+      [&] {
+        static_cast<void>(openrc::recover_scene_block_source_geometry_v1(
+            output_order.initialized, output_order.record, output_order.gs,
+            limits()));
+      },
+      "an inconsistent index-stream output number was accepted");
+
+  auto second_output = make_fixture();
+  append_write(second_output.record.vif_execution, 251U,
+               {201U, 200U, 202U, 201U});
+  second_output.record.vif_execution.writes.back().command_index = 1U;
+  second_output.record.vif_execution.writes.back().output_vector_index = 2U;
+  second_output.record.vif_execution.stream.commands[1U].output_vector_count =
+      2U;
+  second_output.gs.vertices.push_back(gs_vertex({5U, 6U, 7U, 8U}));
+  second_output.gs.vertices.push_back(gs_vertex({1U, 2U, 3U, 4U}));
+  second_output.gs.vertices.push_back(gs_vertex({1U, 2U, 3U, 4U}));
+  second_output.gs.vertices.push_back(gs_vertex({5U, 6U, 7U, 8U}));
+  expect_source_geometry_error(
+      [&] {
+        static_cast<void>(openrc::recover_scene_block_source_geometry_v1(
+            second_output.initialized, second_output.record, second_output.gs,
+            limits()));
+      },
+      "a non-sequential second index-stream output number was accepted");
+}
+
+void test_multiple_exact_index_streams_are_rejected() {
+  auto fixture = make_fixture();
+  append_write(fixture.record.vif_execution, 300U,
+               {200U, 201U, 200U, 202U});
+  fixture.record.vif_execution.stream.commands.resize(3U);
+  auto &duplicate_command =
+      fixture.record.vif_execution.stream.commands[2U];
+  duplicate_command.opcode = openrc::SceneBlockVifOpcode::unpack_v4_8;
+  duplicate_command.output_vector_count = 1U;
+  duplicate_command.unsigned_data = true;
+  duplicate_command.use_tops = true;
+  fixture.record.vif_execution.writes.back().command_index = 2U;
+  fixture.record.vif_execution.writes.back().output_vector_index = 0U;
+
+  expect_source_geometry_error(
+      [&] {
+        static_cast<void>(openrc::recover_scene_block_source_geometry_v1(
+            fixture.initialized, fixture.record, fixture.gs, limits()));
+      },
+      "multiple exact source index streams were accepted");
+}
+
+void test_many_candidate_commands_use_bounded_write_lookup() {
+  auto fixture = make_fixture();
+  constexpr std::size_t kDecoyCount = 65'536U;
+  constexpr std::size_t kFirstDecoyCommand = 2U;
+  fixture.record.vif_execution.stream.commands.resize(kFirstDecoyCommand +
+                                                      kDecoyCount);
+  fixture.record.vif_execution.writes.reserve(
+      fixture.record.vif_execution.writes.size() + kDecoyCount);
+
+  for (std::size_t decoy_index = 0U; decoy_index < kDecoyCount;
+       ++decoy_index) {
+    const auto command_index = kFirstDecoyCommand + decoy_index;
+    auto &command =
+        fixture.record.vif_execution.stream.commands[command_index];
+    command.opcode = openrc::SceneBlockVifOpcode::unpack_v4_8;
+    command.output_vector_count = 1U;
+    command.unsigned_data = true;
+    command.use_tops = true;
+    append_write(fixture.record.vif_execution, 300U,
+                 {328U, 328U, 328U, 328U});
+    fixture.record.vif_execution.writes.back().command_index =
+        static_cast<std::uint64_t>(command_index);
+    fixture.record.vif_execution.writes.back().output_vector_index = 0U;
+  }
+
+  const openrc::SceneBlockSourceGeometryLimitsV1 generous_limits{
+      64U,
+      {static_cast<std::uint64_t>(fixture.record.vif_execution.writes.size())}};
+  const auto geometry = openrc::recover_scene_block_source_geometry_v1(
+      fixture.initialized, fixture.record, fixture.gs, generous_limits);
+  expect(geometry.descriptor_index_first_qword == 250U &&
+             geometry.vertices.size() == 4U,
+         "many non-matching V4-8 candidates hid the exact index stream");
 }
 
 } // namespace
@@ -256,10 +421,15 @@ void test_profile_and_provenance_inconsistency_are_rejected() {
 int main() {
   try {
     test_reorder_duplicates_and_provenance_are_preserved();
+    test_index_stream_address_is_derived_from_the_record();
+    test_index_stream_crosses_qword_boundary();
+    test_first_input_bank_boundary_is_enforced();
     test_invalid_descriptor_and_position_references_are_rejected();
     test_unknown_words_and_color_mismatches_are_rejected();
     test_unused_lanes_may_remain_indeterminate();
     test_profile_and_provenance_inconsistency_are_rejected();
+    test_multiple_exact_index_streams_are_rejected();
+    test_many_candidate_commands_use_bounded_write_lookup();
     std::cout << "scene block source geometry tests passed\n";
     return EXIT_SUCCESS;
   } catch (const std::exception &error) {

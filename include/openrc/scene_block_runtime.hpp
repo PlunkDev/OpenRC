@@ -57,6 +57,19 @@ enum class SceneBlockRuntimeGsStatusV1 : std::uint8_t {
   decoded,
 };
 
+enum class SceneBlockRuntimeSourceGeometryStatusV1 : std::uint8_t {
+  // Source recovery is only attempted after a complete entry-16 GS stream
+  // has been decoded.
+  not_attempted = 0U,
+  // The confirmed source layout was recovered and source_geometry is present.
+  recovered,
+  // A complete GS packet was captured before a diagnostic VU stop, but its
+  // source data does not match the currently confirmed entry-16 layout. A
+  // normally completed record never degrades to this status. The diagnostic
+  // retains the exact reason.
+  unavailable_layout,
+};
+
 struct SceneBlockRuntimeExecutionLimitsV1 {
   // task.dvp is shared by entry-0 initialization and the selected record.
   SceneBlockTaskExecutionLimitsV1 task;
@@ -73,6 +86,9 @@ struct SceneBlockRuntimeExecutionV1 {
   // Present for the confirmed entry-16 input layout. Vertices retain the GS
   // submission order while XYZ comes from the source data before projection.
   std::optional<SceneBlockSourceGeometryV1> source_geometry;
+  SceneBlockRuntimeSourceGeometryStatusV1 source_geometry_status =
+      SceneBlockRuntimeSourceGeometryStatusV1::not_attempted;
+  std::optional<std::string> source_geometry_diagnostic;
 };
 
 class SceneBlockRuntimeError final : public std::runtime_error {
