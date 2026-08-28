@@ -1,5 +1,7 @@
 #include "openrc/vagp.hpp"
 
+#include "pcm_wav.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -150,34 +152,6 @@ void validate_report_for_wav(const VagpReportV1& report) {
             fail("The in-memory VAGp frame grammar is inconsistent");
         }
     }
-}
-
-void write_fourcc(
-    const std::span<std::byte> output,
-    const std::size_t offset,
-    const std::array<char, 4>& value) noexcept {
-    for (std::size_t index = 0; index < value.size(); ++index) {
-        output[offset + index] = static_cast<std::byte>(
-            static_cast<unsigned char>(value[index]));
-    }
-}
-
-void write_le16(
-    const std::span<std::byte> output,
-    const std::size_t offset,
-    const std::uint16_t value) noexcept {
-    output[offset] = static_cast<std::byte>(value & 0xffU);
-    output[offset + 1U] = static_cast<std::byte>((value >> 8U) & 0xffU);
-}
-
-void write_le32(
-    const std::span<std::byte> output,
-    const std::size_t offset,
-    const std::uint32_t value) noexcept {
-    output[offset] = static_cast<std::byte>(value & 0xffU);
-    output[offset + 1U] = static_cast<std::byte>((value >> 8U) & 0xffU);
-    output[offset + 2U] = static_cast<std::byte>((value >> 16U) & 0xffU);
-    output[offset + 3U] = static_cast<std::byte>((value >> 24U) & 0xffU);
 }
 
 } // namespace
@@ -334,7 +308,6 @@ std::vector<std::byte> encode_vagp_pcm16_mono_wav(
         content_sample_count,
         sizeof(std::int16_t),
         "the VAGp WAV data size");
-    constexpr std::uint64_t kWavHeaderSize = 44U;
     constexpr std::uint64_t kRiffOverhead = 36U;
     if (data_bytes >
         static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max()) -
@@ -354,58 +327,18 @@ std::vector<std::byte> encode_vagp_pcm16_mono_wav(
     if (content_sample_end > report.decoded.samples.size()) {
         fail("The in-memory VAGp content samples exceed the decoded PCM");
     }
-    if (report.sample_rate >
-        std::numeric_limits<std::uint32_t>::max() / sizeof(std::int16_t)) {
-        fail("The VAGp WAV byte rate cannot be represented");
-    }
-    const auto output_bytes = checked_add(
-        kWavHeaderSize,
-        data_bytes,
-        "the VAGp WAV output size");
-    if (output_bytes > max_output_bytes) {
-        fail("The VAGp WAV output exceeds the caller's byte limit");
-    }
-    if (output_bytes > std::numeric_limits<std::size_t>::max() ||
-        output_bytes > std::vector<std::byte>{}.max_size()) {
-        fail("The VAGp WAV output exceeds the host container limit");
-    }
-
-    std::vector<std::byte> output(
-        static_cast<std::size_t>(output_bytes),
-        std::byte{0});
-    const auto bytes = std::span<std::byte>(output);
-    write_fourcc(bytes, 0x00U, {'R', 'I', 'F', 'F'});
-    write_le32(
-        bytes,
-        0x04U,
-        static_cast<std::uint32_t>(kRiffOverhead + data_bytes));
-    write_fourcc(bytes, 0x08U, {'W', 'A', 'V', 'E'});
-    write_fourcc(bytes, 0x0cU, {'f', 'm', 't', ' '});
-    write_le32(bytes, 0x10U, 16U);
-    write_le16(bytes, 0x14U, 1U); // PCM
-    write_le16(bytes, 0x16U, 1U); // mono
-    write_le32(bytes, 0x18U, report.sample_rate);
-    write_le32(
-        bytes,
-        0x1cU,
-        report.sample_rate * static_cast<std::uint32_t>(sizeof(std::int16_t)));
-    write_le16(bytes, 0x20U, static_cast<std::uint16_t>(sizeof(std::int16_t)));
-    write_le16(bytes, 0x22U, 16U);
-    write_fourcc(bytes, 0x24U, {'d', 'a', 't', 'a'});
-    write_le32(bytes, 0x28U, static_cast<std::uint32_t>(data_bytes));
-
     const auto first_sample = static_cast<std::size_t>(content_sample_begin);
     const auto content_samples = static_cast<std::size_t>(content_sample_count);
-    for (std::size_t index = 0; index < content_samples; ++index) {
-        const auto bits = static_cast<std::uint16_t>(
-            report.decoded.samples[first_sample + index]);
-        const auto offset = kWavHeaderSize + index * sizeof(std::int16_t);
-        output[static_cast<std::size_t>(offset)] =
-            static_cast<std::byte>(bits & 0xffU);
-        output[static_cast<std::size_t>(offset + 1U)] =
-            static_cast<std::byte>((bits >> 8U) & 0xffU);
+    try {
+        return detail::encode_pcm16_mono_wav(
+            std::span<const std::int16_t>(report.decoded.samples).subspan(
+                first_sample,
+                content_samples),
+            report.sample_rate,
+            max_output_bytes);
+    } catch (const detail::PcmWavError& error) {
+        fail("Invalid VAGp WAV output: " + std::string(error.what()));
     }
-    return output;
 }
 
 } // namespace openrc

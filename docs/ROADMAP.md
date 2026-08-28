@@ -39,7 +39,9 @@ This roadmap describes technical milestones rather than release dates.
 - [x] implement a bounded common SBlk/VAGp PS ADPCM frame decoder
 - [x] parse VAGp V1 metadata and export bounded canonical PCM16 WAV diagnostics
 - [x] prove SBlk tuning is signed per-reference note/fine with no intrinsic Hz
-- [ ] add explicit-policy SBlk sample export and reconstruct remaining voice playback
+- [x] add bounded SBlk WAV export with a mandatory named sample-rate policy
+- [ ] expose local per-level VAGp music/speech selection and diagnostic export
+- [ ] reconstruct voice selection plus pitch, volume, pan, loop, and lifetime inputs
 - [x] inventory embedded IOP/IRX module metadata, relocations, and imports
 - [x] validate the neutral per-level SceneBlockDirectoryV1 block chain
 - [x] partition every scene-block remainder into eight verified neutral sections
@@ -53,8 +55,14 @@ This roadmap describes technical milestones rather than release dates.
 - [x] decode ordered GIF/GS state into known vertices and emitted primitives
 - [x] export the first auto-fit wireframe preview from real scene-block geometry
 - [x] validate the companion index for the shared terminal WadV1 bank
-- [ ] identify the semantic formats inside decoded WAD payloads
-- [ ] inventory R5900, VU0, VU1, IOP, GS, and system-call boundaries
+- [x] inventory every decoded WAD payload as recognized, unknown, or ambiguous
+- [ ] identify the semantic formats inside the remaining WAD payload families
+- [x] inventory bounded EE/R5900 executable regions, control transfers, and
+  PS2 system-call wrapper sites
+- [ ] recover EE/R5900 function boundaries and construct the call graph
+- [ ] inventory VU0/VU1 uploads, programs, entrypoints, and invocation sites
+- [ ] inventory EE-to-IOP SIF/RPC and imported-module service boundaries
+- [ ] inventory EE/VU-to-GIF/GS PATH, DMA, and MMIO boundaries
 
 ## Stage 2 — Native level viewer
 

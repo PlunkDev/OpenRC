@@ -22,6 +22,9 @@ Stage 1 is in progress. The repository currently provides:
   opaque per-level record tables;
 - a bounded `WadV1` reader, clean-room LZ decoder, and validated inventory of
   the first decoded bundle containing nested WAD and ELF records;
+- a streaming whole-disc decoded-WAD inventory with SHA-256 deduplication,
+  typed source provenance, strict known-format probes, and explicit
+  recognized/unknown/ambiguous results;
 - a bounded `2FIP` indexed-texture parser with PS2 CLUT normalization,
   RGBA expansion, and lossless TGA export;
 - a neutral seven-region boundary-table parser for decoded level payloads;
@@ -34,6 +37,9 @@ Stage 1 is in progress. The repository currently provides:
   per-reference center-note/fine tuning;
 - a bounded clean-room PS ADPCM frame decoder with explicit control-flag
   metadata and no assumed sample rate or playback policy;
+- bounded SBlk mono PCM16 WAV export for one selected physical block, requiring
+  either an explicit caller-supplied rate or the named 48 kHz SPU diagnostic
+  policy and preserving loop sample bounds;
 - a strict VAGp V1 parser with owned metadata, decoded content ranges, and
   bounded mono PCM16 WAV export using the rate stored in each asset;
 - a neutral `SceneBlockDirectoryV1` parser for the large decoded per-level
@@ -50,6 +56,9 @@ Stage 1 is in progress. The repository currently provides:
 - ELF32/MIPS span/path parsing with program/section inventory, a typed DVP
   overlay table mapped from LMA/VMA records to the real code bytes, and bounded
   IOP/IRX module, relocation, and import metadata;
+- a bounded EE/R5900 executable-region and control-transfer inventory with raw
+  instruction provenance, direct/indirect call sites, kernel `SYSCALL` sites,
+  and exact adjacent constant-selector wrapper proofs;
 - a bounded neutral DVP VU microprogram decoder which preserves both raw words
   and explicit unknown operations while exposing the recognized upper/lower
   instructions required by overlay group `55907`, upper flags and operands,
@@ -81,7 +90,8 @@ Stage 1 is in progress. The repository currently provides:
   runtime with the prepared game files;
 - application directories following the `PlunkDev/OpenRC` convention;
 - synthetic ISO, ELF, SHA-256, disc, WAD, bundle, 2FIP, boundary-table,
-  MapArtV1, PS2 save-bundle, PS ADPCM, VAGp, SBlk/audio, scene-block,
+  MapArtV1, PS2 save-bundle, PS ADPCM, VAGp, SBlk/audio/WAV, decoded-WAD
+  inventory/probes, EE/R5900 boundaries, scene-block,
   scene-block VIF/VU execution and phase grouping, DVP VU microprogram
   decoding/execution, companion-WAD-index, and preparation tests that contain
   no copyrighted game data.
@@ -117,6 +127,21 @@ build/Debug/openrc-launcher.exe
 build/Debug/openrc-runtime.exe
 ```
 
+For a self-contained x64 package built with the repository's bundled
+LLVM-MinGW tools, run:
+
+```powershell
+.\scripts\build-portable.ps1
+.\build-portable\openrc-launcher.exe
+```
+
+`build-portable` is atomically replaced with a clean runnable package containing
+only the matching CLI, launcher, and runtime. The packaging step verifies that
+all three files are AMD64, have unchanged hashes, and do not dynamically import
+the C++ or unwind runtimes. Do not copy `libc++.dll` or `libunwind.dll` into that
+directory. Intermediate build directories may contain stale diagnostic
+executables and are not the distribution folder.
+
 Inspect a disc from the command line:
 
 ```powershell
@@ -130,11 +155,14 @@ build/Debug/openrc-cli.exe inventory local/ratchet-and-clank.iso
 build/Debug/openrc-cli.exe toc local/ratchet-and-clank.iso
 build/Debug/openrc-cli.exe toc-assets local/ratchet-and-clank.iso
 build/Debug/openrc-cli.exe wad local/ratchet-and-clank.iso 100
+build/Debug/openrc-cli.exe wad-payload-inventory local/ratchet-and-clank.iso wad-payloads.tsv
 build/Debug/openrc-cli.exe vagp local/ratchet-and-clank.iso 51 sample.wav
 build/Debug/openrc-cli.exe boundary local/ratchet-and-clank.iso 259
 build/Debug/openrc-cli.exe map-art local/ratchet-and-clank.iso 0 map-art.tga
 build/Debug/openrc-cli.exe ps2-save local/ratchet-and-clank.iso
 build/Debug/openrc-cli.exe sblk local/ratchet-and-clank.iso 0
+build/Debug/openrc-cli.exe sblk-wav local/ratchet-and-clank.iso 0 0 sample.wav spu-native-48000
+build/Debug/openrc-cli.exe sblk-wav local/ratchet-and-clank.iso 0 0 sample-22050.wav caller-supplied-hz 22050
 build/Debug/openrc-cli.exe scene-blocks local/ratchet-and-clank.iso 0
 build/Debug/openrc-cli.exe scene-block-vu-run local/ratchet-and-clank.iso path/to/prepared/files/SCES_509.16 0 0 16 scene-block.tga
 build/Debug/openrc-cli.exe companion-wads local/ratchet-and-clank.iso 0
@@ -142,6 +170,7 @@ build/Debug/openrc-cli.exe wad-bundle local/ratchet-and-clank.iso 14365 162
 build/Debug/openrc-cli.exe twofip local/ratchet-and-clank.iso 100 texture.tga
 build/Debug/openrc-cli.exe prepare local/ratchet-and-clank.iso
 build/Debug/openrc-cli.exe elf path/to/prepared/files/SCES_509.16
+build/Debug/openrc-cli.exe r5900-boundaries path/to/prepared/files/SCES_509.16
 build/Debug/openrc-cli.exe dvp-vu path/to/prepared/files/SCES_509.16 2,6,8,10,14,16,20 11,12,13,14,15,16,17,18
 build/Debug/openrc-cli.exe dvp-vu-run path/to/prepared/files/SCES_509.16 2 11,12,13,14,15,16,17,18 0
 build/Debug/openrc-runtime.exe --disc-image local/ratchet-and-clank.iso --boot-executable path/to/prepared/files/SCES_509.16 --level 0 --record all --entry-pair 16
@@ -158,8 +187,11 @@ the reference build's PS2D memory-card resources without exporting game data.
 `sblk` validates the selected level's SBlk item directory and PS2 ADPCM frame
 bank, including shared sample references, one-shot/loop classification, and
 loop boundaries. SBlk has no intrinsic sample-rate field in Hz: its signed
-center-note/fine values are per-reference runtime tuning, so audio export will
-require an explicit rate policy rather than assigning a guessed block rate.
+center-note/fine values are per-reference runtime tuning. `sblk-wav` therefore
+requires either `caller-supplied-hz <hz>` or the explicitly named
+`spu-native-48000` diagnostic policy rather than assigning a guessed block
+rate. It decodes only the selected block's declared content frames and never
+overwrites an existing output.
 `vagp` accepts a global VAGp TOC slot and optionally creates a canonical mono
 PCM16 WAV. The export uses the asset's declared sample rate and excludes only
 the zero lead-in and terminal control frame. Output paths are never
@@ -214,6 +246,21 @@ unmapped, or limit termination. Exact task execution belongs to
 `companion-wads` validates the independent subrange-2 index into that decoded
 buffer, checks every exact WadV1 range and zero alignment gap, and then
 actually decodes all indexed WAD streams under an aggregate limit.
+
+`wad-payload-inventory` streams all 5069 decoded WadV1 observations reachable
+from the PAL reference disc's global catalog and tail bundle, local WAD runs,
+primary records, bundle children, and companion banks. It retains metadata and
+hashes rather than asset bytes, deduplicates probes by decoded SHA-256, and can
+write one TSV row per observation, including the exact parent observation for
+nested records. Unknown is a first-class result; a parser limit or foreign
+exception is not silently converted into a format match. Scene-directory
+probing has a separate 4096-record cap, safely above the PAL corpus maximum of
+2144, so a byte envelope cannot imply an unbounded metadata allocation.
+
+`r5900-boundaries` excludes the ELF's DVP/VU code sections and inventories only
+file-backed EE executable words. It reports typed jumps, branches, calls,
+returns, delay-slot coverage, raw `SYSCALL` codes, and constant `$v1` selector
+proofs. This is not yet a recovered function map or call graph.
 
 When no destination is supplied, prepared files are stored below
 `%LOCALAPPDATA%\PlunkDev\OpenRC\games`. The original image is never modified.

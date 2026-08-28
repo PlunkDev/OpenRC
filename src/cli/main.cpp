@@ -4,6 +4,7 @@
 #include "openrc/disc_toc.hpp"
 #include "openrc/dvp_vu.hpp"
 #include "openrc/dvp_vu_execute.hpp"
+#include "openrc/ee_r5900_boundary.hpp"
 #include "openrc/elf.hpp"
 #include "openrc/gif_gs.hpp"
 #include "openrc/hash.hpp"
@@ -18,10 +19,14 @@
 #include "openrc/scene_block_vu_phase.hpp"
 #include "openrc/sblk.hpp"
 #include "openrc/sblk_audio.hpp"
+#include "openrc/sblk_wav.hpp"
 #include "openrc/two_fip.hpp"
 #include "openrc/vagp.hpp"
 #include "openrc/wad.hpp"
 #include "openrc/wad_bundle.hpp"
+#include "openrc/wad_payload_inventory.hpp"
+#include "openrc/wad_payload_probes.hpp"
+#include "openrc/wad_payload_tsv.hpp"
 
 #include <algorithm>
 #include <array>
@@ -40,6 +45,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #ifdef _WIN32
@@ -66,12 +72,26 @@ constexpr int kOperationError = 3;
 constexpr int kUnsupportedBuild = 4;
 constexpr int kCancelled = 5;
 constexpr std::uint64_t kMaximumCliDecodedWadBytes = 64U * 1024U * 1024U;
+constexpr std::uint64_t kMaximumCliWadInventoryObservations = 100'000U;
+constexpr std::uint64_t kMaximumCliWadInventoryUniquePayloads = 100'000U;
+constexpr std::uint64_t kMaximumCliWadInventoryTotalDecodedBytes =
+    UINT64_C(512) * 1024U * 1024U * 1024U;
+constexpr std::uint64_t kMaximumCliWadInventoryProbes = 16U;
+constexpr std::uint64_t kMaximumCliWadInventoryProbeInvocations = 1'600'000U;
+constexpr std::uint32_t kMaximumCliWadBundleNestingDepth = 8U;
+constexpr std::uint64_t kMaximumCliSceneBlockRecords = 4096U;
 constexpr std::uint64_t kMaximumCliTwoFipPixels = 16U * 1024U * 1024U;
 constexpr std::uint64_t kMaximumCliPs2SaveBundleBytes = 1U * 1024U * 1024U;
 constexpr std::uint64_t kMaximumCliVagpBytes = 64U * 1024U * 1024U;
 constexpr std::uint64_t kMaximumCliVagpFrames = 1'000'000U;
 constexpr std::uint64_t kMaximumCliVagpSamples =
     kMaximumCliVagpFrames * openrc::kPsAdpcmSamplesPerFrame;
+constexpr std::uint64_t kMaximumCliSBlkItems = 1'000'000U;
+constexpr std::uint64_t kMaximumCliSBlkBlocks = 1'000'000U;
+constexpr std::uint64_t kMaximumCliSBlkFrames = 1'000'000U;
+constexpr std::uint64_t kMaximumCliSBlkSamples =
+    kMaximumCliSBlkFrames * openrc::kPsAdpcmSamplesPerFrame;
+constexpr std::uint64_t kMaximumCliSBlkWavBytes = 64U * 1024U * 1024U;
 constexpr std::uint64_t kMaximumCliElfBytes = 64U * 1024U * 1024U;
 constexpr std::size_t kMaximumCliDvpVuListItems = 128U;
 constexpr std::size_t kMapArtFirstGlobalSlot = 259;
@@ -86,6 +106,8 @@ void print_usage() {
         << "  openrc-cli toc <disc.iso>                        Inventory the Ratchet & Clank disc TOC\n"
         << "  openrc-cli toc-assets <disc.iso>                 Validate local TOC asset tables\n"
         << "  openrc-cli wad <disc.iso> <global-slot>          Decode one WadV1 (64 MiB cap)\n"
+        << "  openrc-cli wad-payload-inventory <disc.iso> [output.tsv]\n"
+        << "                                                    Classify every decoded WadV1 payload\n"
         << "  openrc-cli vagp <disc.iso> <global-slot> [output.wav]\n"
         << "                                                    Inspect/export VAGp as mono PCM\n"
         << "  openrc-cli boundary <disc.iso> <global-slot>     Inspect a seven-region payload table\n"
@@ -93,6 +115,9 @@ void print_usage() {
         << "                                                    Inspect/export a 3-panel map preview\n"
         << "  openrc-cli ps2-save <disc.iso>                   Inspect the PS2D save/icon bundle\n"
         << "  openrc-cli sblk <disc.iso> <level-id>            Inspect a level SBlk audio bank\n"
+        << "  openrc-cli sblk-wav <disc.iso> <level-id> <block> <output.wav> spu-native-48000\n"
+        << "  openrc-cli sblk-wav <disc.iso> <level-id> <block> <output.wav> caller-supplied-hz <hz>\n"
+        << "                                                    Export one physical SBlk block with explicit rate policy\n"
         << "  openrc-cli scene-blocks <disc.iso> <level-id>    Inspect a level scene-block directory\n"
         << "  openrc-cli scene-block-vu-run <disc.iso> <elf> <level-id> <record> <entry-pair> [output.tga]\n"
         << "                                                    Execute and optionally export an auto-fit wireframe\n"
@@ -102,6 +127,7 @@ void print_usage() {
         << "                                                    Inspect/export 2FIP (16 Mi pixels)\n"
         << "  openrc-cli prepare <disc.iso> [games-directory]  Extract and verify game files\n"
         << "  openrc-cli elf <executable>                      Inspect a PlayStation 2 ELF\n"
+        << "  openrc-cli r5900-boundaries <executable>         Inventory EE calls and syscall sites\n"
         << "  openrc-cli dvp-vu <elf> <entry-pairs> <overlay-sections>\n"
         << "                                                    Decode decimal CSV VU/ELF lists\n"
         << "  openrc-cli dvp-vu-run <elf> <entry-pair> <overlay-sections> <top-qword>\n"
@@ -321,6 +347,483 @@ parse_decimal_u16_list(
         throw std::runtime_error("Unexpected end of image while reading the disc extent");
     }
     return bytes;
+}
+
+struct LoadedLevelSBlkV1 {
+    openrc::DiscTocExtent primary_extent;
+    openrc::DiscTocSubrange subrange;
+    openrc::SBlkBundleV3 bundle;
+    openrc::SBlkAudioReportV1 audio;
+};
+
+[[nodiscard]] LoadedLevelSBlkV1 load_level_sblk_v1(
+    const std::filesystem::path& image_path,
+    const std::uint32_t level_id) {
+    const auto assets = openrc::inspect_disc_toc_assets(image_path);
+    const auto level_assets = std::find_if(
+        assets.levels.begin(),
+        assets.levels.end(),
+        [level_id](const openrc::DiscTocLevelAssets& candidate) {
+            return candidate.level_id == level_id;
+        });
+    const auto level_layout = std::find_if(
+        assets.layout.levels.begin(),
+        assets.layout.levels.end(),
+        [level_id](const openrc::DiscTocLevelDescriptor& candidate) {
+            return candidate.level_id == level_id;
+        });
+    if (level_assets == assets.levels.end() ||
+        level_layout == assets.layout.levels.end()) {
+        throw std::runtime_error("The requested level is absent from DiscTocV1");
+    }
+
+    constexpr std::size_t kSBlkPrimarySubrangeIndex = 1U;
+    const auto subrange =
+        level_assets->primary_extent0.subranges[kSBlkPrimarySubrangeIndex];
+    if (subrange.byte_size == 0U) {
+        throw std::runtime_error("The level's SBlk subrange is empty");
+    }
+    const auto primary_extent = level_layout->primary_extents.front();
+    const auto primary_bytes = read_disc_extent(
+        image_path,
+        primary_extent.lba,
+        primary_extent.sectors,
+        kMaximumCliDecodedWadBytes);
+    const auto subrange_offset =
+        static_cast<std::uint64_t>(subrange.relative_offset);
+    const auto subrange_size = static_cast<std::uint64_t>(subrange.byte_size);
+    if (subrange_offset > primary_bytes.size() ||
+        subrange_size > primary_bytes.size() - subrange_offset) {
+        throw std::runtime_error("The SBlk subrange lies outside primary extent 0");
+    }
+
+    auto bundle = openrc::parse_sblk_bundle_v3(
+        std::span<const std::byte>(primary_bytes).subspan(
+            static_cast<std::size_t>(subrange_offset),
+            static_cast<std::size_t>(subrange_size)),
+        openrc::SBlkLimits{
+            kMaximumCliDecodedWadBytes,
+            kMaximumCliSBlkItems,
+            kMaximumCliSBlkItems,
+            kMaximumCliDecodedWadBytes});
+    auto audio = openrc::analyze_sblk_audio_v1(
+        bundle,
+        openrc::SBlkAudioLimits{
+            kMaximumCliSBlkItems,
+            kMaximumCliSBlkBlocks,
+            kMaximumCliDecodedWadBytes});
+    return LoadedLevelSBlkV1{
+        primary_extent,
+        subrange,
+        std::move(bundle),
+        std::move(audio)};
+}
+
+struct WadPayloadCorpusCountersV1 {
+    std::uint64_t global_payloads = 0U;
+    std::uint64_t global_tail_payloads = 0U;
+    std::uint64_t local_run_payloads = 0U;
+    std::uint64_t primary_subrange_payloads = 0U;
+    std::uint64_t primary_extent_payloads = 0U;
+    std::uint64_t bundle_record_payloads = 0U;
+    std::uint64_t companion_record_payloads = 0U;
+};
+
+struct WadPayloadCorpusReportV1 {
+    openrc::WadPayloadInventoryV1 inventory;
+    WadPayloadCorpusCountersV1 counters;
+};
+
+[[nodiscard]] std::string sha256_hex(
+    const std::span<const std::byte> bytes) {
+    openrc::Sha256 hash;
+    hash.update(bytes);
+    return openrc::hex_digest(hash.finish());
+}
+
+[[nodiscard]] openrc::WadPayloadAddResultV1 add_wad_payload_and_nested_bundles_v1(
+    openrc::WadPayloadInventoryBuilderV1& builder,
+    const openrc::WadPayloadOriginV1& origin,
+    const std::span<const std::byte> decoded_bytes,
+    WadPayloadCorpusCountersV1& counters,
+    const std::uint32_t nesting_depth) {
+    const auto parent =
+        builder.add_decoded_payload(origin, decoded_bytes);
+
+    openrc::WadBundleV1 bundle;
+    try {
+        bundle = openrc::parse_wad_bundle_v1(decoded_bytes);
+    } catch (const openrc::WadBundleError&) {
+        return parent;
+    }
+    if (nesting_depth >= kMaximumCliWadBundleNestingDepth) {
+        throw std::runtime_error(
+            "Decoded WadBundleV1 nesting exceeds the CLI depth limit");
+    }
+
+    const auto add_record = [&builder,
+                             &origin,
+                             &decoded_bytes,
+                             &counters,
+                             parent,
+                             nesting_depth](
+                                const openrc::WadBundleRecord& record,
+                                const std::uint32_t record_index) {
+        const auto logical_wad = decoded_bytes.subspan(
+            record.offset,
+            record.size);
+        const auto nested = openrc::decode_wad_bytes(
+            logical_wad,
+            kMaximumCliDecodedWadBytes);
+        openrc::WadPayloadOriginV1 child_origin;
+        child_origin.kind = openrc::WadPayloadOriginKindV1::wad_bundle_record;
+        child_origin.level_id = origin.level_id;
+        child_origin.record_index = record_index;
+        child_origin.lba = origin.lba;
+        child_origin.container_byte_offset = record.offset;
+        child_origin.encoded_bytes = record.size;
+        child_origin.encoded_sha256 = sha256_hex(logical_wad);
+        child_origin.parent_unique_payload_index = parent.unique_payload_index;
+        child_origin.parent_observation_index = parent.observation_index;
+        ++counters.bundle_record_payloads;
+        (void)add_wad_payload_and_nested_bundles_v1(
+            builder,
+            child_origin,
+            nested.bytes,
+            counters,
+            nesting_depth + 1U);
+    };
+
+    add_record(bundle.initial_record, 0U);
+    for (std::size_t slot = 0U; slot < bundle.slots.size(); ++slot) {
+        const auto& record = bundle.slots[slot];
+        if (record.kind == openrc::WadBundleRecordKind::nested_wad) {
+            add_record(record, static_cast<std::uint32_t>(slot + 1U));
+        }
+    }
+    return parent;
+}
+
+[[nodiscard]] WadPayloadCorpusReportV1 inventory_disc_wad_payloads_v1(
+    const std::filesystem::path& image_path) {
+    auto probes = openrc::make_known_wad_payload_probes_v1(
+        {kMaximumCliDecodedWadBytes, kMaximumCliSceneBlockRecords});
+    openrc::WadPayloadInventoryBuilderV1 builder(
+        std::move(probes),
+        openrc::WadPayloadInventoryLimitsV1{
+            kMaximumCliWadInventoryObservations,
+            kMaximumCliWadInventoryUniquePayloads,
+            kMaximumCliDecodedWadBytes,
+            kMaximumCliWadInventoryTotalDecodedBytes,
+            kMaximumCliWadInventoryProbes,
+            kMaximumCliWadInventoryProbeInvocations});
+    WadPayloadCorpusCountersV1 counters;
+    const auto assets = openrc::inspect_disc_toc_assets(image_path);
+
+    for (const auto& entry : assets.layout.global_extents) {
+        if (entry.signature != openrc::DiscTocSignature::wad) {
+            continue;
+        }
+        const auto decoded = openrc::decode_wad(
+            image_path,
+            entry.extent.lba,
+            entry.extent.sectors,
+            kMaximumCliDecodedWadBytes);
+        openrc::WadPayloadOriginV1 origin;
+        origin.kind = openrc::WadPayloadOriginKindV1::global_toc;
+        origin.container_index = static_cast<std::uint32_t>(entry.slot);
+        origin.lba = entry.extent.lba;
+        origin.encoded_bytes = decoded.source.total_bytes;
+        origin.encoded_sha256 = decoded.source.sha256;
+        ++counters.global_payloads;
+        (void)add_wad_payload_and_nested_bundles_v1(
+            builder,
+            origin,
+            decoded.bytes,
+            counters,
+            0U);
+    }
+
+    std::uint64_t global_tail_lba = 0U;
+    for (const auto& entry : assets.layout.global_extents) {
+        global_tail_lba = std::max(
+            global_tail_lba,
+            static_cast<std::uint64_t>(entry.extent.lba) +
+                entry.extent.sectors);
+    }
+    const auto global_tail_header = read_disc_extent(
+        image_path,
+        global_tail_lba,
+        1U,
+        openrc::kDiscTocSectorSize);
+    if (global_tail_header.size() < openrc::kWadV1HeaderSize ||
+        global_tail_header[0] != std::byte{'W'} ||
+        global_tail_header[1] != std::byte{'A'} ||
+        global_tail_header[2] != std::byte{'D'}) {
+        throw std::runtime_error(
+            "The record following the global TOC extent chain is not WadV1");
+    }
+    const auto global_tail_logical_bytes =
+        std::to_integer<std::uint32_t>(global_tail_header[3]) |
+        (std::to_integer<std::uint32_t>(global_tail_header[4]) << 8U) |
+        (std::to_integer<std::uint32_t>(global_tail_header[5]) << 16U) |
+        (std::to_integer<std::uint32_t>(global_tail_header[6]) << 24U);
+    if (global_tail_logical_bytes < openrc::kWadV1HeaderSize) {
+        throw std::runtime_error(
+            "The global-tail WadV1 record is smaller than its header");
+    }
+    const auto global_tail_sectors =
+        (static_cast<std::uint64_t>(global_tail_logical_bytes) +
+         openrc::kWadSectorSize - 1U) /
+        openrc::kWadSectorSize;
+    const auto global_tail = openrc::decode_wad(
+        image_path,
+        global_tail_lba,
+        global_tail_sectors,
+        kMaximumCliDecodedWadBytes);
+    openrc::WadPayloadOriginV1 global_tail_origin;
+    global_tail_origin.kind =
+        openrc::WadPayloadOriginKindV1::global_toc_tail;
+    global_tail_origin.lba = global_tail_lba;
+    global_tail_origin.encoded_bytes = global_tail.source.total_bytes;
+    global_tail_origin.encoded_sha256 = global_tail.source.sha256;
+    ++counters.global_tail_payloads;
+    (void)add_wad_payload_and_nested_bundles_v1(
+        builder,
+        global_tail_origin,
+        global_tail.bytes,
+        counters,
+        0U);
+    std::cerr
+        << "  global WadV1 payloads: " << counters.global_payloads
+        << " + " << counters.global_tail_payloads << " tail record\n";
+
+    for (const auto& level : assets.levels) {
+        const auto layout = std::find_if(
+            assets.layout.levels.begin(),
+            assets.layout.levels.end(),
+            [&level](const openrc::DiscTocLevelDescriptor& candidate) {
+                return candidate.level_id == level.level_id;
+            });
+        if (layout == assets.layout.levels.end()) {
+            throw std::runtime_error(
+                "A local asset level is absent from the DiscTocV1 layout");
+        }
+
+        for (std::size_t block_index = 0U;
+             block_index < level.local_tables.resource_blocks.size();
+             ++block_index) {
+            const auto& resource =
+                level.local_tables.resource_blocks[block_index];
+            for (std::size_t run_index = 0U;
+                 run_index < resource.wad_runs.size();
+                 ++run_index) {
+                const auto& run = resource.wad_runs[run_index];
+                for (std::size_t record_index = 0U;
+                     record_index < run.wads.size();
+                     ++record_index) {
+                    const auto& record = run.wads[record_index];
+                    const auto decoded = openrc::decode_wad(
+                        image_path,
+                        record.lba,
+                        record.occupied_sectors,
+                        kMaximumCliDecodedWadBytes);
+                    openrc::WadPayloadOriginV1 origin;
+                    origin.kind =
+                        openrc::WadPayloadOriginKindV1::local_wad_run;
+                    origin.level_id = level.level_id;
+                    origin.container_index = static_cast<std::uint32_t>(
+                        block_index * resource.wad_runs.size() + run_index);
+                    origin.record_index =
+                        static_cast<std::uint32_t>(record_index);
+                    origin.lba = record.lba;
+                    origin.encoded_bytes = decoded.source.total_bytes;
+                    origin.encoded_sha256 = decoded.source.sha256;
+                    ++counters.local_run_payloads;
+                    (void)add_wad_payload_and_nested_bundles_v1(
+                        builder,
+                        origin,
+                        decoded.bytes,
+                        counters,
+                        0U);
+                }
+            }
+        }
+
+        const auto& primary_extent0 = layout->primary_extents.front();
+        const auto primary_bytes = read_disc_extent(
+            image_path,
+            primary_extent0.lba,
+            primary_extent0.sectors,
+            kMaximumCliDecodedWadBytes);
+        const auto bounded_subrange = [&primary_bytes](
+                                          const openrc::DiscTocSubrange& subrange,
+                                          const char* description) {
+            const auto offset =
+                static_cast<std::uint64_t>(subrange.relative_offset);
+            const auto size = static_cast<std::uint64_t>(subrange.byte_size);
+            if (offset > primary_bytes.size() ||
+                size > primary_bytes.size() - offset) {
+                throw std::runtime_error(
+                    std::string(description) +
+                    " lies outside primary extent 0");
+            }
+            return std::span<const std::byte>(primary_bytes).subspan(
+                static_cast<std::size_t>(offset),
+                static_cast<std::size_t>(size));
+        };
+
+        constexpr std::size_t kCompanionIndexSubrange = 2U;
+        constexpr std::size_t kCompanionTargetSubrange = 10U;
+        std::optional<openrc::DecodedWadBytes> companion_target;
+        std::optional<openrc::WadPayloadAddResultV1> companion_parent;
+        for (std::size_t subrange_index = 0U;
+             subrange_index < level.primary_extent0.subranges.size();
+             ++subrange_index) {
+            const auto& subrange =
+                level.primary_extent0.subranges[subrange_index];
+            if (subrange.byte_size == 0U ||
+                subrange.signature != openrc::DiscTocSignature::wad) {
+                continue;
+            }
+            const auto logical_wad = bounded_subrange(
+                subrange,
+                "A primary-extent-0 WadV1 subrange");
+            auto decoded = openrc::decode_wad_bytes(
+                logical_wad,
+                kMaximumCliDecodedWadBytes);
+            openrc::WadPayloadOriginV1 origin;
+            origin.kind =
+                openrc::WadPayloadOriginKindV1::primary_extent0_subrange;
+            origin.level_id = level.level_id;
+            origin.container_index =
+                static_cast<std::uint32_t>(subrange_index);
+            origin.lba = primary_extent0.lba;
+            origin.container_byte_offset = subrange.relative_offset;
+            origin.encoded_bytes = subrange.byte_size;
+            origin.encoded_sha256 = sha256_hex(logical_wad);
+            ++counters.primary_subrange_payloads;
+            const auto added = add_wad_payload_and_nested_bundles_v1(
+                builder,
+                origin,
+                decoded.bytes,
+                counters,
+                0U);
+            if (subrange_index == kCompanionTargetSubrange) {
+                companion_target = std::move(decoded);
+                companion_parent = added;
+            }
+        }
+
+        for (std::size_t primary_index = 0U;
+             primary_index < level.primary_wads.size();
+             ++primary_index) {
+            const auto& record = level.primary_wads[primary_index];
+            if (record.occupied_sectors == 0U) {
+                continue;
+            }
+            if (record.signature != openrc::DiscTocSignature::wad) {
+                throw std::runtime_error(
+                    "A declared primary WadV1 extent has another signature");
+            }
+            const auto decoded = openrc::decode_wad(
+                image_path,
+                record.lba,
+                record.occupied_sectors,
+                kMaximumCliDecodedWadBytes);
+            openrc::WadPayloadOriginV1 origin;
+            origin.kind =
+                openrc::WadPayloadOriginKindV1::primary_extent;
+            origin.level_id = level.level_id;
+            origin.container_index =
+                static_cast<std::uint32_t>(primary_index + 1U);
+            origin.lba = record.lba;
+            origin.encoded_bytes = decoded.source.total_bytes;
+            origin.encoded_sha256 = decoded.source.sha256;
+            ++counters.primary_extent_payloads;
+            (void)add_wad_payload_and_nested_bundles_v1(
+                builder,
+                origin,
+                decoded.bytes,
+                counters,
+                0U);
+        }
+
+        const auto& companion_index_subrange =
+            level.primary_extent0.subranges[kCompanionIndexSubrange];
+        if (!companion_target || !companion_parent ||
+            companion_index_subrange.byte_size == 0U) {
+            throw std::runtime_error(
+                "A level is missing its companion WadV1 index or target");
+        }
+        const auto companion_index_bytes = bounded_subrange(
+            companion_index_subrange,
+            "The companion WadV1 index subrange");
+        const auto companion =
+            openrc::parse_companion_terminal_wad_index_v1(
+                companion_index_bytes,
+                companion_target->bytes,
+                openrc::CompanionTerminalWadIndexLimits{
+                    kMaximumCliDecodedWadBytes,
+                    kMaximumCliDecodedWadBytes,
+                    kMaximumCliWadInventoryObservations,
+                    kMaximumCliDecodedWadBytes});
+        for (std::size_t record_index = 0U;
+             record_index < companion.records.size();
+             ++record_index) {
+            const auto& record = companion.records[record_index];
+            const auto logical_wad = std::span<const std::byte>(record.wad_bytes);
+            const auto decoded = openrc::decode_wad_bytes(
+                logical_wad,
+                kMaximumCliDecodedWadBytes);
+            openrc::WadPayloadOriginV1 origin;
+            origin.kind =
+                openrc::WadPayloadOriginKindV1::companion_terminal_record;
+            origin.level_id = level.level_id;
+            origin.record_index =
+                static_cast<std::uint32_t>(record_index);
+            origin.lba = primary_extent0.lba;
+            origin.container_byte_offset = record.target_offset;
+            origin.encoded_bytes = record.logical_size;
+            origin.encoded_sha256 = sha256_hex(logical_wad);
+            origin.parent_unique_payload_index =
+                companion_parent->unique_payload_index;
+            origin.parent_observation_index =
+                companion_parent->observation_index;
+            ++counters.companion_record_payloads;
+            (void)add_wad_payload_and_nested_bundles_v1(
+                builder,
+                origin,
+                decoded.bytes,
+                counters,
+                0U);
+        }
+        std::cerr
+            << "  level " << level.level_id
+            << " complete (observations so far: "
+            << (counters.global_payloads +
+                counters.global_tail_payloads +
+                counters.local_run_payloads +
+                counters.primary_subrange_payloads +
+                counters.primary_extent_payloads +
+                counters.bundle_record_payloads +
+                counters.companion_record_payloads)
+            << ")\n";
+    }
+
+    auto inventory = builder.finalize();
+    const auto counted_observations =
+        counters.global_payloads + counters.global_tail_payloads +
+        counters.local_run_payloads + counters.primary_subrange_payloads +
+        counters.primary_extent_payloads + counters.bundle_record_payloads +
+        counters.companion_record_payloads;
+    if (counted_observations != inventory.observations.size()) {
+        throw std::runtime_error(
+            "The WadV1 source counters do not cover every retained observation");
+    }
+    return WadPayloadCorpusReportV1{
+        std::move(inventory),
+        counters};
 }
 
 void write_new_binary_file(
@@ -1241,6 +1744,97 @@ int run(const std::vector<std::filesystem::path>& arguments) {
         }
     }
 
+    if (command == "wad-payload-inventory") {
+        if (arguments.size() < 2U || arguments.size() > 3U) {
+            std::cerr
+                << "error: wad-payload-inventory expects an ISO path and "
+                   "an optional TSV output path\n";
+            return kUsageError;
+        }
+
+        try {
+            std::cerr
+                << "Scanning every indexed WadV1 source with bounded decoders...\n";
+            const auto report = inventory_disc_wad_payloads_v1(arguments[1]);
+            const auto& inventory = report.inventory;
+            std::array<std::uint64_t, 4> format_unique_counts{};
+            std::array<std::uint64_t, 4> format_observation_counts{};
+            constexpr std::array<std::string_view, 4> kFormatNames{
+                "TwoFipV1",
+                "MapArtV1",
+                "SceneBlockDirectoryV1",
+                "WadBundleV1"};
+            for (const auto& unique : inventory.unique_payloads) {
+                for (std::size_t format_index = 0U;
+                     format_index < kFormatNames.size();
+                     ++format_index) {
+                    if (std::find(
+                            unique.matched_format_names.begin(),
+                            unique.matched_format_names.end(),
+                            kFormatNames[format_index]) !=
+                        unique.matched_format_names.end()) {
+                        ++format_unique_counts[format_index];
+                        format_observation_counts[format_index] +=
+                            unique.observation_count;
+                    }
+                }
+            }
+
+            std::cout
+                << "OpenRC decoded WadV1 payload inventory\n"
+                << "Image:               "
+                << openrc::path_to_utf8(arguments[1]) << '\n'
+                << "Observations:        " << inventory.observations.size() << '\n'
+                << "Unique payloads:     " << inventory.unique_payloads.size() << '\n'
+                << "Recognized unique:   "
+                << inventory.recognized_unique_payloads << '\n'
+                << "Unknown unique:      "
+                << inventory.unknown_unique_payloads << '\n'
+                << "Ambiguous unique:    "
+                << inventory.ambiguous_unique_payloads << '\n'
+                << "Observed bytes:      " << inventory.total_decoded_bytes << '\n'
+                << "Unique bytes:        " << inventory.unique_decoded_bytes << '\n'
+                << "Probe invocations:   " << inventory.probe_invocations << "\n\n"
+                << "Source observations:\n"
+                << "  global TOC:        " << report.counters.global_payloads << '\n'
+                << "  global TOC tail:   "
+                << report.counters.global_tail_payloads << '\n'
+                << "  local WAD runs:    " << report.counters.local_run_payloads << '\n'
+                << "  extent0 subranges: "
+                << report.counters.primary_subrange_payloads << '\n'
+                << "  primary extents:   "
+                << report.counters.primary_extent_payloads << '\n'
+                << "  bundle records:    "
+                << report.counters.bundle_record_payloads << '\n'
+                << "  companion records: "
+                << report.counters.companion_record_payloads << "\n\n"
+                << "Recognized formats (unique / observations):\n";
+            for (std::size_t index = 0U; index < kFormatNames.size(); ++index) {
+                std::cout
+                    << "  " << std::left << std::setw(24)
+                    << kFormatNames[index] << std::right
+                    << format_unique_counts[index] << " / "
+                    << format_observation_counts[index] << '\n';
+            }
+
+            if (arguments.size() == 3U) {
+                const auto tsv =
+                    openrc::encode_wad_payload_inventory_tsv_v1(inventory);
+                write_new_binary_file(
+                    arguments[2],
+                    std::as_bytes(std::span<const char>(tsv.data(), tsv.size())));
+                std::cout
+                    << "\nTSV output:          "
+                    << openrc::path_to_utf8(arguments[2]) << '\n'
+                    << "TSV bytes:           " << tsv.size() << '\n';
+            }
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << "error: " << error.what() << '\n';
+            return kOperationError;
+        }
+    }
+
     if (command == "wad") {
         if (arguments.size() != 3) {
             std::cerr << "error: wad expects an ISO path and a global TOC slot\n";
@@ -1559,6 +2153,121 @@ int run(const std::vector<std::filesystem::path>& arguments) {
         }
     }
 
+    if (command == "sblk-wav") {
+        if (arguments.size() < 6U || arguments.size() > 7U) {
+            std::cerr
+                << "error: sblk-wav expects an ISO path, level ID, physical "
+                   "block index, output path, and an explicit sample-rate policy\n";
+            return kUsageError;
+        }
+
+        const auto level_value = parse_decimal_argument(arguments[2]);
+        const auto block_value = parse_decimal_argument(arguments[3]);
+        if (!level_value || *level_value >= openrc::kDiscTocLevelCount) {
+            std::cerr << "error: level ID must be a decimal number from 0 to "
+                      << (openrc::kDiscTocLevelCount - 1U) << '\n';
+            return kUsageError;
+        }
+        if (!block_value) {
+            std::cerr
+                << "error: physical SBlk block index must be an unsigned decimal number\n";
+            return kUsageError;
+        }
+
+        const auto policy_name = openrc::path_to_utf8(arguments[5]);
+        openrc::SBlkWavSampleRateV1 sample_rate;
+        if (policy_name == "spu-native-48000") {
+            if (arguments.size() != 6U) {
+                std::cerr
+                    << "error: spu-native-48000 takes no numeric sample rate\n";
+                return kUsageError;
+            }
+            sample_rate.policy =
+                openrc::SBlkWavSampleRatePolicyV1::
+                    spu_native_48000_diagnostic;
+        } else if (policy_name == "caller-supplied-hz") {
+            if (arguments.size() != 7U) {
+                std::cerr
+                    << "error: caller-supplied-hz requires one non-zero Hz value\n";
+                return kUsageError;
+            }
+            const auto hz = parse_decimal_argument(arguments[6]);
+            if (!hz || *hz == 0U ||
+                *hz > std::numeric_limits<std::uint32_t>::max()) {
+                std::cerr
+                    << "error: sample rate must be a non-zero 32-bit unsigned decimal value\n";
+                return kUsageError;
+            }
+            sample_rate.policy =
+                openrc::SBlkWavSampleRatePolicyV1::caller_supplied_hz;
+            sample_rate.caller_supplied_hz = static_cast<std::uint32_t>(*hz);
+        } else {
+            std::cerr
+                << "error: sample-rate policy must be spu-native-48000 or "
+                   "caller-supplied-hz\n";
+            return kUsageError;
+        }
+
+        const auto level_id = static_cast<std::uint32_t>(*level_value);
+        try {
+            const auto loaded = load_level_sblk_v1(arguments[1], level_id);
+            const auto exported =
+                openrc::encode_sblk_physical_block_pcm16_mono_wav_v1(
+                    loaded.bundle,
+                    loaded.audio,
+                    *block_value,
+                    sample_rate,
+                    openrc::SBlkWavLimitsV1{
+                        kMaximumCliDecodedWadBytes,
+                        kMaximumCliSBlkFrames,
+                        kMaximumCliSBlkSamples,
+                        kMaximumCliSBlkWavBytes});
+            write_new_binary_file(arguments[4], exported.wav_bytes);
+
+            const auto& block = loaded.audio.blocks.at(
+                static_cast<std::size_t>(exported.physical_block_index));
+            std::cout
+                << "OpenRC SBlk PCM16 WAV export\n"
+                << "Image:               "
+                << openrc::path_to_utf8(arguments[1]) << '\n'
+                << "Level ID:            " << level_id << '\n'
+                << "Primary extent LBA:  " << loaded.primary_extent.lba << '\n'
+                << "Subrange offset:     "
+                << hexadecimal(loaded.subrange.relative_offset, 8) << '\n'
+                << "Physical block:      "
+                << exported.physical_block_index << " of "
+                << loaded.audio.block_count << '\n'
+                << "Block kind:          "
+                << (exported.block_kind == openrc::SBlkAudioBlockKind::looped
+                        ? "looped"
+                        : "one-shot")
+                << '\n'
+                << "Block bank range:    " << hexadecimal(block.offset, 8)
+                << " + " << block.size << " bytes\n"
+                << "References:          " << block.references.size() << '\n'
+                << "Rate policy:         " << policy_name << '\n'
+                << "Sample rate:         " << exported.sample_rate_hz << " Hz\n"
+                << "Content frames:      " << exported.content_frame_count << '\n'
+                << "Content samples:     " << exported.content_sample_count << '\n';
+            if (exported.loop_sample_begin && exported.loop_sample_end) {
+                std::cout
+                    << "Loop sample range:   ["
+                    << *exported.loop_sample_begin << ", "
+                    << *exported.loop_sample_end << ")\n";
+            } else {
+                std::cout << "Loop sample range:   none\n";
+            }
+            std::cout
+                << "WAV output:          "
+                << openrc::path_to_utf8(arguments[4]) << '\n'
+                << "WAV bytes:           " << exported.wav_bytes.size() << '\n';
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << "error: " << error.what() << '\n';
+            return kOperationError;
+        }
+    }
+
     if (command == "sblk") {
         if (arguments.size() != 3) {
             std::cerr << "error: sblk expects an ISO path and a level ID\n";
@@ -1773,7 +2482,7 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 decoded.bytes,
                 openrc::SceneBlockDirectoryLimits{
                     kMaximumCliDecodedWadBytes,
-                    1'000'000U,
+                    kMaximumCliSceneBlockRecords,
                     kMaximumCliDecodedWadBytes});
 
             const auto companion_count =
@@ -2129,7 +2838,7 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 decoded.bytes,
                 openrc::SceneBlockDirectoryLimits{
                     kMaximumCliDecodedWadBytes,
-                    1'000'000U,
+                    kMaximumCliSceneBlockRecords,
                     kMaximumCliDecodedWadBytes,
                 });
             const auto companion_count =
@@ -3378,6 +4087,149 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 execution.termination ==
                     openrc::DvpVuTerminationV1::stopped_after_xgkick;
             return successful ? 0 : kOperationError;
+        } catch (const std::exception& error) {
+            std::cerr << "error: " << error.what() << '\n';
+            return kOperationError;
+        }
+    }
+
+    if (command == "r5900-boundaries") {
+        if (arguments.size() != 2U) {
+            std::cerr
+                << "error: r5900-boundaries expects exactly one executable path\n";
+            return kUsageError;
+        }
+
+        try {
+            const auto elf_bytes = read_bounded_binary_file(
+                arguments[1],
+                kMaximumCliElfBytes);
+            const auto report = openrc::inventory_ee_r5900_boundaries_v1(
+                elf_bytes,
+                openrc::EeR5900BoundaryLimitsV1{
+                    kMaximumCliElfBytes,
+                    4096U,
+                    kMaximumCliElfBytes,
+                    kMaximumCliElfBytes / 4U,
+                    kMaximumCliElfBytes / 4U,
+                    1'000'000U});
+
+            std::array<std::uint64_t, 7> transfer_counts{};
+            for (const auto& transfer : report.control_transfers) {
+                const auto index = static_cast<std::size_t>(transfer.kind);
+                if (index >= transfer_counts.size()) {
+                    throw std::runtime_error(
+                        "The EE/R5900 inventory returned an invalid transfer kind");
+                }
+                ++transfer_counts[index];
+            }
+
+            std::uint64_t jal_count = 0U;
+            std::uint64_t jalr_count = 0U;
+            std::uint64_t register_link_branch_count = 0U;
+            for (const auto& instruction : report.instructions) {
+                if (instruction.opcode == openrc::EeR5900OpcodeV1::jal) {
+                    ++jal_count;
+                } else if (instruction.opcode == openrc::EeR5900OpcodeV1::jalr) {
+                    ++jalr_count;
+                } else if (
+                    instruction.opcode == openrc::EeR5900OpcodeV1::bltzal ||
+                    instruction.opcode == openrc::EeR5900OpcodeV1::bgezal ||
+                    instruction.opcode == openrc::EeR5900OpcodeV1::bltzall ||
+                    instruction.opcode == openrc::EeR5900OpcodeV1::bgezall) {
+                    ++register_link_branch_count;
+                }
+            }
+
+            std::vector<std::uint32_t> wrapper_addresses;
+            std::uint64_t selector_proof_count = 0U;
+            for (const auto& syscall : report.syscall_sites) {
+                if (syscall.selector_v1) {
+                    ++selector_proof_count;
+                }
+                if (syscall.exact_wrapper_entry_address) {
+                    wrapper_addresses.push_back(
+                        *syscall.exact_wrapper_entry_address);
+                }
+            }
+            std::sort(wrapper_addresses.begin(), wrapper_addresses.end());
+            wrapper_addresses.erase(
+                std::unique(
+                    wrapper_addresses.begin(),
+                    wrapper_addresses.end()),
+                wrapper_addresses.end());
+
+            std::uint64_t direct_calls_to_wrappers = 0U;
+            std::vector<std::uint32_t> called_wrapper_addresses;
+            for (const auto& transfer : report.control_transfers) {
+                if (transfer.kind !=
+                        openrc::EeR5900ControlTransferKindV1::direct_call ||
+                    !transfer.direct_target_address ||
+                    !std::binary_search(
+                        wrapper_addresses.begin(),
+                        wrapper_addresses.end(),
+                        *transfer.direct_target_address)) {
+                    continue;
+                }
+                ++direct_calls_to_wrappers;
+                called_wrapper_addresses.push_back(
+                    *transfer.direct_target_address);
+            }
+            std::sort(
+                called_wrapper_addresses.begin(),
+                called_wrapper_addresses.end());
+            called_wrapper_addresses.erase(
+                std::unique(
+                    called_wrapper_addresses.begin(),
+                    called_wrapper_addresses.end()),
+                called_wrapper_addresses.end());
+
+            std::cout
+                << "OpenRC EE/R5900 boundary inventory\n"
+                << "Executable:           "
+                << openrc::path_to_utf8(arguments[1]) << '\n'
+                << "Input bytes:          " << report.input_bytes << '\n'
+                << "Code regions:         " << report.code_regions.size() << '\n'
+                << "Code bytes:           " << report.total_code_bytes << '\n'
+                << "Instruction words:    " << report.instructions.size() << '\n'
+                << "Unclassified words:  "
+                << report.unclassified_instruction_count << '\n'
+                << "Control transfers:   "
+                << report.control_transfers.size() << '\n'
+                << "  direct jumps:      " << transfer_counts[0] << '\n'
+                << "  conditional:       " << transfer_counts[1] << '\n'
+                << "  direct calls:      " << transfer_counts[2] << '\n'
+                << "  conditional calls: " << transfer_counts[3] << '\n'
+                << "  indirect jumps:    " << transfer_counts[4] << '\n'
+                << "  indirect calls:    " << transfer_counts[5] << '\n'
+                << "  returns via ra:    " << transfer_counts[6] << '\n'
+                << "JAL / JALR:          " << jal_count << " / "
+                << jalr_count << '\n'
+                << "REGIMM link branches:" << ' '
+                << register_link_branch_count << '\n'
+                << "Missing delay slots: "
+                << report.missing_delay_slot_count << '\n'
+                << "Targets outside code:"
+                << ' ' << report.direct_target_outside_code_count << '\n'
+                << "SYSCALL sites:       " << report.syscall_sites.size() << '\n'
+                << "Selector proofs:     " << selector_proof_count << '\n'
+                << "Exact wrappers:      " << wrapper_addresses.size() << '\n'
+                << "JALs to wrappers:    " << direct_calls_to_wrappers << '\n'
+                << "Called wrappers:     "
+                << called_wrapper_addresses.size() << "\n\n"
+                << "Code regions:\n";
+            for (std::size_t index = 0U;
+                 index < report.code_regions.size();
+                 ++index) {
+                const auto& region = report.code_regions[index];
+                std::cout
+                    << "  [" << index << "] " << region.section_name
+                    << ": file " << hexadecimal(region.source_range.offset, 8)
+                    << " + " << region.source_range.size
+                    << ", virtual " << hexadecimal(region.virtual_address, 8)
+                    << ", words " << region.instruction_count << '\n';
+            }
+            return 0;
         } catch (const std::exception& error) {
             std::cerr << "error: " << error.what() << '\n';
             return kOperationError;

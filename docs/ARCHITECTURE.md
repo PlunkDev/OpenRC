@@ -20,6 +20,7 @@ openrc_core
 ├── DiscTocV1 extent, local asset-table, and primary-container inventory
 ├── bounded WadV1 inspection and clean-room LZ decoding
 ├── decoded WadBundleV1 record inventory
+├── streaming decoded-WAD corpus inventory, provenance, deduplication, and strict probes
 ├── neutral SceneBlockDirectoryV1 parsing with owned blocks and 8-section layouts
 ├── bounded zero-copy SceneBlock VIF command parsing across sections 0-4
 ├── conservative SceneBlock VIF execution with VU1 memory/write provenance
@@ -36,15 +37,18 @@ openrc_core
 ├── SBlkBundleV3 parsing, PS2 ADPCM bank inventory, and per-reference tuning
 ├── clean-room linear PS ADPCM frame decoding
 ├── strict VAGp V1 parsing and bounded mono PCM16 WAV encoding
+├── explicit-policy bounded SBlk mono PCM16 WAV encoding
 ├── SHA-256 and prepared-game manifest
 ├── ELF32/MIPS executable, typed DVP overlay, and IOP/IRX module/import inventory
+├── bounded EE/R5900 code-region, control-transfer, and syscall-wrapper inventory
 ├── bounded neutral DVP VU decoding with typed control-flow/access inventory
 ├── application directories
 └── launcher settings
 
 openrc-cli
 ├── disc inspection and inventory
-├── TOC, WAD/bundle/companion, scene-block/VIF/VU/GS, 2FIP, MapArt, PS2D, VAGp, and SBlk diagnostics
+├── TOC, WAD/bundle/companion/corpus, scene-block/VIF/VU/GS, 2FIP, MapArt, PS2D, VAGp, and SBlk diagnostics
+├── explicit-policy SBlk WAV and EE/R5900 boundary diagnostics
 ├── auto-fit wireframe TGA export from a selected real SceneBlock invocation
 ├── prepared-game extraction
 └── ELF, DVP overlay/VU microprogram, and IOP/IRX inspection and diagnostics
@@ -171,6 +175,14 @@ aligned records and classified as nested WAD or ELF without assigning
 unproven gameplay meanings to those records. Confirmed 2FIP payloads are
 decoded into owned indexed images; palette lookup normalizes the PS2 PSMT8
 CLUT permutation before platform-neutral RGBA conversion.
+The corpus inventory walks each decoded WAD observation one at a time, retains
+only owned provenance/hash/classification metadata, and probes only the first
+occurrence of each decoded SHA-256. Nested provenance identifies both the
+deduplicated parent payload and the exact parent observation. Format probes use
+separate byte and scene-record envelopes; a parser's dedicated format rejection
+can mean `no_match`, while allocation failures, foreign exceptions, and outer
+inventory-envelope failures propagate instead of becoming an `unknown`
+classification.
 MapArtV1 composes three palette-compatible images without assigning gameplay
 meaning to the remaining opaque regions. The PS2D parser likewise retains
 unknown header words and tagged payload keys rather than treating guesses as

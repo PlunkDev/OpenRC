@@ -253,7 +253,7 @@ parse_unsigned_decimal(const std::wstring_view text) noexcept {
         kMaximumRuntimeBytes,
         openrc::SceneBlockDirectoryLimits{
             kMaximumRuntimeBytes,
-            1'000'000U,
+            kMaximumAggregateRecords,
             kMaximumRuntimeBytes,
         },
         openrc::DvpVuLimits{

@@ -546,6 +546,46 @@ rather than per-level scene geometry.
 | 0 | `0x7DE0` / `3f048365b73b522a4e7b046478e2cf9d6a3b4445f34e80645ea08e4ea90efbb4` | `0x7C90` | `0x0091489B` | `0xF96130` | `0x1000D80` | `0x10036C0` |
 | 18 | `0xA770` / `140edae2f88d5c0231b262a7ee4335722967d10a37955552169af32af4ca2769` | `0xA620` | `0x00CA9C27` | `0x152F550` | `0x159A180` | `0x159CAC0` |
 
+## Decoded WadV1 corpus inventory
+
+The streaming inventory now reaches every currently indexed or structurally
+owned WadV1 payload without retaining the corpus bytes. It processes one
+decoded payload at a time, hashes it once, runs strict semantic probes only on
+the first occurrence of each decoded SHA-256, and retains owned provenance and
+classification metadata. The exact PAL v2.00 sweep contains:
+
+| Source | Observations |
+| --- | ---: |
+| Global TOC WAD slots | 424 |
+| WAD immediately following the global extent chain | 1 |
+| Local resource-block WAD runs | 4,081 |
+| Primary-extent-0 WAD subranges | 114 |
+| Primary extents 1 and 2 | 38 |
+| Nested records in the global-tail WadBundleV1 | 12 |
+| Companion terminal records | 399 |
+| **Total** | **5,069** |
+
+Those observations decode to 1,093,912,988 bytes and deduplicate to 4,605
+payloads totaling 1,066,576,972 bytes. Strict complete-payload probes produce
+391 recognized unique payloads, 4,214 unknown unique payloads, and zero
+ambiguous payloads:
+
+| Semantic format | Unique payloads | Observations |
+| --- | ---: | ---: |
+| `TwoFipV1` | 335 | 340 |
+| `MapArtV1` | 36 | 38 |
+| `SceneBlockDirectoryV1` | 19 | 19 |
+| `WadBundleV1` | 1 | 1 |
+
+The optional observation TSV is 1,005,108 bytes with SHA-256
+`e394847d2b76e01b3bbea36f4b63ffbae4b6c6bd30693eb23bdaa3e61a126459`.
+Its nested rows identify the exact parent observation as well as the parent's
+deduplicated payload. The production scene-directory probe uses a separate
+4096-record allocation cap; the largest reference directory contains 2,144
+records.
+Unknown remains an explicit result rather than a guessed format; identifying
+the 4,214 remaining unique payloads is the next semantic-family task.
+
 ## VAGp V1 audio
 
 The disc tables reference 37 global VAGp extents and 792 distinct per-level
@@ -628,10 +668,11 @@ This tuning belongs to a reference, not to the physical ADPCM block:
 - none of the 4,788 SBlk blocks matches any of the 829 VAGp payloads, either
   exactly or after their known lead-in/control frames are stripped.
 
-Therefore VAGp header rates cannot be transferred to SBlk. Any future SBlk WAV
-export must require a named explicit policy, such as caller-supplied Hz or an
-explicit 48 kHz unpitched SPU-native diagnostic convention. The latter would
-be a playback choice, not recovered block metadata.
+Therefore VAGp header rates cannot be transferred to SBlk. SBlk WAV export
+requires a named explicit policy: either caller-supplied Hz or the explicit
+48 kHz unpitched SPU-native diagnostic convention. The latter is a playback
+choice, not recovered block metadata. The encoder decodes only the declared
+content-frame range and reports any loop as a half-open sample interval.
 
 Every block follows one of three exact flag grammars, where `Z` is a full zero
 lead-in or padding frame: `Z, 0*, 1, 7` for 4,200 one-shots, and either
@@ -658,6 +699,9 @@ SBlk level-0 block 0 yields 13,328 linear samples with SHA-256
 `2aa82d0b94b01095cb29712e19f235bf311bf4df5a8c80a45628ea7e97a3ae6e`;
 its reported content range yields 13,272 samples with SHA-256
 `6a47b154f357f14473b161b83eb84caf685537744cfe7800153b096dd39f93d8`.
+Exporting that content with the named `spu-native-48000` policy produces a
+26,588-byte canonical mono PCM16LE WAV with SHA-256
+`7189be66d1707801a1f7ed6d2d701842dd4c3512affea945df619043034d813d`.
 
 ## First decoded bundle
 
@@ -694,6 +738,32 @@ The modules cover controller/memory-card services, debug/SIF transport,
 general IOP staging, and audio. None contains a literal `WAD` or `2FIP`
 reference; the texture/resource decoders therefore remain targets in the main
 EE executable or other decoded data, rather than these IOP modules.
+
+## EE/R5900 boundary inventory
+
+The EE inventory selects only allocated, file-backed executable sections that
+map consistently through an executable `PT_LOAD`. It excludes both DVP overlay
+placeholder sections and the `.vutext` code section referenced by their table.
+The reference ELF then has exactly two EE code regions:
+
+| Section | File range | Virtual address | Words |
+| --- | --- | ---: | ---: |
+| `core.text` | `0x00013300 + 119,288` | `0x00112380` | 29,822 |
+| `.text` | `0x000EA000 + 349,872` | `0x001E9080` | 87,468 |
+
+The 469,160 bytes contain 117,290 preserved instruction words. The bounded V1
+subset classifies 43,475 words and keeps 73,815 explicitly unclassified. Its
+16,934 control transfers comprise 270 direct jumps, 9,505 conditional
+branches, 5,402 direct calls, four conditional link branches, 55 indirect
+jumps, 67 indirect calls, and 1,631 `jr ra` returns. Every decoded transfer has
+its delay slot, and every direct target remains inside selected EE code.
+
+There are 90 raw `SYSCALL` sites. All 90 have an immediately preceding proven
+constant write to `$v1`; 85 additionally form the exact adjacent
+`immediate v1,zero; syscall; jr ra; delay-slot` wrapper. Direct JALs target
+those wrappers 340 times across 60 distinct wrappers. This is an executable
+region/call/syscall-boundary inventory, not yet a recovered function map or
+context-sensitive call graph.
 
 The boot ELF also contains 43 DVP overlay records. OpenRC now parses the
 canonical 12-byte `name/lma/vma` records, validates their linked overlay

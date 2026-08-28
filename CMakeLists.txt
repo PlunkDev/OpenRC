@@ -23,11 +23,13 @@ add_library(openrc_core STATIC
     src/core/disc_toc.cpp
     src/core/dvp_vu.cpp
     src/core/dvp_vu_execute.cpp
+    src/core/ee_r5900_boundary.cpp
     src/core/elf.cpp
     src/core/gif_gs.cpp
     src/core/hash.cpp
     src/core/iso9660.cpp
     src/core/map_art.cpp
+    src/core/pcm_wav.cpp
     src/core/paths.cpp
     src/core/preparation.cpp
     src/core/ps_adpcm.cpp
@@ -42,11 +44,15 @@ add_library(openrc_core STATIC
     src/core/scene_block_vu_phase.cpp
     src/core/sblk.cpp
     src/core/sblk_audio.cpp
+    src/core/sblk_wav.cpp
     src/core/settings.cpp
     src/core/two_fip.cpp
     src/core/vagp.cpp
     src/core/wad.cpp
     src/core/wad_bundle.cpp
+    src/core/wad_payload_inventory.cpp
+    src/core/wad_payload_probes.cpp
+    src/core/wad_payload_tsv.cpp
 )
 
 target_include_directories(openrc_core
@@ -154,6 +160,51 @@ if(OPENRC_BUILD_TESTS)
     target_link_libraries(openrc-wad-bundle-tests PRIVATE openrc_core)
     target_compile_features(openrc-wad-bundle-tests PRIVATE cxx_std_20)
 
+    add_executable(
+        openrc-wad-payload-inventory-tests
+        tests/wad_payload_inventory_tests.cpp
+    )
+    target_link_libraries(
+        openrc-wad-payload-inventory-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-wad-payload-inventory-tests
+        PRIVATE
+        cxx_std_20
+    )
+
+    add_executable(
+        openrc-wad-payload-probes-tests
+        tests/wad_payload_probes_tests.cpp
+    )
+    target_link_libraries(
+        openrc-wad-payload-probes-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-wad-payload-probes-tests
+        PRIVATE
+        cxx_std_20
+    )
+
+    add_executable(
+        openrc-wad-payload-tsv-tests
+        tests/wad_payload_tsv_tests.cpp
+    )
+    target_link_libraries(
+        openrc-wad-payload-tsv-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-wad-payload-tsv-tests
+        PRIVATE
+        cxx_std_20
+    )
+
     add_executable(openrc-two-fip-tests tests/two_fip_tests.cpp)
     target_link_libraries(openrc-two-fip-tests PRIVATE openrc_core)
     target_compile_features(openrc-two-fip-tests PRIVATE cxx_std_20)
@@ -181,6 +232,10 @@ if(OPENRC_BUILD_TESTS)
     add_executable(openrc-sblk-audio-tests tests/sblk_audio_tests.cpp)
     target_link_libraries(openrc-sblk-audio-tests PRIVATE openrc_core)
     target_compile_features(openrc-sblk-audio-tests PRIVATE cxx_std_20)
+
+    add_executable(openrc-sblk-wav-tests tests/sblk_wav_tests.cpp)
+    target_link_libraries(openrc-sblk-wav-tests PRIVATE openrc_core)
+    target_compile_features(openrc-sblk-wav-tests PRIVATE cxx_std_20)
 
     add_executable(openrc-vagp-tests tests/vagp_tests.cpp)
     target_link_libraries(openrc-vagp-tests PRIVATE openrc_core)
@@ -240,6 +295,9 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-disc-toc-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-wad-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-wad-bundle-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-wad-payload-inventory-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-wad-payload-probes-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-wad-payload-tsv-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-two-fip-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-boundary-table-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-map-art-tests PRIVATE /W4 /permissive- /utf-8)
@@ -247,6 +305,7 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-ps-adpcm-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-sblk-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-sblk-audio-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-sblk-wav-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-vagp-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-scene-block-directory-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-scene-block-task-tests PRIVATE /W4 /permissive- /utf-8)
@@ -260,6 +319,9 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-disc-toc-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-wad-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-wad-bundle-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-wad-payload-inventory-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-wad-payload-probes-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-wad-payload-tsv-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-two-fip-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-boundary-table-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-map-art-tests PRIVATE -Wall -Wextra -Wpedantic)
@@ -267,6 +329,7 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-ps-adpcm-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-sblk-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-sblk-audio-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-sblk-wav-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-vagp-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-scene-block-directory-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-scene-block-task-tests PRIVATE -Wall -Wextra -Wpedantic)
@@ -281,6 +344,9 @@ if(OPENRC_BUILD_TESTS)
     add_test(NAME disc-toc COMMAND openrc-disc-toc-tests)
     add_test(NAME wad COMMAND openrc-wad-tests)
     add_test(NAME wad-bundle COMMAND openrc-wad-bundle-tests)
+    add_test(NAME wad-payload-inventory COMMAND openrc-wad-payload-inventory-tests)
+    add_test(NAME wad-payload-probes COMMAND openrc-wad-payload-probes-tests)
+    add_test(NAME wad-payload-tsv COMMAND openrc-wad-payload-tsv-tests)
     add_test(NAME two-fip COMMAND openrc-two-fip-tests)
     add_test(NAME boundary-table COMMAND openrc-boundary-table-tests)
     add_test(NAME map-art COMMAND openrc-map-art-tests)
@@ -288,6 +354,7 @@ if(OPENRC_BUILD_TESTS)
     add_test(NAME ps-adpcm COMMAND openrc-ps-adpcm-tests)
     add_test(NAME sblk COMMAND openrc-sblk-tests)
     add_test(NAME sblk-audio COMMAND openrc-sblk-audio-tests)
+    add_test(NAME sblk-wav COMMAND openrc-sblk-wav-tests)
     add_test(NAME vagp COMMAND openrc-vagp-tests)
     add_test(NAME scene-block-directory COMMAND openrc-scene-block-directory-tests)
     add_test(NAME scene-block-task COMMAND openrc-scene-block-task-tests)
@@ -300,6 +367,21 @@ if(OPENRC_BUILD_TESTS)
     add_executable(openrc-elf-tests tests/elf_tests.cpp)
     target_link_libraries(openrc-elf-tests PRIVATE openrc_core)
     target_compile_features(openrc-elf-tests PRIVATE cxx_std_20)
+
+    add_executable(
+        openrc-ee-r5900-boundary-tests
+        tests/ee_r5900_boundary_tests.cpp
+    )
+    target_link_libraries(
+        openrc-ee-r5900-boundary-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-ee-r5900-boundary-tests
+        PRIVATE
+        cxx_std_20
+    )
 
     add_executable(openrc-dvp-vu-tests tests/dvp_vu_tests.cpp)
     target_link_libraries(openrc-dvp-vu-tests PRIVATE openrc_core)
@@ -358,6 +440,7 @@ if(OPENRC_BUILD_TESTS)
 
     if(MSVC)
         target_compile_options(openrc-elf-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-ee-r5900-boundary-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-dvp-vu-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-dvp-vu-execute-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-gif-gs-tests PRIVATE /W4 /permissive- /utf-8)
@@ -369,6 +452,7 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-settings-tests PRIVATE /W4 /permissive- /utf-8)
     else()
         target_compile_options(openrc-elf-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-ee-r5900-boundary-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-dvp-vu-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-dvp-vu-execute-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-gif-gs-tests PRIVATE -Wall -Wextra -Wpedantic)
@@ -381,6 +465,7 @@ if(OPENRC_BUILD_TESTS)
     endif()
 
     add_test(NAME elf-inspector COMMAND openrc-elf-tests)
+    add_test(NAME ee-r5900-boundary COMMAND openrc-ee-r5900-boundary-tests)
     add_test(NAME dvp-vu COMMAND openrc-dvp-vu-tests)
     add_test(NAME dvp-vu-execute COMMAND openrc-dvp-vu-execute-tests)
     add_test(NAME gif-gs COMMAND openrc-gif-gs-tests)
