@@ -13,6 +13,7 @@
 #include "openrc/paths.hpp"
 #include "openrc/preparation.hpp"
 #include "openrc/ps2_save_bundle.hpp"
+#include "openrc/scene_animation_bank.hpp"
 #include "openrc/scene_block_directory.hpp"
 #include "openrc/scene_block_task_execute.hpp"
 #include "openrc/scene_block_vif.hpp"
@@ -82,6 +83,8 @@ constexpr std::uint64_t kMaximumCliWadInventoryTotalDecodedBytes =
 constexpr std::uint64_t kMaximumCliWadInventoryProbes = 16U;
 constexpr std::uint64_t kMaximumCliWadInventoryProbeInvocations = 1'600'000U;
 constexpr std::uint64_t kMaximumCliLocalizedSubtitleEntries = 4096U;
+constexpr std::uint64_t kMaximumCliSceneAnimationActorTracks = 256U;
+constexpr std::uint64_t kMaximumCliSceneAnimationTotalFrameRanges = 65'536U;
 constexpr std::uint32_t kMaximumCliWadFamilySampledBytesPerPayload = 4096U;
 constexpr std::uint64_t kMaximumCliWadFamilyTotalSampledBytes =
     kMaximumCliWadInventoryUniquePayloads *
@@ -121,6 +124,8 @@ void print_usage() {
         << "  openrc-cli wad-families <disc.iso> [output.tsv]  Rank structural payload families for Veldin\n"
         << "  openrc-cli wad-payload-export <disc.iso> <unique> <output.bin>\n"
         << "                                                    Export one explicitly selected decoded payload\n"
+        << "  openrc-cli wad-scene-animation <disc.iso> <unique>\n"
+        << "                                                    Inspect camera and actor animation tracks\n"
         << "  openrc-cli wad-subtitles <disc.iso> <unique>     Inspect a localized subtitle bank\n"
         << "  openrc-cli vagp <disc.iso> <global-slot> [output.wav]\n"
         << "                                                    Inspect/export VAGp as mono PCM\n"
@@ -571,6 +576,8 @@ struct WadPayloadCorpusReportV1 {
     auto probes = openrc::make_known_wad_payload_probes_v1(
         {kMaximumCliDecodedWadBytes,
          kMaximumCliSceneBlockRecords,
+         kMaximumCliSceneAnimationActorTracks,
+         kMaximumCliSceneAnimationTotalFrameRanges,
          kMaximumCliLocalizedSubtitleEntries});
     openrc::WadPayloadInventoryBuilderV1 builder(
         std::move(probes),
@@ -1846,6 +1853,93 @@ int run(const std::vector<std::filesystem::path>& arguments) {
         }
     }
 
+    if (command == "wad-scene-animation") {
+        if (arguments.size() != 3U) {
+            std::cerr
+                << "error: wad-scene-animation expects an ISO path and a "
+                   "decimal unique payload index\n";
+            return kUsageError;
+        }
+        const auto requested_unique = parse_decimal_argument(arguments[2]);
+        if (!requested_unique) {
+            std::cerr << "error: unique payload index must be decimal\n";
+            return kUsageError;
+        }
+        try {
+            std::cerr
+                << "Scanning indexed WadV1 sources for scene-animation "
+                   "payload "
+                << *requested_unique << "...\n";
+            const auto report = inventory_disc_wad_payloads_v1(
+                arguments[1], *requested_unique);
+            if (!report.captured_payload) {
+                throw std::runtime_error(
+                    "The requested WadV1 payload was not captured");
+            }
+            const auto& captured = *report.captured_payload;
+            const auto scene = openrc::parse_scene_animation_bank_v1(
+                captured.bytes,
+                openrc::SceneAnimationBankLimitsV1{
+                    kMaximumCliDecodedWadBytes,
+                    kMaximumCliSceneAnimationActorTracks,
+                    kMaximumCliSceneAnimationTotalFrameRanges,
+                    kMaximumCliLocalizedSubtitleEntries,
+                    kMaximumCliDecodedWadBytes});
+            std::cout
+                << "OpenRC SceneAnimationBankV1 report\n"
+                << "Unique index:          " << *requested_unique << '\n'
+                << "Decoded bytes:         " << captured.bytes.size() << '\n'
+                << "Header tag:            0x" << std::hex
+                << scene.header_tag << std::dec << '\n'
+                << "Scene record:          " << scene.scene_record_index
+                << " of " << scene.scene_record_count << '\n'
+                << "Actor tracks:          " << scene.actor_track_count << '\n'
+                << "Animation frames:      "
+                << static_cast<unsigned>(scene.frame_count) << '\n'
+                << "Camera records:        " << scene.camera_record_count
+                << " (" << scene.camera_track_range.size << " bytes)\n"
+                << "Subtitle table:        ";
+            if (scene.localized_subtitles) {
+                std::cout
+                    << "0x" << std::hex << scene.subtitle_table_offset
+                    << std::dec << " ("
+                    << scene.localized_subtitles->entries.size()
+                    << " entries)\n";
+            } else {
+                std::cout << "none\n";
+            }
+            std::cout
+                << "Trailing opaque bytes: "
+                << (scene.localized_subtitles
+                        ? scene.localized_subtitles->trailing_opaque_range.size
+                        : scene.trailing_range.size)
+                << "\n\nActors:\n";
+            for (std::size_t actor_index = 0U;
+                 actor_index < scene.actors.size();
+                 ++actor_index) {
+                const auto& actor = scene.actors[actor_index];
+                std::cout
+                    << "  [" << actor_index << "] class 0x" << std::hex
+                    << actor.class_id;
+                if (actor.class_id == 0U) {
+                    std::cout << " (Ratchet)";
+                } else if (actor.class_id == 10U) {
+                    std::cout << " (Clank)";
+                }
+                std::cout
+                    << ", section 0x" << actor.section_range.offset
+                    << "+0x" << actor.section_range.size
+                    << ", root 0x" << actor.root_transform_range.offset
+                    << "+0x" << actor.root_transform_range.size
+                    << std::dec << '\n';
+            }
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << "error: " << error.what() << '\n';
+            return kOperationError;
+        }
+    }
+
     if (command == "wad-subtitles") {
         if (arguments.size() != 3U) {
             std::cerr
@@ -1869,22 +1963,28 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                     "The requested WadV1 payload was not captured");
             }
             const auto& captured = *report.captured_payload;
-            const auto subtitles = openrc::parse_localized_subtitle_bank_v1(
+            const auto scene = openrc::parse_scene_animation_bank_v1(
                 captured.bytes,
-                openrc::LocalizedSubtitleBankLimitsV1{
+                openrc::SceneAnimationBankLimitsV1{
                     kMaximumCliDecodedWadBytes,
+                    kMaximumCliSceneAnimationActorTracks,
+                    kMaximumCliSceneAnimationTotalFrameRanges,
                     kMaximumCliLocalizedSubtitleEntries,
                     kMaximumCliDecodedWadBytes});
+            if (!scene.localized_subtitles) {
+                throw std::runtime_error(
+                    "The selected scene animation has no subtitle table");
+            }
+            const auto& subtitles = *scene.localized_subtitles;
             constexpr std::array<std::string_view, 5U> kLanguages{
                 "EN", "FR", "DE", "ES", "IT"};
             std::cout
-                << "OpenRC LocalizedSubtitleBankV1 report\n"
+                << "OpenRC localized scene-subtitle report\n"
                 << "Unique index:          " << *requested_unique << '\n'
                 << "Decoded bytes:         " << captured.bytes.size() << '\n'
-                << "Secondary offset:      0x" << std::hex
-                << subtitles.secondary_offset << '\n'
+                << "Actor tracks:          " << scene.actor_track_count << '\n'
                 << "Subtitle table:        0x"
-                << subtitles.table_offset << std::dec << '\n'
+                << std::hex << subtitles.table_offset << std::dec << '\n'
                 << "Entries:               " << subtitles.entries.size() << '\n'
                 << "Owned text bytes:      "
                 << subtitles.total_text_bytes << "\n\n";
@@ -2091,7 +2191,7 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 "MapArtV1",
                 "SceneBlockDirectoryV1",
                 "WadBundleV1",
-                "LocalizedSubtitleBankV1"};
+                "SceneAnimationBankV1"};
             for (const auto& unique : inventory.unique_payloads) {
                 for (std::size_t format_index = 0U;
                      format_index < kFormatNames.size();

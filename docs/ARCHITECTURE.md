@@ -22,7 +22,8 @@ openrc_core
 ├── decoded WadBundleV1 record inventory
 ├── streaming decoded-WAD corpus inventory, provenance, deduplication, and strict probes
 ├── deterministic structural candidate-family profiling and Veldin-ranked TSV export
-├── strict PAL five-language LocalizedSubtitleBankV1 timing/text parsing
+├── strict bounded SceneAnimationBankV1 camera/actor/frame/root parsing
+├── shared PAL five-language subtitle-directory timing/text parsing
 ├── neutral SceneBlockDirectoryV1 parsing with owned blocks and 8-section layouts
 ├── bounded zero-copy SceneBlock VIF command parsing across sections 0-4
 ├── conservative SceneBlock VIF execution with VU1 memory/write provenance
@@ -49,7 +50,8 @@ openrc_core
 
 openrc-cli
 ├── disc inspection and inventory
-├── TOC, WAD/bundle/companion/corpus/family/subtitle, scene-block/VIF/VU/GS, 2FIP, MapArt, PS2D, VAGp, and SBlk diagnostics
+├── TOC, WAD/bundle/companion/corpus/family/scene-animation/subtitle diagnostics
+├── scene-block/VIF/VU/GS, 2FIP, MapArt, PS2D, VAGp, and SBlk diagnostics
 ├── explicit-policy SBlk WAV and EE/R5900 boundary diagnostics
 ├── auto-fit wireframe TGA export from a selected real SceneBlock invocation
 ├── prepared-game extraction
@@ -185,6 +187,15 @@ separate byte and scene-record envelopes; a parser's dedicated format rejection
 can mean `no_match`, while allocation failures, foreign exceptions, and outer
 inventory-envelope failures propagate instead of becoming an `unknown`
 classification.
+Every local resource-block WAD run is now parsed as one complete
+`SceneAnimationBankV1`. The parser validates either observed header tag, the
+aligned actor-offset table, camera cadence, shared scene/frame metadata,
+monotonic frame tables, exact declared frame sizes, and one 16-byte root
+transform per frame. Large camera and animation bodies remain borrowed ranges;
+only bounded metadata is owned. An optional PAL localization tail uses the
+shared subtitle-directory parser, while empty entries, empty strings, and
+opaque bytes after the logical text envelope remain representable rather than
+being reinterpreted.
 MapArtV1 composes three palette-compatible images without assigning gameplay
 meaning to the remaining opaque regions. The PS2D parser likewise retains
 unknown header words and tagged payload keys rather than treating guesses as

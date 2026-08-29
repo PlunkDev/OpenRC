@@ -14,6 +14,10 @@ struct WadPayloadKnownFormatProbeLimitsV1 {
     // Kept independent from the byte envelope because each scene descriptor
     // expands into substantially more owned metadata than its 0x40-byte input.
     std::uint64_t max_scene_block_records = 0U;
+    // Scene animations own one actor descriptor per track and one compact
+    // metadata record per frame while leaving the large bodies zero-copy.
+    std::uint64_t max_scene_animation_actor_tracks = 0U;
+    std::uint64_t max_scene_animation_total_frame_ranges = 0U;
     // Localized entries own five text vectors apiece and therefore keep an
     // allocation-count limit independent of their 16-bit on-disc offsets.
     std::uint64_t max_localized_subtitle_entries = 0U;

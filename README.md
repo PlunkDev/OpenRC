@@ -25,6 +25,9 @@ Stage 1 is in progress. The repository currently provides:
 - a streaming whole-disc decoded-WAD inventory with SHA-256 deduplication,
   typed source provenance, strict known-format probes, and explicit
   recognized/unknown/ambiguous results;
+- a bounded `SceneAnimationBankV1` parser for every local resource-block WAD
+  run, covering camera-record cadence, actor animation frames, per-frame root
+  transforms, and optional PAL five-language subtitle tails;
 - a bounded `2FIP` indexed-texture parser with PS2 CLUT normalization,
   RGBA expansion, and lossless TGA export;
 - a neutral seven-region boundary-table parser for decoded level payloads;
@@ -91,7 +94,7 @@ Stage 1 is in progress. The repository currently provides:
 - application directories following the `PlunkDev/OpenRC` convention;
 - synthetic ISO, ELF, SHA-256, disc, WAD, bundle, 2FIP, boundary-table,
   MapArtV1, PS2 save-bundle, PS ADPCM, VAGp, SBlk/audio/WAV, decoded-WAD
-  inventory/probes, EE/R5900 boundaries, scene-block,
+  inventory/probes, scene-animation/subtitle, EE/R5900 boundaries, scene-block,
   scene-block VIF/VU execution and phase grouping, DVP VU microprogram
   decoding/execution, companion-WAD-index, and preparation tests that contain
   no copyrighted game data.
@@ -157,6 +160,7 @@ build/Debug/openrc-cli.exe toc-assets local/ratchet-and-clank.iso
 build/Debug/openrc-cli.exe wad local/ratchet-and-clank.iso 100
 build/Debug/openrc-cli.exe wad-payload-inventory local/ratchet-and-clank.iso wad-payloads.tsv
 build/Debug/openrc-cli.exe wad-families local/ratchet-and-clank.iso wad-families.tsv
+build/Debug/openrc-cli.exe wad-scene-animation local/ratchet-and-clank.iso 661
 build/Debug/openrc-cli.exe wad-subtitles local/ratchet-and-clank.iso 604
 build/Debug/openrc-cli.exe wad-payload-export local/ratchet-and-clank.iso 604 payload-604.bin
 build/Debug/openrc-cli.exe vagp local/ratchet-and-clank.iso 51 sample.wav
@@ -258,8 +262,12 @@ write one TSV row per observation, including the exact parent observation for
 nested records. Unknown is a first-class result; a parser limit or foreign
 exception is not silently converted into a format match. Scene-directory
 probing has a separate 4096-record cap, safely above the PAL corpus maximum of
-2144; subtitle banks likewise have a separate 4096-entry cap, so a byte
-envelope cannot imply an unbounded metadata allocation.
+2144. Scene-animation probing separately permits at most 256 actor tracks and
+65,536 total frame ranges; subtitle tails have a 4096-entry cap, so a byte
+envelope cannot imply an unbounded metadata allocation. The PAL sweep
+deduplicates to 4,605 payloads: 4,472 are recognized, 133 remain unknown, and
+none is ambiguous. `SceneAnimationBankV1` accounts for exactly all 4,081 local
+resource-block WAD-run payloads.
 
 `wad-families` profiles every unique decoded payload in the same streaming pass
 and groups exact V1 structural keys. The family ID is deterministic but remains
@@ -268,14 +276,17 @@ unknown coverage on Veldin, retains representative hashes and bounded sampling
 diagnostics, and reports classification, source, and per-level counts. Local
 WAD provenance keeps the resource block and its two run lanes separate.
 
-`wad-subtitles` inspects one explicitly selected unique payload as a strict
-`LocalizedSubtitleBankV1`. The PAL format contains bounded 16-byte timing rows,
-five relative text offsets in EN/FR/DE/ES/IT order, a fixed sentinel, NUL
-termination, and minimum zero padding. Text bytes are percent-escaped rather
-than assigned an unproven Unicode code page. `wad-payload-export` can copy one
-selected decoded payload to a new local file for reproducible diagnostics; it
-never overwrites an existing file. On the PAL v2.00 corpus the new strict probe
-recognizes 70 unique subtitle banks with no ambiguous classifications.
+`wad-scene-animation` inspects one explicitly selected unique payload as a
+strict complete `SceneAnimationBankV1`, reporting camera cadence, actor class
+and scene-record metadata, frame ranges, root transforms, trailing bytes, and
+the optional subtitle directory. `wad-subtitles` validates the same complete
+scene before printing its PAL five-language tail. Subtitle rows contain timing
+values and five relative text offsets in EN/FR/DE/ES/IT order; empty
+directories, empty translated strings, and an opaque suffix after the logical
+text envelope are retained without guessing a Unicode code page.
+`wad-payload-export` can
+copy one selected decoded payload to a new local file for reproducible
+diagnostics; it never overwrites an existing file.
 
 `r5900-boundaries` excludes the ELF's DVP/VU code sections and inventories only
 file-backed EE executable words. It reports typed jumps, branches, calls,

@@ -2,6 +2,7 @@
 
 #include "openrc/localized_subtitle_bank.hpp"
 #include "openrc/map_art.hpp"
+#include "openrc/scene_animation_bank.hpp"
 #include "openrc/scene_block_directory.hpp"
 #include "openrc/two_fip.hpp"
 #include "openrc/wad_bundle.hpp"
@@ -29,6 +30,8 @@ std::vector<WadPayloadProbeV1> make_known_wad_payload_probes_v1(
     const WadPayloadKnownFormatProbeLimitsV1 limits) {
     if (limits.max_decoded_payload_bytes == 0U ||
         limits.max_scene_block_records == 0U ||
+        limits.max_scene_animation_actor_tracks == 0U ||
+        limits.max_scene_animation_total_frame_ranges == 0U ||
         limits.max_localized_subtitle_entries == 0U) {
         throw WadPayloadKnownFormatProbeError(
             "The known WadV1 format-probe limits must all be non-zero");
@@ -36,6 +39,10 @@ std::vector<WadPayloadProbeV1> make_known_wad_payload_probes_v1(
 
     const auto maximum_bytes = limits.max_decoded_payload_bytes;
     const auto max_scene_records = limits.max_scene_block_records;
+    const auto max_scene_animation_actor_tracks =
+        limits.max_scene_animation_actor_tracks;
+    const auto max_scene_animation_total_frame_ranges =
+        limits.max_scene_animation_total_frame_ranges;
     const auto max_subtitle_entries =
         limits.max_localized_subtitle_entries;
 
@@ -95,19 +102,27 @@ std::vector<WadPayloadProbeV1> make_known_wad_payload_probes_v1(
                 });
         }});
     probes.push_back(WadPayloadProbeV1{
-        "LocalizedSubtitleBankV1",
-        [maximum_bytes, max_subtitle_entries](
+        "SceneAnimationBankV1",
+        [maximum_bytes,
+         max_scene_animation_actor_tracks,
+         max_scene_animation_total_frame_ranges,
+         max_subtitle_entries](
             const std::span<const std::byte> bytes) {
             require_bounded_payload(bytes, maximum_bytes);
             return probe_wad_payload_with_parser_v1<
-                LocalizedSubtitleBankError>(
+                SceneAnimationBankError>(
                 bytes,
-                [maximum_bytes, max_subtitle_entries](
+                [maximum_bytes,
+                 max_scene_animation_actor_tracks,
+                 max_scene_animation_total_frame_ranges,
+                 max_subtitle_entries](
                     const std::span<const std::byte> input) {
-                    return parse_localized_subtitle_bank_v1(
+                    return parse_scene_animation_bank_v1(
                         input,
-                        LocalizedSubtitleBankLimitsV1{
+                        SceneAnimationBankLimitsV1{
                             maximum_bytes,
+                            max_scene_animation_actor_tracks,
+                            max_scene_animation_total_frame_ranges,
                             max_subtitle_entries,
                             maximum_bytes});
                 });

@@ -51,6 +51,19 @@ struct LocalizedSubtitleEntryV1 {
         const LocalizedSubtitleEntryV1&) const = default;
 };
 
+struct LocalizedSubtitleDirectoryV1 {
+    std::uint32_t table_offset = 0U;
+    LocalizedSubtitleRangeV1 directory_range;
+    LocalizedSubtitleRangeV1 sentinel_range;
+    // Includes text terminators and their minimum zero alignment padding.
+    LocalizedSubtitleRangeV1 text_range;
+    // Some retail payloads retain unrelated/non-deterministic bytes after the
+    // final aligned string. They are preserved as an opaque borrowed range.
+    LocalizedSubtitleRangeV1 trailing_opaque_range;
+    std::uint64_t total_text_bytes = 0U;
+    std::vector<LocalizedSubtitleEntryV1> entries;
+};
+
 struct LocalizedSubtitleBankV1 {
     std::uint64_t input_bytes = 0U;
     std::array<std::uint32_t, 8U> header_words{};
@@ -62,8 +75,9 @@ struct LocalizedSubtitleBankV1 {
     LocalizedSubtitleRangeV1 opaque_body_range;
     LocalizedSubtitleRangeV1 directory_range;
     LocalizedSubtitleRangeV1 sentinel_range;
-    // Includes text terminators and zero alignment padding through EOF.
+    // Includes text terminators and their minimum zero alignment padding.
     LocalizedSubtitleRangeV1 text_range;
+    LocalizedSubtitleRangeV1 trailing_opaque_range;
     std::uint64_t total_text_bytes = 0U;
     std::vector<LocalizedSubtitleEntryV1> entries;
 };
@@ -79,6 +93,15 @@ public:
 // and minimum 4/16-byte padding envelope is validated under explicit limits.
 [[nodiscard]] LocalizedSubtitleBankV1 parse_localized_subtitle_bank_v1(
     std::span<const std::byte> bytes,
+    LocalizedSubtitleBankLimitsV1 limits);
+
+// Parses the PAL five-language directory and text tail beginning at an
+// explicitly supplied absolute offset. This is shared by the standalone
+// one-actor subtitle-bank parser and the broader scene-animation parser.
+[[nodiscard]] LocalizedSubtitleDirectoryV1
+parse_localized_subtitle_directory_v1(
+    std::span<const std::byte> bytes,
+    std::uint32_t table_offset,
     LocalizedSubtitleBankLimitsV1 limits);
 
 } // namespace openrc

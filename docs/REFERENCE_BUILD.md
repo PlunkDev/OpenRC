@@ -567,7 +567,7 @@ classification metadata. The exact PAL v2.00 sweep contains:
 
 Those observations decode to 1,093,912,988 bytes and deduplicate to 4,605
 payloads totaling 1,066,576,972 bytes. Strict complete-payload probes produce
-461 recognized unique payloads, 4,144 unknown unique payloads, and zero
+4,472 recognized unique payloads, 133 unknown unique payloads, and zero
 ambiguous payloads:
 
 | Semantic format | Unique payloads | Observations |
@@ -576,17 +576,20 @@ ambiguous payloads:
 | `MapArtV1` | 36 | 38 |
 | `SceneBlockDirectoryV1` | 19 | 19 |
 | `WadBundleV1` | 1 | 1 |
-| `LocalizedSubtitleBankV1` | 70 | 70 |
+| `SceneAnimationBankV1` | 4,081 | 4,081 |
 
-The optional observation TSV is 1,014,894 bytes with SHA-256
-`61e0d7e3cc7793ef9698ba29cdb72b180cef1bdd9ba11589e1c0dbe829394ca0`.
+The optional observation TSV is 1,106,937 bytes with SHA-256
+`a8e86821c8660fe909e433b4889fa94aca04c875261c6639ca3728306e54b873`.
 Its nested rows identify the exact parent observation as well as the parent's
 deduplicated payload. The production scene-directory probe uses a separate
 4096-record allocation cap; the largest reference directory contains 2,144
-records.
-Unknown remains an explicit result rather than a guessed format. The 4,144
-remaining unique payloads are organized into 1,071 candidate families that
-still contain unknown members, providing the queue for the next semantic pass.
+records. Scene-animation probing has independent limits of 256 actor tracks,
+65,536 total frame ranges, and 4,096 subtitle entries.
+Unknown remains an explicit result rather than a guessed format. The 133
+remaining unique payloads are organized into 71 candidate families that still
+contain unknown members, providing the queue for the next semantic pass. The
+matching family TSV is 27,612 bytes with SHA-256
+`9c5be1ecd2894bc5fbd0e6c7e387e8379e43537af55a1b3864f9bd2c2fd6d2da`.
 
 ## VAGp V1 audio
 
@@ -741,30 +744,45 @@ general IOP staging, and audio. None contains a literal `WAD` or `2FIP`
 reference; the texture/resource decoders therefore remain targets in the main
 EE executable or other decoded data, rather than these IOP modules.
 
-## Localized subtitle banks
+## Scene animation banks and localized subtitle tails
 
 The structural-family pass profiles all 4,605 unique decoded WadV1 payloads
 without retaining their asset bytes. On the reference image it produces 1,250
-exact candidate keys. Before the first new semantic probe, 1,096 families
-contained at least one of 4,214 unknown unique payloads. Candidate identity is
-based on a versioned canonical feature key; its SHA-256 is only a printable ID.
+exact candidate keys. Candidate identity is based on a versioned canonical
+feature key; its SHA-256 is only a printable ID. The semantic pass now proves
+that exactly all 4,081 local resource-block WAD-run payloads, and no payloads
+from another provenance class, are complete `SceneAnimationBankV1` records.
 
-Two high-coverage Veldin families led to a repeated PAL localization tail. A
-complete matching payload has a 0x20-byte partially understood header with tag
-`0xFFFFFFFA`, kind `1`, a 0x10-aligned subtitle-table offset, and a preceding
-secondary section offset. The subtitle table contains one or more 0x10-byte
-rows: two 16-bit timing values, five strictly ascending 16-bit offsets relative
-to the table, and a zero reserved halfword. A 16-byte `0xFFFFFFFF`/zero sentinel
-ends the rows. Text occurs in EN/FR/DE/ES/IT order, is NUL-terminated, and uses
-minimum zero padding to four-byte boundaries and a final 16-byte envelope.
+The aligned scene header accepts the two observed tags `0xFFFFFFF8` and
+`0xFFFFFFFA`. Word 1 is either zero or an absolute offset to the optional
+subtitle table, word 3 is the actor-track count, and the exact header size is
+`align16(0x14 + actor_count * 4)`. The corpus contains 1 through 8 and 11 actor
+tracks. A 0x20-byte camera-record stream follows the header and has either
+`2 * frame_count - 1` records or the observed endpoint-trimmed
+`2 * frame_count - 3` variant.
 
-The strict `LocalizedSubtitleBankV1` parser validates and owns only this proven
-timing/text structure. It reports the earlier payload body as opaque and keeps
-the original single-byte text encoding instead of guessing Unicode. Two real
-Veldin representatives independently validate table offsets `0xBBC0` and
-`0x9D20`, two timing rows apiece, and all five languages. Across the full PAL
-v2.00 corpus the production probe recognizes 70 unique observations, reducing
-the unknown unique count from 4,214 to 4,144 with zero ambiguous matches.
+Each actor begins with a 0x10-byte header: class ID, total scene-record count,
+scene-record index, and an absolute root-transform offset. The diagnostic CLI
+labels observed class IDs `0` and `10` as Ratchet and Clank, while the parser
+preserves every class ID without assigning names to the rest. The following
+sequence owns a four-word neutral prefix, an 8-bit common frame count, fixed
+`00 FF FF` controls, two zero words, and one aligned relative offset per frame.
+Every observed offset
+has zero high flag bits. A regular frame closes exactly at
+`frame_start + 0x10 + data_size_qwords * 0x10`; the parser rejects non-zero
+offset flags until another layout is independently demonstrated. Exactly one
+16-byte root transform follows per frame, with a raw zero W word. Large camera
+and frame bodies remain zero-copy ranges, while bounded metadata is owned.
+
+When word 1 is non-zero, the scene ends with a PAL subtitle directory. Its
+0x10-byte rows contain two timing values, five strictly ascending 16-bit offsets
+in EN/FR/DE/ES/IT order, and a zero reserved halfword; a fixed 16-byte sentinel
+closes the rows. Text is NUL-terminated with minimum four-byte padding and a
+final 16-byte logical envelope. The shared parser preserves empty directories,
+empty translations, the original single-byte encoding, and any opaque suffix
+after the logical text end. The production probe validates the whole scene,
+not merely the recognizable localization tail, and classifies the full corpus
+with zero ambiguous matches.
 
 ## EE/R5900 boundary inventory
 

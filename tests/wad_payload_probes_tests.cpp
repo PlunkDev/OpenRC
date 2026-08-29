@@ -1,5 +1,6 @@
 #include "openrc/localized_subtitle_bank.hpp"
 #include "openrc/map_art.hpp"
+#include "openrc/scene_animation_bank.hpp"
 #include "openrc/scene_block_directory.hpp"
 #include "openrc/two_fip.hpp"
 #include "openrc/wad_bundle.hpp"
@@ -20,6 +21,8 @@ namespace {
 
 constexpr std::uint64_t kMaximumPayloadBytes = 64U * 1024U * 1024U;
 constexpr std::uint64_t kMaximumSceneRecords = 4096U;
+constexpr std::uint64_t kMaximumSceneAnimationActors = 256U;
+constexpr std::uint64_t kMaximumSceneAnimationFrames = 65'536U;
 constexpr std::uint64_t kMaximumSubtitleEntries = 4096U;
 constexpr std::uint32_t kMapArtRegion0Size = 0x310U;
 constexpr std::uint32_t kMapArtImageSize = 0x4420U;
@@ -93,42 +96,48 @@ void write_le32(
     return bytes;
 }
 
-[[nodiscard]] std::vector<std::byte> make_localized_subtitle_bank() {
-    std::vector<std::byte> bytes(0x80U, std::byte{0});
+[[nodiscard]] std::vector<std::byte> make_scene_animation_bank(
+    const std::size_t subtitle_entries) {
+    constexpr std::uint32_t kActorOffset = 0x40U;
+    constexpr std::uint32_t kSequenceOffset = 0x50U;
+    constexpr std::uint32_t kFrameOffset = 0x70U;
+    constexpr std::uint32_t kRootOffset = 0x90U;
+    constexpr std::uint32_t kSubtitleOffset = 0xa0U;
+    const auto directory_bytes = static_cast<std::uint32_t>(
+        (subtitle_entries + 1U) *
+        openrc::kLocalizedSubtitleBankEntryBytesV1);
+    const auto text_count = static_cast<std::uint32_t>(
+        subtitle_entries * openrc::kLocalizedSubtitleLanguageCountV1);
+    const auto tail_bytes =
+        (directory_bytes + text_count * 4U + 0x0fU) & ~0x0fU;
+    std::vector<std::byte> bytes(
+        kSubtitleOffset + tail_bytes,
+        std::byte{0});
     write_le32(bytes, 0x00U, 7U);
-    write_le32(bytes, 0x04U, 0x40U);
-    write_le32(bytes, 0x08U, openrc::kLocalizedSubtitleHeaderTagV1);
-    write_le32(bytes, 0x0cU, openrc::kLocalizedSubtitleHeaderKindV1);
-    write_le32(
-        bytes, 0x10U, openrc::kLocalizedSubtitleBankHeaderBytesV1);
-    write_le32(bytes, 0x14U, 0x30U);
-    write_le16(bytes, 0x40U, 1U);
-    write_le16(bytes, 0x42U, 2U);
-    for (std::size_t language = 0U;
-         language < openrc::kLocalizedSubtitleLanguageCountV1;
-         ++language) {
-        write_le16(
-            bytes,
-            0x44U + language * sizeof(std::uint16_t),
-            static_cast<std::uint16_t>(0x20U + language * 4U));
-        bytes[0x60U + language * 4U] =
-            static_cast<std::byte>('A' + language);
-    }
-    write_le32(bytes, 0x50U, 0xffffffffU);
-    return bytes;
-}
+    write_le32(bytes, 0x04U, kSubtitleOffset);
+    write_le32(bytes, 0x08U, openrc::kSceneAnimationBankTagV1);
+    write_le32(bytes, 0x0cU, 1U);
+    write_le32(bytes, 0x10U, 0x20U);
+    write_le32(bytes, 0x14U, kActorOffset);
 
-[[nodiscard]] std::vector<std::byte>
-make_two_entry_localized_subtitle_bank() {
-    auto bytes = make_localized_subtitle_bank();
-    bytes.resize(0xa0U, std::byte{0});
-    std::fill(bytes.begin() + 0x40, bytes.end(), std::byte{0});
-    for (std::size_t entry = 0U; entry < 2U; ++entry) {
-        const auto entry_offset = 0x40U + entry * 0x10U;
+    write_le32(bytes, kActorOffset, 0U);
+    write_le32(bytes, kActorOffset + 0x04U, 1U);
+    write_le32(bytes, kActorOffset + 0x08U, 0U);
+    write_le32(bytes, kActorOffset + 0x0cU, kRootOffset);
+    bytes[kSequenceOffset + 0x10U] = std::byte{1};
+    bytes[kSequenceOffset + 0x12U] = std::byte{0xff};
+    bytes[kSequenceOffset + 0x13U] = std::byte{0xff};
+    write_le32(bytes, kSequenceOffset + 0x1cU, 0x20U);
+    write_le16(bytes, kFrameOffset + 0x06U, 1U);
+
+    for (std::size_t entry = 0U; entry < subtitle_entries; ++entry) {
+        const auto entry_offset = static_cast<std::size_t>(
+            kSubtitleOffset + entry *
+                openrc::kLocalizedSubtitleBankEntryBytesV1);
         write_le16(bytes, entry_offset, static_cast<std::uint16_t>(entry));
         write_le16(
             bytes,
-            entry_offset + 2U,
+            entry_offset + 0x02U,
             static_cast<std::uint16_t>(entry + 1U));
         for (std::size_t language = 0U;
              language < openrc::kLocalizedSubtitleLanguageCountV1;
@@ -136,17 +145,30 @@ make_two_entry_localized_subtitle_bank() {
             const auto text_index =
                 entry * openrc::kLocalizedSubtitleLanguageCountV1 + language;
             const auto relative = static_cast<std::uint16_t>(
-                0x30U + text_index * 4U);
+                directory_bytes + text_index * 4U);
             write_le16(
                 bytes,
-                entry_offset + 4U + language * 2U,
+                entry_offset + 0x04U + language * sizeof(std::uint16_t),
                 relative);
-            bytes[0x40U + relative] =
-                static_cast<std::byte>('A' + text_index);
+            bytes[kSubtitleOffset + relative] = static_cast<std::byte>(
+                static_cast<unsigned char>('A' + text_index));
         }
     }
-    write_le32(bytes, 0x60U, 0xffffffffU);
+    write_le32(
+        bytes,
+        kSubtitleOffset + subtitle_entries *
+            openrc::kLocalizedSubtitleBankEntryBytesV1,
+        0xffffffffU);
     return bytes;
+}
+
+[[nodiscard]] std::vector<std::byte> make_localized_subtitle_bank() {
+    return make_scene_animation_bank(1U);
+}
+
+[[nodiscard]] std::vector<std::byte>
+make_two_entry_localized_subtitle_bank() {
+    return make_scene_animation_bank(2U);
 }
 
 [[nodiscard]] std::vector<std::byte> make_map_art() {
@@ -300,6 +322,8 @@ void test_factory_and_strict_format_matches() {
     const auto probes = openrc::make_known_wad_payload_probes_v1(
         {kMaximumPayloadBytes,
          kMaximumSceneRecords,
+         kMaximumSceneAnimationActors,
+         kMaximumSceneAnimationFrames,
          kMaximumSubtitleEntries});
     expect(probes.size() == 5U, "known probe count is wrong");
     expect(
@@ -307,7 +331,7 @@ void test_factory_and_strict_format_matches() {
             probes[1].format_name == "MapArtV1" &&
             probes[2].format_name == "SceneBlockDirectoryV1" &&
             probes[3].format_name == "WadBundleV1" &&
-            probes[4].format_name == "LocalizedSubtitleBankV1",
+            probes[4].format_name == "SceneAnimationBankV1",
         "known probe registration order or names changed");
 
     expect_only_probe_matches(probes, 0U, make_two_fip(), "TwoFipV1");
@@ -322,13 +346,15 @@ void test_factory_and_strict_format_matches() {
         probes,
         4U,
         make_localized_subtitle_bank(),
-        "LocalizedSubtitleBankV1");
+        "SceneAnimationBankV1");
 }
 
 void test_every_probe_rejects_a_near_miss() {
     const auto probes = openrc::make_known_wad_payload_probes_v1(
         {kMaximumPayloadBytes,
          kMaximumSceneRecords,
+         kMaximumSceneAnimationActors,
+         kMaximumSceneAnimationFrames,
          kMaximumSubtitleEntries});
 
     auto two_fip = make_two_fip();
@@ -361,27 +387,45 @@ void test_every_probe_rejects_a_near_miss() {
         "WadBundleV1 probe accepted a bad header size");
 
     auto subtitles = make_localized_subtitle_bank();
-    write_le16(subtitles, 0x4eU, 1U);
+    write_le16(subtitles, 0xaeU, 1U);
     expect(
         probes[4].inspect(subtitles) ==
             openrc::WadPayloadProbeDecisionV1::no_match,
-        "LocalizedSubtitleBankV1 probe accepted a non-zero reserved field");
+        "SceneAnimationBankV1 probe accepted a bad subtitle tail");
 }
 
 void test_factory_limits() {
     for (const auto limits :
-         std::array<openrc::WadPayloadKnownFormatProbeLimitsV1, 3>{
+         std::array<openrc::WadPayloadKnownFormatProbeLimitsV1, 5>{
              openrc::WadPayloadKnownFormatProbeLimitsV1{
                  0U,
                  kMaximumSceneRecords,
+                 kMaximumSceneAnimationActors,
+                 kMaximumSceneAnimationFrames,
                  kMaximumSubtitleEntries},
              openrc::WadPayloadKnownFormatProbeLimitsV1{
                  kMaximumPayloadBytes,
                  0U,
+                 kMaximumSceneAnimationActors,
+                 kMaximumSceneAnimationFrames,
                  kMaximumSubtitleEntries},
              openrc::WadPayloadKnownFormatProbeLimitsV1{
                  kMaximumPayloadBytes,
                  kMaximumSceneRecords,
+                 0U,
+                 kMaximumSceneAnimationFrames,
+                 kMaximumSubtitleEntries},
+             openrc::WadPayloadKnownFormatProbeLimitsV1{
+                 kMaximumPayloadBytes,
+                 kMaximumSceneRecords,
+                 kMaximumSceneAnimationActors,
+                 0U,
+                 kMaximumSubtitleEntries},
+             openrc::WadPayloadKnownFormatProbeLimitsV1{
+                 kMaximumPayloadBytes,
+                 kMaximumSceneRecords,
+                 kMaximumSceneAnimationActors,
+                 kMaximumSceneAnimationFrames,
                  0U}}) {
         bool rejected = false;
         try {
@@ -393,7 +437,7 @@ void test_factory_limits() {
     }
 
     const auto byte_limited = openrc::make_known_wad_payload_probes_v1(
-        {8U, 4U, 4U});
+        {8U, 4U, 4U, 4U, 4U});
     bool rejected = false;
     try {
         (void)byte_limited.front().inspect(make_two_fip());
@@ -403,7 +447,11 @@ void test_factory_limits() {
     expect(rejected, "known-probe input envelope was ignored");
 
     const auto record_limited = openrc::make_known_wad_payload_probes_v1(
-        {kMaximumPayloadBytes, 1U, kMaximumSubtitleEntries});
+        {kMaximumPayloadBytes,
+         1U,
+         kMaximumSceneAnimationActors,
+         kMaximumSceneAnimationFrames,
+         kMaximumSubtitleEntries});
     expect(
         record_limited[2].inspect(make_scene_block_directory()) ==
             openrc::WadPayloadProbeDecisionV1::no_match,
@@ -411,7 +459,11 @@ void test_factory_limits() {
 
     const auto subtitle_limited =
         openrc::make_known_wad_payload_probes_v1(
-            {kMaximumPayloadBytes, kMaximumSceneRecords, 1U});
+            {kMaximumPayloadBytes,
+             kMaximumSceneRecords,
+             kMaximumSceneAnimationActors,
+             kMaximumSceneAnimationFrames,
+             1U});
     const auto two_entry_subtitles =
         make_two_entry_localized_subtitle_bank();
     expect(

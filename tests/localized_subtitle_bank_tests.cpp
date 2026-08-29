@@ -165,6 +165,60 @@ void test_limits() {
     }
 }
 
+void test_empty_directory_and_opaque_suffix() {
+    auto empty = make_bank();
+    empty.resize(0x50U, std::byte{0});
+    std::fill(empty.begin() + 0x40, empty.end(), std::byte{0});
+    write_le32(empty, 0x40U, 0xffffffffU);
+    const auto empty_result = openrc::parse_localized_subtitle_bank_v1(
+        empty, kLimits);
+    expect(
+        empty_result.entries.empty() &&
+            empty_result.directory_range ==
+                openrc::LocalizedSubtitleRangeV1{0x40U, 0x10U} &&
+            empty_result.text_range ==
+                openrc::LocalizedSubtitleRangeV1{0x50U, 0U},
+        "an empty localized subtitle directory was not preserved");
+
+    auto with_suffix = make_bank();
+    with_suffix.resize(0xb0U, std::byte{0});
+    with_suffix[0xa0U] = std::byte{0x5a};
+    with_suffix[0xafU] = std::byte{0xa5};
+    const auto suffix_result = openrc::parse_localized_subtitle_bank_v1(
+        with_suffix, kLimits);
+    expect(
+        suffix_result.text_range ==
+                openrc::LocalizedSubtitleRangeV1{0x70U, 0x30U} &&
+            suffix_result.trailing_opaque_range ==
+                openrc::LocalizedSubtitleRangeV1{0xa0U, 0x10U},
+        "localized subtitle opaque suffix was not isolated");
+
+    auto with_64k_tail = make_bank();
+    with_64k_tail.resize(0x10040U, std::byte{0});
+    with_64k_tail.back() = std::byte{0x5a};
+    const auto large_suffix_result =
+        openrc::parse_localized_subtitle_bank_v1(
+            with_64k_tail,
+            openrc::LocalizedSubtitleBankLimitsV1{
+                0x20000U, 32U, 0x1000U});
+    expect(
+        large_suffix_result.text_range ==
+                openrc::LocalizedSubtitleRangeV1{0x70U, 0x30U} &&
+            large_suffix_result.trailing_opaque_range ==
+                openrc::LocalizedSubtitleRangeV1{0xa0U, 0xffa0U},
+        "a 64 KiB subtitle envelope with an opaque suffix was rejected");
+
+    auto empty_text = make_bank();
+    empty_text[0x70U] = std::byte{0};
+    const auto empty_text_result =
+        openrc::parse_localized_subtitle_bank_v1(empty_text, kLimits);
+    expect(
+        empty_text_result.entries[0U].texts[0U].bytes.empty() &&
+            empty_text_result.entries[0U].texts[0U].range ==
+                openrc::LocalizedSubtitleRangeV1{0x70U, 0U},
+        "an intentionally empty localized subtitle was rejected");
+}
+
 void test_header_directory_and_text_rejections() {
     expect_rejected(
         [](auto& bytes) { write_le32(bytes, 0x08U, 0U); },
@@ -214,9 +268,6 @@ void test_header_directory_and_text_rejections() {
         },
         "localized subtitle text without a NUL was accepted");
     expect_rejected(
-        [](auto& bytes) { bytes[0x70U] = std::byte{0}; },
-        "an empty localized subtitle string was accepted");
-    expect_rejected(
         [](auto& bytes) { bytes[0x72U] = std::byte{1}; },
         "non-zero localized subtitle text padding was accepted");
     expect_rejected(
@@ -230,6 +281,7 @@ int main() {
     try {
         test_valid_bank_and_owned_text();
         test_limits();
+        test_empty_directory_and_opaque_suffix();
         test_header_directory_and_text_rejections();
         std::cout << "OpenRC LocalizedSubtitleBankV1 tests passed\n";
         return 0;
