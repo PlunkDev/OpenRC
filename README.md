@@ -156,6 +156,9 @@ build/Debug/openrc-cli.exe toc local/ratchet-and-clank.iso
 build/Debug/openrc-cli.exe toc-assets local/ratchet-and-clank.iso
 build/Debug/openrc-cli.exe wad local/ratchet-and-clank.iso 100
 build/Debug/openrc-cli.exe wad-payload-inventory local/ratchet-and-clank.iso wad-payloads.tsv
+build/Debug/openrc-cli.exe wad-families local/ratchet-and-clank.iso wad-families.tsv
+build/Debug/openrc-cli.exe wad-subtitles local/ratchet-and-clank.iso 604
+build/Debug/openrc-cli.exe wad-payload-export local/ratchet-and-clank.iso 604 payload-604.bin
 build/Debug/openrc-cli.exe vagp local/ratchet-and-clank.iso 51 sample.wav
 build/Debug/openrc-cli.exe boundary local/ratchet-and-clank.iso 259
 build/Debug/openrc-cli.exe map-art local/ratchet-and-clank.iso 0 map-art.tga
@@ -255,7 +258,24 @@ write one TSV row per observation, including the exact parent observation for
 nested records. Unknown is a first-class result; a parser limit or foreign
 exception is not silently converted into a format match. Scene-directory
 probing has a separate 4096-record cap, safely above the PAL corpus maximum of
-2144, so a byte envelope cannot imply an unbounded metadata allocation.
+2144; subtitle banks likewise have a separate 4096-entry cap, so a byte
+envelope cannot imply an unbounded metadata allocation.
+
+`wad-families` profiles every unique decoded payload in the same streaming pass
+and groups exact V1 structural keys. The family ID is deterministic but remains
+a reverse-engineering candidate, not a claimed semantic format. Its TSV ranks
+unknown coverage on Veldin, retains representative hashes and bounded sampling
+diagnostics, and reports classification, source, and per-level counts. Local
+WAD provenance keeps the resource block and its two run lanes separate.
+
+`wad-subtitles` inspects one explicitly selected unique payload as a strict
+`LocalizedSubtitleBankV1`. The PAL format contains bounded 16-byte timing rows,
+five relative text offsets in EN/FR/DE/ES/IT order, a fixed sentinel, NUL
+termination, and minimum zero padding. Text bytes are percent-escaped rather
+than assigned an unproven Unicode code page. `wad-payload-export` can copy one
+selected decoded payload to a new local file for reproducible diagnostics; it
+never overwrites an existing file. On the PAL v2.00 corpus the new strict probe
+recognizes 70 unique subtitle banks with no ambiguous classifications.
 
 `r5900-boundaries` excludes the ELF's DVP/VU code sections and inventories only
 file-backed EE executable words. It reports typed jumps, branches, calls,

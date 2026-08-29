@@ -1,5 +1,6 @@
 #include "openrc/wad_payload_probes.hpp"
 
+#include "openrc/localized_subtitle_bank.hpp"
 #include "openrc/map_art.hpp"
 #include "openrc/scene_block_directory.hpp"
 #include "openrc/two_fip.hpp"
@@ -27,16 +28,19 @@ void require_bounded_payload(
 std::vector<WadPayloadProbeV1> make_known_wad_payload_probes_v1(
     const WadPayloadKnownFormatProbeLimitsV1 limits) {
     if (limits.max_decoded_payload_bytes == 0U ||
-        limits.max_scene_block_records == 0U) {
+        limits.max_scene_block_records == 0U ||
+        limits.max_localized_subtitle_entries == 0U) {
         throw WadPayloadKnownFormatProbeError(
-            "The known WadV1 format-probe byte and scene-record limits must be non-zero");
+            "The known WadV1 format-probe limits must all be non-zero");
     }
 
     const auto maximum_bytes = limits.max_decoded_payload_bytes;
     const auto max_scene_records = limits.max_scene_block_records;
+    const auto max_subtitle_entries =
+        limits.max_localized_subtitle_entries;
 
     std::vector<WadPayloadProbeV1> probes;
-    probes.reserve(4U);
+    probes.reserve(5U);
     probes.push_back(WadPayloadProbeV1{
         "TwoFipV1",
         [maximum_bytes](const std::span<const std::byte> bytes) {
@@ -88,6 +92,24 @@ std::vector<WadPayloadProbeV1> make_known_wad_payload_probes_v1(
                 bytes,
                 [](const std::span<const std::byte> input) {
                     return parse_wad_bundle_v1(input);
+                });
+        }});
+    probes.push_back(WadPayloadProbeV1{
+        "LocalizedSubtitleBankV1",
+        [maximum_bytes, max_subtitle_entries](
+            const std::span<const std::byte> bytes) {
+            require_bounded_payload(bytes, maximum_bytes);
+            return probe_wad_payload_with_parser_v1<
+                LocalizedSubtitleBankError>(
+                bytes,
+                [maximum_bytes, max_subtitle_entries](
+                    const std::span<const std::byte> input) {
+                    return parse_localized_subtitle_bank_v1(
+                        input,
+                        LocalizedSubtitleBankLimitsV1{
+                            maximum_bytes,
+                            max_subtitle_entries,
+                            maximum_bytes});
                 });
         }});
     return probes;

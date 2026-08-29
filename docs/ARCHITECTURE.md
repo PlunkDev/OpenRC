@@ -21,6 +21,8 @@ openrc_core
 ├── bounded WadV1 inspection and clean-room LZ decoding
 ├── decoded WadBundleV1 record inventory
 ├── streaming decoded-WAD corpus inventory, provenance, deduplication, and strict probes
+├── deterministic structural candidate-family profiling and Veldin-ranked TSV export
+├── strict PAL five-language LocalizedSubtitleBankV1 timing/text parsing
 ├── neutral SceneBlockDirectoryV1 parsing with owned blocks and 8-section layouts
 ├── bounded zero-copy SceneBlock VIF command parsing across sections 0-4
 ├── conservative SceneBlock VIF execution with VU1 memory/write provenance
@@ -47,7 +49,7 @@ openrc_core
 
 openrc-cli
 ├── disc inspection and inventory
-├── TOC, WAD/bundle/companion/corpus, scene-block/VIF/VU/GS, 2FIP, MapArt, PS2D, VAGp, and SBlk diagnostics
+├── TOC, WAD/bundle/companion/corpus/family/subtitle, scene-block/VIF/VU/GS, 2FIP, MapArt, PS2D, VAGp, and SBlk diagnostics
 ├── explicit-policy SBlk WAV and EE/R5900 boundary diagnostics
 ├── auto-fit wireframe TGA export from a selected real SceneBlock invocation
 ├── prepared-game extraction

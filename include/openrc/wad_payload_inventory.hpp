@@ -32,10 +32,12 @@ struct WadPayloadOriginV1 {
 
     // Optional coordinates are deliberately generic enough to represent every
     // current DiscTocV1 source without storing a path or borrowing source data.
-    // container_index is, depending on kind, a global slot, local WAD-run,
-    // primary subrange, primary extent, or enclosing record index.
+    // container_index is, depending on kind, a global slot, local resource
+    // block, primary subrange, primary extent, or enclosing record index.
+    // run_index is populated for one lane of a local resource block.
     std::optional<std::uint32_t> level_id;
     std::optional<std::uint32_t> container_index;
+    std::optional<std::uint32_t> run_index;
     std::optional<std::uint32_t> record_index;
     std::optional<std::uint64_t> lba;
     std::optional<std::uint64_t> container_byte_offset;

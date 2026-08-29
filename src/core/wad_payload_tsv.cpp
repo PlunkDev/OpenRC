@@ -75,7 +75,7 @@ std::string encode_wad_payload_inventory_tsv_v1(
     output
         << "observation\tunique\tclassification\tformats\tdecoded_bytes\t"
            "decoded_sha256\tunique_observations\torigin\tlevel\tcontainer\t"
-           "record\tlba\tcontainer_offset\tencoded_bytes\tencoded_sha256\t"
+           "run\trecord\tlba\tcontainer_offset\tencoded_bytes\tencoded_sha256\t"
            "parent_unique\tparent_observation\n";
     for (std::size_t observation_index = 0U;
          observation_index < inventory.observations.size();
@@ -128,6 +128,7 @@ std::string encode_wad_payload_inventory_tsv_v1(
             << origin_name(origin.kind) << '\t'
             << optional_decimal(origin.level_id) << '\t'
             << optional_decimal(origin.container_index) << '\t'
+            << optional_decimal(origin.run_index) << '\t'
             << optional_decimal(origin.record_index) << '\t'
             << optional_decimal(origin.lba) << '\t'
             << optional_decimal(origin.container_byte_offset) << '\t'

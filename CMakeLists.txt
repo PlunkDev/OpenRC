@@ -28,6 +28,7 @@ add_library(openrc_core STATIC
     src/core/gif_gs.cpp
     src/core/hash.cpp
     src/core/iso9660.cpp
+    src/core/localized_subtitle_bank.cpp
     src/core/map_art.cpp
     src/core/pcm_wav.cpp
     src/core/paths.cpp
@@ -50,8 +51,11 @@ add_library(openrc_core STATIC
     src/core/vagp.cpp
     src/core/wad.cpp
     src/core/wad_bundle.cpp
+    src/core/wad_payload_family.cpp
+    src/core/wad_payload_family_tsv.cpp
     src/core/wad_payload_inventory.cpp
     src/core/wad_payload_probes.cpp
+    src/core/wad_payload_structure.cpp
     src/core/wad_payload_tsv.cpp
 )
 
@@ -144,6 +148,20 @@ endif()
 
 if(OPENRC_BUILD_TESTS)
     include(CTest)
+    add_executable(
+        openrc-localized-subtitle-bank-tests
+        tests/localized_subtitle_bank_tests.cpp
+    )
+    target_link_libraries(
+        openrc-localized-subtitle-bank-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-localized-subtitle-bank-tests
+        PRIVATE
+        cxx_std_20
+    )
     add_executable(openrc-disc-tests tests/disc_tests.cpp)
     target_link_libraries(openrc-disc-tests PRIVATE openrc_core)
     target_compile_features(openrc-disc-tests PRIVATE cxx_std_20)
@@ -201,6 +219,51 @@ if(OPENRC_BUILD_TESTS)
     )
     target_compile_features(
         openrc-wad-payload-tsv-tests
+        PRIVATE
+        cxx_std_20
+    )
+
+    add_executable(
+        openrc-wad-payload-structure-tests
+        tests/wad_payload_structure_tests.cpp
+    )
+    target_link_libraries(
+        openrc-wad-payload-structure-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-wad-payload-structure-tests
+        PRIVATE
+        cxx_std_20
+    )
+
+    add_executable(
+        openrc-wad-payload-family-tests
+        tests/wad_payload_family_tests.cpp
+    )
+    target_link_libraries(
+        openrc-wad-payload-family-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-wad-payload-family-tests
+        PRIVATE
+        cxx_std_20
+    )
+
+    add_executable(
+        openrc-wad-payload-family-tsv-tests
+        tests/wad_payload_family_tsv_tests.cpp
+    )
+    target_link_libraries(
+        openrc-wad-payload-family-tsv-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-wad-payload-family-tsv-tests
         PRIVATE
         cxx_std_20
     )
@@ -291,6 +354,7 @@ if(OPENRC_BUILD_TESTS)
     target_compile_features(openrc-companion-wad-index-tests PRIVATE cxx_std_20)
 
     if(MSVC)
+        target_compile_options(openrc-localized-subtitle-bank-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-disc-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-disc-toc-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-wad-tests PRIVATE /W4 /permissive- /utf-8)
@@ -298,6 +362,9 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-wad-payload-inventory-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-wad-payload-probes-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-wad-payload-tsv-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-wad-payload-structure-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-wad-payload-family-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-wad-payload-family-tsv-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-two-fip-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-boundary-table-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-map-art-tests PRIVATE /W4 /permissive- /utf-8)
@@ -315,6 +382,7 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-scene-block-vu-phase-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-companion-wad-index-tests PRIVATE /W4 /permissive- /utf-8)
     else()
+        target_compile_options(openrc-localized-subtitle-bank-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-disc-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-disc-toc-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-wad-tests PRIVATE -Wall -Wextra -Wpedantic)
@@ -322,6 +390,9 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-wad-payload-inventory-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-wad-payload-probes-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-wad-payload-tsv-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-wad-payload-structure-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-wad-payload-family-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-wad-payload-family-tsv-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-two-fip-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-boundary-table-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-map-art-tests PRIVATE -Wall -Wextra -Wpedantic)
@@ -340,6 +411,7 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-companion-wad-index-tests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
 
+    add_test(NAME localized-subtitle-bank COMMAND openrc-localized-subtitle-bank-tests)
     add_test(NAME disc-inspector COMMAND openrc-disc-tests)
     add_test(NAME disc-toc COMMAND openrc-disc-toc-tests)
     add_test(NAME wad COMMAND openrc-wad-tests)
@@ -347,6 +419,9 @@ if(OPENRC_BUILD_TESTS)
     add_test(NAME wad-payload-inventory COMMAND openrc-wad-payload-inventory-tests)
     add_test(NAME wad-payload-probes COMMAND openrc-wad-payload-probes-tests)
     add_test(NAME wad-payload-tsv COMMAND openrc-wad-payload-tsv-tests)
+    add_test(NAME wad-payload-structure COMMAND openrc-wad-payload-structure-tests)
+    add_test(NAME wad-payload-family COMMAND openrc-wad-payload-family-tests)
+    add_test(NAME wad-payload-family-tsv COMMAND openrc-wad-payload-family-tsv-tests)
     add_test(NAME two-fip COMMAND openrc-two-fip-tests)
     add_test(NAME boundary-table COMMAND openrc-boundary-table-tests)
     add_test(NAME map-art COMMAND openrc-map-art-tests)

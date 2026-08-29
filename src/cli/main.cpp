@@ -8,6 +8,7 @@
 #include "openrc/elf.hpp"
 #include "openrc/gif_gs.hpp"
 #include "openrc/hash.hpp"
+#include "openrc/localized_subtitle_bank.hpp"
 #include "openrc/map_art.hpp"
 #include "openrc/paths.hpp"
 #include "openrc/preparation.hpp"
@@ -24,6 +25,8 @@
 #include "openrc/vagp.hpp"
 #include "openrc/wad.hpp"
 #include "openrc/wad_bundle.hpp"
+#include "openrc/wad_payload_family.hpp"
+#include "openrc/wad_payload_family_tsv.hpp"
 #include "openrc/wad_payload_inventory.hpp"
 #include "openrc/wad_payload_probes.hpp"
 #include "openrc/wad_payload_tsv.hpp"
@@ -78,6 +81,13 @@ constexpr std::uint64_t kMaximumCliWadInventoryTotalDecodedBytes =
     UINT64_C(512) * 1024U * 1024U * 1024U;
 constexpr std::uint64_t kMaximumCliWadInventoryProbes = 16U;
 constexpr std::uint64_t kMaximumCliWadInventoryProbeInvocations = 1'600'000U;
+constexpr std::uint64_t kMaximumCliLocalizedSubtitleEntries = 4096U;
+constexpr std::uint32_t kMaximumCliWadFamilySampledBytesPerPayload = 4096U;
+constexpr std::uint64_t kMaximumCliWadFamilyTotalSampledBytes =
+    kMaximumCliWadInventoryUniquePayloads *
+    kMaximumCliWadFamilySampledBytesPerPayload;
+constexpr std::uint64_t kMaximumCliWadFamilyLevels = 64U;
+constexpr std::uint64_t kMaximumCliWadFamilyUniqueLevelMemberships = 2'000'000U;
 constexpr std::uint32_t kMaximumCliWadBundleNestingDepth = 8U;
 constexpr std::uint64_t kMaximumCliSceneBlockRecords = 4096U;
 constexpr std::uint64_t kMaximumCliTwoFipPixels = 16U * 1024U * 1024U;
@@ -108,6 +118,10 @@ void print_usage() {
         << "  openrc-cli wad <disc.iso> <global-slot>          Decode one WadV1 (64 MiB cap)\n"
         << "  openrc-cli wad-payload-inventory <disc.iso> [output.tsv]\n"
         << "                                                    Classify every decoded WadV1 payload\n"
+        << "  openrc-cli wad-families <disc.iso> [output.tsv]  Rank structural payload families for Veldin\n"
+        << "  openrc-cli wad-payload-export <disc.iso> <unique> <output.bin>\n"
+        << "                                                    Export one explicitly selected decoded payload\n"
+        << "  openrc-cli wad-subtitles <disc.iso> <unique>     Inspect a localized subtitle bank\n"
         << "  openrc-cli vagp <disc.iso> <global-slot> [output.wav]\n"
         << "                                                    Inspect/export VAGp as mono PCM\n"
         << "  openrc-cli boundary <disc.iso> <global-slot>     Inspect a seven-region payload table\n"
@@ -429,9 +443,22 @@ struct WadPayloadCorpusCountersV1 {
     std::uint64_t companion_record_payloads = 0U;
 };
 
+struct CapturedWadPayloadV1 {
+    openrc::WadPayloadAddResultV1 added;
+    openrc::WadPayloadOriginV1 origin;
+    std::vector<std::byte> bytes;
+};
+
+struct WadPayloadCaptureStateV1 {
+    std::uint64_t requested_unique_payload_index = 0U;
+    std::optional<CapturedWadPayloadV1> captured;
+};
+
 struct WadPayloadCorpusReportV1 {
     openrc::WadPayloadInventoryV1 inventory;
+    openrc::WadPayloadFamilyInventoryV1 families;
     WadPayloadCorpusCountersV1 counters;
+    std::optional<CapturedWadPayloadV1> captured_payload;
 };
 
 [[nodiscard]] std::string sha256_hex(
@@ -441,14 +468,43 @@ struct WadPayloadCorpusReportV1 {
     return openrc::hex_digest(hash.finish());
 }
 
+[[nodiscard]] std::string escaped_single_byte_text(
+    const std::span<const std::byte> bytes) {
+    constexpr char kHex[] = "0123456789ABCDEF";
+    std::string result;
+    result.reserve(bytes.size());
+    for (const auto byte : bytes) {
+        const auto value = std::to_integer<std::uint8_t>(byte);
+        if (value >= 0x20U && value <= 0x7eU && value != '%') {
+            result.push_back(static_cast<char>(value));
+        } else {
+            result.push_back('%');
+            result.push_back(kHex[value >> 4U]);
+            result.push_back(kHex[value & 0x0fU]);
+        }
+    }
+    return result;
+}
+
 [[nodiscard]] openrc::WadPayloadAddResultV1 add_wad_payload_and_nested_bundles_v1(
     openrc::WadPayloadInventoryBuilderV1& builder,
+    openrc::WadPayloadFamilyBuilderV1& family_builder,
     const openrc::WadPayloadOriginV1& origin,
     const std::span<const std::byte> decoded_bytes,
     WadPayloadCorpusCountersV1& counters,
-    const std::uint32_t nesting_depth) {
+    const std::uint32_t nesting_depth,
+    WadPayloadCaptureStateV1* const capture) {
     const auto parent =
         builder.add_decoded_payload(origin, decoded_bytes);
+    family_builder.observe(parent, decoded_bytes);
+    if (capture != nullptr && !capture->captured &&
+        parent.unique_payload_index ==
+            capture->requested_unique_payload_index) {
+        capture->captured = CapturedWadPayloadV1{
+            parent,
+            origin,
+            std::vector<std::byte>(decoded_bytes.begin(), decoded_bytes.end())};
+    }
 
     openrc::WadBundleV1 bundle;
     try {
@@ -462,9 +518,11 @@ struct WadPayloadCorpusReportV1 {
     }
 
     const auto add_record = [&builder,
+                             &family_builder,
                              &origin,
                              &decoded_bytes,
                              &counters,
+                             capture,
                              parent,
                              nesting_depth](
                                 const openrc::WadBundleRecord& record,
@@ -488,10 +546,12 @@ struct WadPayloadCorpusReportV1 {
         ++counters.bundle_record_payloads;
         (void)add_wad_payload_and_nested_bundles_v1(
             builder,
+            family_builder,
             child_origin,
             nested.bytes,
             counters,
-            nesting_depth + 1U);
+            nesting_depth + 1U,
+            capture);
     };
 
     add_record(bundle.initial_record, 0U);
@@ -505,9 +565,13 @@ struct WadPayloadCorpusReportV1 {
 }
 
 [[nodiscard]] WadPayloadCorpusReportV1 inventory_disc_wad_payloads_v1(
-    const std::filesystem::path& image_path) {
+    const std::filesystem::path& image_path,
+    const std::optional<std::uint64_t> capture_unique_payload_index =
+        std::nullopt) {
     auto probes = openrc::make_known_wad_payload_probes_v1(
-        {kMaximumCliDecodedWadBytes, kMaximumCliSceneBlockRecords});
+        {kMaximumCliDecodedWadBytes,
+         kMaximumCliSceneBlockRecords,
+         kMaximumCliLocalizedSubtitleEntries});
     openrc::WadPayloadInventoryBuilderV1 builder(
         std::move(probes),
         openrc::WadPayloadInventoryLimitsV1{
@@ -517,7 +581,25 @@ struct WadPayloadCorpusReportV1 {
             kMaximumCliWadInventoryTotalDecodedBytes,
             kMaximumCliWadInventoryProbes,
             kMaximumCliWadInventoryProbeInvocations});
+    openrc::WadPayloadFamilyBuilderV1 family_builder(
+        openrc::WadPayloadFamilyLimitsV1{
+            kMaximumCliWadInventoryUniquePayloads,
+            kMaximumCliWadInventoryObservations,
+            kMaximumCliDecodedWadBytes,
+            kMaximumCliWadInventoryTotalDecodedBytes,
+            kMaximumCliWadFamilySampledBytesPerPayload,
+            kMaximumCliWadFamilyTotalSampledBytes,
+            kMaximumCliWadInventoryUniquePayloads,
+            kMaximumCliWadInventoryUniquePayloads,
+            kMaximumCliWadFamilyLevels,
+            kMaximumCliWadFamilyUniqueLevelMemberships});
     WadPayloadCorpusCountersV1 counters;
+    std::optional<WadPayloadCaptureStateV1> capture;
+    if (capture_unique_payload_index) {
+        capture = WadPayloadCaptureStateV1{
+            *capture_unique_payload_index, std::nullopt};
+    }
+    auto* const capture_pointer = capture ? &*capture : nullptr;
     const auto assets = openrc::inspect_disc_toc_assets(image_path);
 
     for (const auto& entry : assets.layout.global_extents) {
@@ -538,10 +620,12 @@ struct WadPayloadCorpusReportV1 {
         ++counters.global_payloads;
         (void)add_wad_payload_and_nested_bundles_v1(
             builder,
+            family_builder,
             origin,
             decoded.bytes,
             counters,
-            0U);
+            0U,
+            capture_pointer);
     }
 
     std::uint64_t global_tail_lba = 0U;
@@ -590,10 +674,12 @@ struct WadPayloadCorpusReportV1 {
     ++counters.global_tail_payloads;
     (void)add_wad_payload_and_nested_bundles_v1(
         builder,
+        family_builder,
         global_tail_origin,
         global_tail.bytes,
         counters,
-        0U);
+        0U,
+        capture_pointer);
     std::cerr
         << "  global WadV1 payloads: " << counters.global_payloads
         << " + " << counters.global_tail_payloads << " tail record\n";
@@ -632,8 +718,9 @@ struct WadPayloadCorpusReportV1 {
                     origin.kind =
                         openrc::WadPayloadOriginKindV1::local_wad_run;
                     origin.level_id = level.level_id;
-                    origin.container_index = static_cast<std::uint32_t>(
-                        block_index * resource.wad_runs.size() + run_index);
+                    origin.container_index =
+                        static_cast<std::uint32_t>(block_index);
+                    origin.run_index = static_cast<std::uint32_t>(run_index);
                     origin.record_index =
                         static_cast<std::uint32_t>(record_index);
                     origin.lba = record.lba;
@@ -642,10 +729,12 @@ struct WadPayloadCorpusReportV1 {
                     ++counters.local_run_payloads;
                     (void)add_wad_payload_and_nested_bundles_v1(
                         builder,
+                        family_builder,
                         origin,
                         decoded.bytes,
                         counters,
-                        0U);
+                        0U,
+                        capture_pointer);
                 }
             }
         }
@@ -705,10 +794,12 @@ struct WadPayloadCorpusReportV1 {
             ++counters.primary_subrange_payloads;
             const auto added = add_wad_payload_and_nested_bundles_v1(
                 builder,
+                family_builder,
                 origin,
                 decoded.bytes,
                 counters,
-                0U);
+                0U,
+                capture_pointer);
             if (subrange_index == kCompanionTargetSubrange) {
                 companion_target = std::move(decoded);
                 companion_parent = added;
@@ -743,10 +834,12 @@ struct WadPayloadCorpusReportV1 {
             ++counters.primary_extent_payloads;
             (void)add_wad_payload_and_nested_bundles_v1(
                 builder,
+                family_builder,
                 origin,
                 decoded.bytes,
                 counters,
-                0U);
+                0U,
+                capture_pointer);
         }
 
         const auto& companion_index_subrange =
@@ -793,10 +886,12 @@ struct WadPayloadCorpusReportV1 {
             ++counters.companion_record_payloads;
             (void)add_wad_payload_and_nested_bundles_v1(
                 builder,
+                family_builder,
                 origin,
                 decoded.bytes,
                 counters,
-                0U);
+                0U,
+                capture_pointer);
         }
         std::cerr
             << "  level " << level.level_id
@@ -812,6 +907,7 @@ struct WadPayloadCorpusReportV1 {
     }
 
     auto inventory = builder.finalize();
+    auto families = family_builder.finalize(inventory);
     const auto counted_observations =
         counters.global_payloads + counters.global_tail_payloads +
         counters.local_run_payloads + counters.primary_subrange_payloads +
@@ -821,9 +917,15 @@ struct WadPayloadCorpusReportV1 {
         throw std::runtime_error(
             "The WadV1 source counters do not cover every retained observation");
     }
+    if (capture && !capture->captured) {
+        throw std::runtime_error(
+            "The requested WadV1 unique payload index does not exist");
+    }
     return WadPayloadCorpusReportV1{
         std::move(inventory),
-        counters};
+        std::move(families),
+        counters,
+        capture ? std::move(capture->captured) : std::nullopt};
 }
 
 void write_new_binary_file(
@@ -1744,6 +1846,231 @@ int run(const std::vector<std::filesystem::path>& arguments) {
         }
     }
 
+    if (command == "wad-subtitles") {
+        if (arguments.size() != 3U) {
+            std::cerr
+                << "error: wad-subtitles expects an ISO path and a decimal "
+                   "unique payload index\n";
+            return kUsageError;
+        }
+        const auto requested_unique = parse_decimal_argument(arguments[2]);
+        if (!requested_unique) {
+            std::cerr << "error: unique payload index must be decimal\n";
+            return kUsageError;
+        }
+        try {
+            std::cerr
+                << "Scanning indexed WadV1 sources for subtitle payload "
+                << *requested_unique << "...\n";
+            const auto report = inventory_disc_wad_payloads_v1(
+                arguments[1], *requested_unique);
+            if (!report.captured_payload) {
+                throw std::runtime_error(
+                    "The requested WadV1 payload was not captured");
+            }
+            const auto& captured = *report.captured_payload;
+            const auto subtitles = openrc::parse_localized_subtitle_bank_v1(
+                captured.bytes,
+                openrc::LocalizedSubtitleBankLimitsV1{
+                    kMaximumCliDecodedWadBytes,
+                    kMaximumCliLocalizedSubtitleEntries,
+                    kMaximumCliDecodedWadBytes});
+            constexpr std::array<std::string_view, 5U> kLanguages{
+                "EN", "FR", "DE", "ES", "IT"};
+            std::cout
+                << "OpenRC LocalizedSubtitleBankV1 report\n"
+                << "Unique index:          " << *requested_unique << '\n'
+                << "Decoded bytes:         " << captured.bytes.size() << '\n'
+                << "Secondary offset:      0x" << std::hex
+                << subtitles.secondary_offset << '\n'
+                << "Subtitle table:        0x"
+                << subtitles.table_offset << std::dec << '\n'
+                << "Entries:               " << subtitles.entries.size() << '\n'
+                << "Owned text bytes:      "
+                << subtitles.total_text_bytes << "\n\n";
+            for (std::size_t entry_index = 0U;
+                 entry_index < subtitles.entries.size();
+                 ++entry_index) {
+                const auto& entry = subtitles.entries[entry_index];
+                std::cout
+                    << "Entry " << entry_index << " (ticks "
+                    << entry.start_tick << '-' << entry.end_tick << "):\n";
+                for (std::size_t language = 0U;
+                     language < entry.texts.size();
+                     ++language) {
+                    std::cout
+                        << "  " << kLanguages[language] << ": "
+                        << escaped_single_byte_text(
+                               entry.texts[language].bytes)
+                        << '\n';
+                }
+            }
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << "error: " << error.what() << '\n';
+            return kOperationError;
+        }
+    }
+
+    if (command == "wad-payload-export") {
+        if (arguments.size() != 4U) {
+            std::cerr
+                << "error: wad-payload-export expects an ISO path, a decimal "
+                   "unique index, and a new output path\n";
+            return kUsageError;
+        }
+        const auto requested_unique = parse_decimal_argument(arguments[2]);
+        if (!requested_unique) {
+            std::cerr << "error: unique payload index must be decimal\n";
+            return kUsageError;
+        }
+        try {
+            std::cerr
+                << "Scanning indexed WadV1 sources for unique payload "
+                << *requested_unique << "...\n";
+            const auto report = inventory_disc_wad_payloads_v1(
+                arguments[1], *requested_unique);
+            if (!report.captured_payload ||
+                report.captured_payload->added.unique_payload_index !=
+                    *requested_unique) {
+                throw std::runtime_error(
+                    "The requested WadV1 payload was not captured");
+            }
+            const auto& captured = *report.captured_payload;
+            const auto& unique = report.inventory.unique_payloads[
+                static_cast<std::size_t>(*requested_unique)];
+            write_new_binary_file(arguments[3], captured.bytes);
+            std::cout
+                << "OpenRC decoded WadV1 payload export\n"
+                << "Unique index:          " << *requested_unique << '\n'
+                << "First observation:     "
+                << captured.added.observation_index << '\n'
+                << "Decoded bytes:         " << captured.bytes.size() << '\n'
+                << "Decoded SHA-256:       " << unique.decoded_sha256 << '\n'
+                << "Level:                 ";
+            if (captured.origin.level_id) {
+                std::cout << *captured.origin.level_id;
+            } else {
+                std::cout << "none";
+            }
+            std::cout << "\nResource block:        ";
+            if (captured.origin.container_index) {
+                std::cout << *captured.origin.container_index;
+            } else {
+                std::cout << "none";
+            }
+            std::cout << "\nWAD run:               ";
+            if (captured.origin.run_index) {
+                std::cout << *captured.origin.run_index;
+            } else {
+                std::cout << "none";
+            }
+            std::cout << "\nRecord:                ";
+            if (captured.origin.record_index) {
+                std::cout << *captured.origin.record_index;
+            } else {
+                std::cout << "none";
+            }
+            std::cout
+                << "\nOutput:                "
+                << openrc::path_to_utf8(arguments[3]) << '\n';
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << "error: " << error.what() << '\n';
+            return kOperationError;
+        }
+    }
+
+    if (command == "wad-families") {
+        if (arguments.size() < 2U || arguments.size() > 3U) {
+            std::cerr
+                << "error: wad-families expects an ISO path and an optional "
+                   "TSV output path\n";
+            return kUsageError;
+        }
+
+        try {
+            constexpr std::uint32_t kVeldinLevelId = 0U;
+            std::cerr
+                << "Scanning every indexed WadV1 source and grouping structural families...\n";
+            const auto report = inventory_disc_wad_payloads_v1(arguments[1]);
+            const auto& families = report.families;
+            const auto ranked = openrc::rank_unknown_wad_payload_families_v1(
+                families, kVeldinLevelId);
+
+            std::cout
+                << "OpenRC WadV1 structural candidate families\n"
+                << "Image:                  "
+                << openrc::path_to_utf8(arguments[1]) << '\n'
+                << "Profiled unique:        "
+                << families.profiled_unique_payloads << '\n'
+                << "Candidate families:     " << families.families.size() << '\n'
+                << "Families with unknown:  "
+                << families.families_with_unknown_payloads << '\n'
+                << "Unknown unique:         "
+                << families.unknown_unique_payloads << '\n'
+                << "Unknown observations:   "
+                << families.unknown_observations << "\n\n"
+                << "Top Veldin candidates:\n";
+
+            const auto shown = std::min<std::size_t>(20U, ranked.size());
+            for (std::size_t rank = 0U; rank < shown; ++rank) {
+                const auto& family = families.families[ranked[rank]];
+                const auto level = std::find_if(
+                    family.levels.begin(),
+                    family.levels.end(),
+                    [](const openrc::WadPayloadFamilyLevelCountV1& candidate) {
+                        return candidate.level_id == kVeldinLevelId;
+                    });
+                const auto veldin_unknown_unique =
+                    level == family.levels.end()
+                    ? 0U
+                    : level->classification_unique_payloads[
+                          openrc::kWadPayloadUnknownClassificationIndexV1];
+                const auto veldin_unknown_observations =
+                    level == family.levels.end()
+                    ? 0U
+                    : level->classification_observations[
+                          openrc::kWadPayloadUnknownClassificationIndexV1];
+                const auto& structure = family.representative_structure;
+                std::cout
+                    << "  " << std::setw(2) << (rank + 1U)
+                    << "  " << family.family_id.substr(0U, 12U)
+                    << "  Veldin " << veldin_unknown_unique << '/'
+                    << veldin_unknown_observations
+                    << ", all "
+                    << family.classification_unique_payloads[
+                           openrc::kWadPayloadUnknownClassificationIndexV1]
+                    << '/'
+                    << family.classification_observations[
+                           openrc::kWadPayloadUnknownClassificationIndexV1]
+                    << ", bytes " << family.minimum_decoded_bytes
+                    << '-' << family.maximum_decoded_bytes
+                    << ", levels " << family.levels.size()
+                    << ", prefix "
+                    << structure.prefix_hex.substr(0U, 32U) << '\n';
+            }
+
+            if (arguments.size() == 3U) {
+                const auto tsv =
+                    openrc::encode_wad_payload_families_tsv_v1(
+                        families, kVeldinLevelId);
+                write_new_binary_file(
+                    arguments[2],
+                    std::as_bytes(
+                        std::span<const char>(tsv.data(), tsv.size())));
+                std::cout
+                    << "\nTSV output:             "
+                    << openrc::path_to_utf8(arguments[2]) << '\n'
+                    << "TSV bytes:              " << tsv.size() << '\n';
+            }
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << "error: " << error.what() << '\n';
+            return kOperationError;
+        }
+    }
+
     if (command == "wad-payload-inventory") {
         if (arguments.size() < 2U || arguments.size() > 3U) {
             std::cerr
@@ -1757,13 +2084,14 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 << "Scanning every indexed WadV1 source with bounded decoders...\n";
             const auto report = inventory_disc_wad_payloads_v1(arguments[1]);
             const auto& inventory = report.inventory;
-            std::array<std::uint64_t, 4> format_unique_counts{};
-            std::array<std::uint64_t, 4> format_observation_counts{};
-            constexpr std::array<std::string_view, 4> kFormatNames{
+            std::array<std::uint64_t, 5> format_unique_counts{};
+            std::array<std::uint64_t, 5> format_observation_counts{};
+            constexpr std::array<std::string_view, 5> kFormatNames{
                 "TwoFipV1",
                 "MapArtV1",
                 "SceneBlockDirectoryV1",
-                "WadBundleV1"};
+                "WadBundleV1",
+                "LocalizedSubtitleBankV1"};
             for (const auto& unique : inventory.unique_payloads) {
                 for (std::size_t format_index = 0U;
                      format_index < kFormatNames.size();

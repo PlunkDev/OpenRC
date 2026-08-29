@@ -567,7 +567,7 @@ classification metadata. The exact PAL v2.00 sweep contains:
 
 Those observations decode to 1,093,912,988 bytes and deduplicate to 4,605
 payloads totaling 1,066,576,972 bytes. Strict complete-payload probes produce
-391 recognized unique payloads, 4,214 unknown unique payloads, and zero
+461 recognized unique payloads, 4,144 unknown unique payloads, and zero
 ambiguous payloads:
 
 | Semantic format | Unique payloads | Observations |
@@ -576,15 +576,17 @@ ambiguous payloads:
 | `MapArtV1` | 36 | 38 |
 | `SceneBlockDirectoryV1` | 19 | 19 |
 | `WadBundleV1` | 1 | 1 |
+| `LocalizedSubtitleBankV1` | 70 | 70 |
 
-The optional observation TSV is 1,005,108 bytes with SHA-256
-`e394847d2b76e01b3bbea36f4b63ffbae4b6c6bd30693eb23bdaa3e61a126459`.
+The optional observation TSV is 1,014,894 bytes with SHA-256
+`61e0d7e3cc7793ef9698ba29cdb72b180cef1bdd9ba11589e1c0dbe829394ca0`.
 Its nested rows identify the exact parent observation as well as the parent's
 deduplicated payload. The production scene-directory probe uses a separate
 4096-record allocation cap; the largest reference directory contains 2,144
 records.
-Unknown remains an explicit result rather than a guessed format; identifying
-the 4,214 remaining unique payloads is the next semantic-family task.
+Unknown remains an explicit result rather than a guessed format. The 4,144
+remaining unique payloads are organized into 1,071 candidate families that
+still contain unknown members, providing the queue for the next semantic pass.
 
 ## VAGp V1 audio
 
@@ -738,6 +740,31 @@ The modules cover controller/memory-card services, debug/SIF transport,
 general IOP staging, and audio. None contains a literal `WAD` or `2FIP`
 reference; the texture/resource decoders therefore remain targets in the main
 EE executable or other decoded data, rather than these IOP modules.
+
+## Localized subtitle banks
+
+The structural-family pass profiles all 4,605 unique decoded WadV1 payloads
+without retaining their asset bytes. On the reference image it produces 1,250
+exact candidate keys. Before the first new semantic probe, 1,096 families
+contained at least one of 4,214 unknown unique payloads. Candidate identity is
+based on a versioned canonical feature key; its SHA-256 is only a printable ID.
+
+Two high-coverage Veldin families led to a repeated PAL localization tail. A
+complete matching payload has a 0x20-byte partially understood header with tag
+`0xFFFFFFFA`, kind `1`, a 0x10-aligned subtitle-table offset, and a preceding
+secondary section offset. The subtitle table contains one or more 0x10-byte
+rows: two 16-bit timing values, five strictly ascending 16-bit offsets relative
+to the table, and a zero reserved halfword. A 16-byte `0xFFFFFFFF`/zero sentinel
+ends the rows. Text occurs in EN/FR/DE/ES/IT order, is NUL-terminated, and uses
+minimum zero padding to four-byte boundaries and a final 16-byte envelope.
+
+The strict `LocalizedSubtitleBankV1` parser validates and owns only this proven
+timing/text structure. It reports the earlier payload body as opaque and keeps
+the original single-byte text encoding instead of guessing Unicode. Two real
+Veldin representatives independently validate table offsets `0xBBC0` and
+`0x9D20`, two timing rows apiece, and all five languages. Across the full PAL
+v2.00 corpus the production probe recognizes 70 unique observations, reducing
+the unknown unique count from 4,214 to 4,144 with zero ambiguous matches.
 
 ## EE/R5900 boundary inventory
 

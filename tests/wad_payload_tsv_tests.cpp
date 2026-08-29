@@ -40,6 +40,7 @@ void expect(const bool condition, const std::string& message) {
     origin.kind = openrc::WadPayloadOriginKindV1::wad_bundle_record;
     origin.level_id = 7U;
     origin.container_index = 3U;
+    origin.run_index = 1U;
     origin.record_index = 2U;
     origin.lba = 1234U;
     origin.container_byte_offset = 64U;
@@ -64,14 +65,14 @@ void test_deterministic_schema_and_escaping() {
         first ==
             "observation\tunique\tclassification\tformats\tdecoded_bytes\t"
             "decoded_sha256\tunique_observations\torigin\tlevel\tcontainer\t"
-            "record\tlba\tcontainer_offset\tencoded_bytes\tencoded_sha256\t"
+            "run\trecord\tlba\tcontainer_offset\tencoded_bytes\tencoded_sha256\t"
             "parent_unique\tparent_observation\n"
             "0\t0\tunknown\t\t4\t"
             "0000000000000000000000000000000000000000000000000000000000000000\t"
-            "1\texplicit-input\t\t\t\t\t\t\t\t\t\n"
+            "1\texplicit-input\t\t\t\t\t\t\t\t\t\t\n"
             "1\t1\tambiguous\tMap%2CArt,line%09break%0A100%25\t12\t"
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\t"
-            "1\twad-bundle-record\t7\t3\t2\t1234\t64\t16\t"
+            "1\twad-bundle-record\t7\t3\t1\t2\t1234\t64\t16\t"
             "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210\t"
             "0\t0\n",
         "WadV1 TSV schema, provenance, or escaping changed");

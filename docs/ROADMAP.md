@@ -56,6 +56,10 @@ This roadmap describes technical milestones rather than release dates.
 - [x] export the first auto-fit wireframe preview from real scene-block geometry
 - [x] validate the companion index for the shared terminal WadV1 bank
 - [x] inventory every decoded WAD payload as recognized, unknown, or ambiguous
+- [x] group all unique decoded WAD payloads into deterministic structural
+  candidate families and rank their unknown Veldin coverage
+- [x] identify and strictly parse the PAL five-language localized subtitle
+  directory present in 70 unique WAD payloads
 - [ ] identify the semantic formats inside the remaining WAD payload families
 - [x] inventory bounded EE/R5900 executable regions, control transfers, and
   PS2 system-call wrapper sites
