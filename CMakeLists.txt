@@ -35,6 +35,7 @@ add_library(openrc_core STATIC
     src/core/preparation.cpp
     src/core/ps_adpcm.cpp
     src/core/ps2_save_bundle.cpp
+    src/core/rac_gameplay_bank.cpp
     src/core/scene_animation_bank.cpp
     src/core/scene_block_directory.cpp
     src/core/scene_block_geometry.cpp
@@ -166,6 +167,21 @@ if(OPENRC_BUILD_TESTS)
     add_executable(openrc-disc-tests tests/disc_tests.cpp)
     target_link_libraries(openrc-disc-tests PRIVATE openrc_core)
     target_compile_features(openrc-disc-tests PRIVATE cxx_std_20)
+
+    add_executable(
+        openrc-rac-gameplay-bank-tests
+        tests/rac_gameplay_bank_tests.cpp
+    )
+    target_link_libraries(
+        openrc-rac-gameplay-bank-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-rac-gameplay-bank-tests
+        PRIVATE
+        cxx_std_20
+    )
 
     add_executable(
         openrc-scene-animation-bank-tests
@@ -371,6 +387,7 @@ if(OPENRC_BUILD_TESTS)
 
     if(MSVC)
         target_compile_options(openrc-localized-subtitle-bank-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-rac-gameplay-bank-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-scene-animation-bank-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-disc-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-disc-toc-tests PRIVATE /W4 /permissive- /utf-8)
@@ -400,6 +417,7 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-companion-wad-index-tests PRIVATE /W4 /permissive- /utf-8)
     else()
         target_compile_options(openrc-localized-subtitle-bank-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-rac-gameplay-bank-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-scene-animation-bank-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-disc-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-disc-toc-tests PRIVATE -Wall -Wextra -Wpedantic)
@@ -430,6 +448,7 @@ if(OPENRC_BUILD_TESTS)
     endif()
 
     add_test(NAME localized-subtitle-bank COMMAND openrc-localized-subtitle-bank-tests)
+    add_test(NAME rac-gameplay-bank COMMAND openrc-rac-gameplay-bank-tests)
     add_test(NAME scene-animation-bank COMMAND openrc-scene-animation-bank-tests)
     add_test(NAME disc-inspector COMMAND openrc-disc-tests)
     add_test(NAME disc-toc COMMAND openrc-disc-toc-tests)

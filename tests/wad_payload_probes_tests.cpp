@@ -1,5 +1,6 @@
 #include "openrc/localized_subtitle_bank.hpp"
 #include "openrc/map_art.hpp"
+#include "openrc/rac_gameplay_bank.hpp"
 #include "openrc/scene_animation_bank.hpp"
 #include "openrc/scene_block_directory.hpp"
 #include "openrc/two_fip.hpp"
@@ -24,6 +25,7 @@ constexpr std::uint64_t kMaximumSceneRecords = 4096U;
 constexpr std::uint64_t kMaximumSceneAnimationActors = 256U;
 constexpr std::uint64_t kMaximumSceneAnimationFrames = 65'536U;
 constexpr std::uint64_t kMaximumSubtitleEntries = 4096U;
+constexpr std::uint32_t kRacGameplayMobyInstancesOffset = 0x1d0U;
 constexpr std::uint32_t kMapArtRegion0Size = 0x310U;
 constexpr std::uint32_t kMapArtImageSize = 0x4420U;
 constexpr std::array<std::uint32_t, openrc::kBoundaryTableBoundaryCount>
@@ -303,6 +305,42 @@ void write_scene_entry(
     return bytes;
 }
 
+[[nodiscard]] std::vector<std::byte> make_rac_gameplay_bank() {
+    constexpr std::uint32_t kMobyClassesOffset = 0x1c0U;
+    constexpr std::array<std::uint32_t, openrc::kRacGameplayBlockCountV1>
+        kPhysicalPointerSlots{
+            0x88U, 0x00U, 0x10U, 0x14U, 0x18U, 0x1cU,
+            0x20U, 0x24U, 0x28U, 0x2cU, 0x04U, 0x80U,
+            0x08U, 0x0cU, 0x40U, 0x44U, 0x54U, 0x58U,
+            0x50U, 0x5cU, 0x48U, 0x4cU, 0x30U, 0x34U,
+            0x38U, 0x3cU, 0x70U, 0x60U, 0x64U, 0x68U,
+            0x6cU, 0x84U, 0x7cU, 0x78U, 0x74U, 0x8cU};
+    std::vector<std::byte> bytes(0x3a0U, std::byte{0});
+    auto block_offset = openrc::kRacGameplayFirstBlockOffsetV1;
+    for (std::size_t index = 0U;
+         index < kPhysicalPointerSlots.size();
+         ++index) {
+        write_le32(bytes, kPhysicalPointerSlots[index], block_offset);
+        if (index == 1U) {
+            block_offset += 0x50U;
+        } else if (index == 15U) {
+            block_offset += 0x90U;
+        } else {
+            block_offset += 0x10U;
+        }
+    }
+    write_le32(bytes, kMobyClassesOffset, 2U);
+    write_le32(bytes, kMobyClassesOffset + 4U, 0x123U);
+    write_le32(bytes, kMobyClassesOffset + 8U, 0x456U);
+    write_le32(bytes, kRacGameplayMobyInstancesOffset, 1U);
+    write_le32(bytes, kRacGameplayMobyInstancesOffset + 4U, 3U);
+    write_le32(
+        bytes,
+        kRacGameplayMobyInstancesOffset + 0x10U,
+        openrc::kRacGameplayMobyRecordBytesV1);
+    return bytes;
+}
+
 void expect_only_probe_matches(
     const std::vector<openrc::WadPayloadProbeV1>& probes,
     const std::size_t expected_index,
@@ -325,13 +363,14 @@ void test_factory_and_strict_format_matches() {
          kMaximumSceneAnimationActors,
          kMaximumSceneAnimationFrames,
          kMaximumSubtitleEntries});
-    expect(probes.size() == 5U, "known probe count is wrong");
+    expect(probes.size() == 6U, "known probe count is wrong");
     expect(
         probes[0].format_name == "TwoFipV1" &&
             probes[1].format_name == "MapArtV1" &&
             probes[2].format_name == "SceneBlockDirectoryV1" &&
             probes[3].format_name == "WadBundleV1" &&
-            probes[4].format_name == "SceneAnimationBankV1",
+            probes[4].format_name == "SceneAnimationBankV1" &&
+            probes[5].format_name == "RacGameplayBankV1",
         "known probe registration order or names changed");
 
     expect_only_probe_matches(probes, 0U, make_two_fip(), "TwoFipV1");
@@ -347,6 +386,11 @@ void test_factory_and_strict_format_matches() {
         4U,
         make_localized_subtitle_bank(),
         "SceneAnimationBankV1");
+    expect_only_probe_matches(
+        probes,
+        5U,
+        make_rac_gameplay_bank(),
+        "RacGameplayBankV1");
 }
 
 void test_every_probe_rejects_a_near_miss() {
@@ -392,6 +436,23 @@ void test_every_probe_rejects_a_near_miss() {
         probes[4].inspect(subtitles) ==
             openrc::WadPayloadProbeDecisionV1::no_match,
         "SceneAnimationBankV1 probe accepted a bad subtitle tail");
+
+    auto gameplay = make_rac_gameplay_bank();
+    write_le32(
+        gameplay,
+        kRacGameplayMobyInstancesOffset + 0x10U,
+        0x70U);
+    expect(
+        probes[5].inspect(gameplay) ==
+            openrc::WadPayloadProbeDecisionV1::no_match,
+        "RacGameplayBankV1 probe accepted a bad moby record");
+
+    auto incomplete_gameplay = make_rac_gameplay_bank();
+    write_le32(incomplete_gameplay, 0x88U, 0U);
+    expect(
+        probes[5].inspect(incomplete_gameplay) ==
+            openrc::WadPayloadProbeDecisionV1::no_match,
+        "RacGameplayBankV1 probe accepted an incomplete directory");
 }
 
 void test_factory_limits() {

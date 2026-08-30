@@ -2,6 +2,7 @@
 
 #include "openrc/localized_subtitle_bank.hpp"
 #include "openrc/map_art.hpp"
+#include "openrc/rac_gameplay_bank.hpp"
 #include "openrc/scene_animation_bank.hpp"
 #include "openrc/scene_block_directory.hpp"
 #include "openrc/two_fip.hpp"
@@ -47,7 +48,7 @@ std::vector<WadPayloadProbeV1> make_known_wad_payload_probes_v1(
         limits.max_localized_subtitle_entries;
 
     std::vector<WadPayloadProbeV1> probes;
-    probes.reserve(5U);
+    probes.reserve(6U);
     probes.push_back(WadPayloadProbeV1{
         "TwoFipV1",
         [maximum_bytes](const std::span<const std::byte> bytes) {
@@ -125,6 +126,18 @@ std::vector<WadPayloadProbeV1> make_known_wad_payload_probes_v1(
                             max_scene_animation_total_frame_ranges,
                             max_subtitle_entries,
                             maximum_bytes});
+                });
+        }});
+    probes.push_back(WadPayloadProbeV1{
+        "RacGameplayBankV1",
+        [maximum_bytes](const std::span<const std::byte> bytes) {
+            require_bounded_payload(bytes, maximum_bytes);
+            return probe_wad_payload_with_parser_v1<RacGameplayBankError>(
+                bytes,
+                [maximum_bytes](const std::span<const std::byte> input) {
+                    return parse_rac_gameplay_bank_v1(
+                        input,
+                        RacGameplayBankLimitsV1{maximum_bytes});
                 });
         }});
     return probes;

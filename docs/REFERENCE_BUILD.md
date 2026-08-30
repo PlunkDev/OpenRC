@@ -567,7 +567,7 @@ classification metadata. The exact PAL v2.00 sweep contains:
 
 Those observations decode to 1,093,912,988 bytes and deduplicate to 4,605
 payloads totaling 1,066,576,972 bytes. Strict complete-payload probes produce
-4,472 recognized unique payloads, 133 unknown unique payloads, and zero
+4,510 recognized unique payloads, 95 unknown unique payloads, and zero
 ambiguous payloads:
 
 | Semantic format | Unique payloads | Observations |
@@ -577,19 +577,48 @@ ambiguous payloads:
 | `SceneBlockDirectoryV1` | 19 | 19 |
 | `WadBundleV1` | 1 | 1 |
 | `SceneAnimationBankV1` | 4,081 | 4,081 |
+| `RacGameplayBankV1` | 38 | 38 |
 
-The optional observation TSV is 1,106,937 bytes with SHA-256
-`a8e86821c8660fe909e433b4889fa94aca04c875261c6639ca3728306e54b873`.
+The optional observation TSV is 1,107,697 bytes with SHA-256
+`ef9c58cd37d095307d69d8d49ad4eedcf5c5e6c180733b1f915f076a6a079a95`.
 Its nested rows identify the exact parent observation as well as the parent's
 deduplicated payload. The production scene-directory probe uses a separate
 4096-record allocation cap; the largest reference directory contains 2,144
 records. Scene-animation probing has independent limits of 256 actor tracks,
 65,536 total frame ranges, and 4,096 subtitle entries.
-Unknown remains an explicit result rather than a guessed format. The 133
-remaining unique payloads are organized into 71 candidate families that still
-contain unknown members, providing the queue for the next semantic pass. The
-matching family TSV is 27,612 bytes with SHA-256
-`9c5be1ecd2894bc5fbd0e6c7e387e8379e43537af55a1b3864f9bd2c2fd6d2da`.
+The gameplay-bank probe is allocation-constant beyond its 36 fixed range
+records and shares the 64 MiB decoded-payload envelope. Unknown remains an
+explicit result rather than a guessed format. The 95 remaining unique payloads
+occupy 52 candidate families and continue to provide the queue for the next
+semantic pass. The matching family TSV is 21,450 bytes with SHA-256
+`a0a1f800ed194ff7f9db0b5866b8958c56580e8df2625b57d94b7d011d51db30`.
+
+## RAC1 gameplay instance banks
+
+Primary extents 1 and 2 are the regional gameplay banks for each level. All
+38 decoded payloads have the same RAC1 directory contract: 37 little-endian
+words occupy bytes `0x00..0x93`, slot `0x90` is zero, bytes `0x94..0x9F` are
+zero alignment padding, and every other slot is a distinct 16-byte-aligned
+pointer in the decoded envelope. The 36 pointers cover level settings, eight
+localized help-message banks, lights, cameras, sounds, moby/tie/shrub classes
+and instances, pvars and fixups, paths, spatial volumes, collision/light grids,
+and occlusion mappings.
+
+Header slots are not numerically monotonic. `RacGameplayBankV1` validates the
+known physical serialization order before deriving disjoint borrowed ranges.
+Its semantic anchors are the exact 0x50-byte RAC1 level-settings block, a
+non-empty bounded moby class list, and the moby instance block. The latter has
+a 0x10-byte header, two zero reserved words, and `static_count` records whose
+first word is exactly the proven RAC1 record size `0x78`. The parser exposes
+moby-class, static-moby-instance, and spawnable-moby counts without copying the
+large block bodies.
+
+For every level, the NTSC and PAL payloads have equal decoded sizes and
+identical first `0xA0` bytes. Every regional byte difference lies only in the
+pvar-data block selected by header slot `0x58`; OpenRC preserves those bytes as
+opaque and does not yet label them as timing constants. The production sweep
+matches exactly 38 unique payloads/38 observations and introduces no ambiguous
+classification.
 
 ## VAGp V1 audio
 

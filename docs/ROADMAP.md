@@ -62,8 +62,12 @@ This roadmap describes technical milestones rather than release dates.
   resource-block WAD-run payloads
 - [x] validate both header tags, camera cadence, actor frame tables, per-frame
   root transforms, and optional PAL five-language subtitle tails
-- [ ] identify the semantic formats inside the remaining 133 unique WAD
-  payloads spanning 71 structural candidate families
+- [x] identify the fixed 37-slot `RacGameplayBankV1` directory, all 36 named
+  gameplay blocks, and the RAC1 moby class/instance anchors across both
+  regional payloads for all 19 levels
+- [ ] identify the semantic formats inside the remaining 95 unique WAD
+  payloads spanning 52 candidate families; the next high-impact candidates are
+  the 21 shared companion-bank payloads
 - [x] inventory bounded EE/R5900 executable regions, control transfers, and
   PS2 system-call wrapper sites
 - [ ] recover EE/R5900 function boundaries and construct the call graph
@@ -80,7 +84,9 @@ This roadmap describes technical milestones rather than release dates.
 - [x] add an isolated debug orbit and decoded-GS comparison view
 - [x] independently execute and merge all supported records for a raw level view
 - [ ] recover the original per-frame camera transform from its EE caller
-- [ ] parse terrain, collision, instances, models, and textures
+- [x] parse the top-level gameplay-instance bank and validate bounded
+  0x78-byte RAC1 moby-record envelopes/counts
+- [ ] parse terrain, collision, full model classes, and textures
 - [ ] render a classified, textured Veldin scene in a native window
 - [ ] compare geometry and transforms with reference captures
 

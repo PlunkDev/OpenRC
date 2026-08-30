@@ -23,6 +23,7 @@ openrc_core
 ├── streaming decoded-WAD corpus inventory, provenance, deduplication, and strict probes
 ├── deterministic structural candidate-family profiling and Veldin-ranked TSV export
 ├── strict bounded SceneAnimationBankV1 camera/actor/frame/root parsing
+├── strict RacGameplayBankV1 directory plus RAC1 moby class/instance anchors
 ├── shared PAL five-language subtitle-directory timing/text parsing
 ├── neutral SceneBlockDirectoryV1 parsing with owned blocks and 8-section layouts
 ├── bounded zero-copy SceneBlock VIF command parsing across sections 0-4
@@ -50,7 +51,7 @@ openrc_core
 
 openrc-cli
 ├── disc inspection and inventory
-├── TOC, WAD/bundle/companion/corpus/family/scene-animation/subtitle diagnostics
+├── TOC, WAD/bundle/companion/corpus/family/gameplay/scene-animation/subtitle diagnostics
 ├── scene-block/VIF/VU/GS, 2FIP, MapArt, PS2D, VAGp, and SBlk diagnostics
 ├── explicit-policy SBlk WAV and EE/R5900 boundary diagnostics
 ├── auto-fit wireframe TGA export from a selected real SceneBlock invocation
@@ -196,6 +197,17 @@ only bounded metadata is owned. An optional PAL localization tail uses the
 shared subtitle-directory parser, while empty entries, empty strings, and
 opaque bytes after the logical text envelope remain representable rather than
 being reinterpreted.
+Primary extents 1 and 2 of every level are now parsed as complete
+`RacGameplayBankV1` records. Their 0x94-byte directory contains 37 little-endian
+slots, with one reserved zero slot and 36 pointers to named gameplay sections;
+0x0c zero bytes align the first block to 0xa0. Pointers are checked against the
+RAC1 physical serialization order and exposed as disjoint borrowed ranges.
+Format probing additionally requires the 0x50-byte level-settings block, a
+bounded non-empty moby class list, and a moby instance block whose reserved
+header words are zero and whose static records each declare the proven 0x78
+byte RAC1 layout. Both regional variants on all 19 levels pass, while their
+differences remain isolated to opaque pvar data rather than being assigned an
+unproved timing meaning.
 MapArtV1 composes three palette-compatible images without assigning gameplay
 meaning to the remaining opaque regions. The PS2D parser likewise retains
 unknown header words and tagged payload keys rather than treating guesses as

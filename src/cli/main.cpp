@@ -13,6 +13,7 @@
 #include "openrc/paths.hpp"
 #include "openrc/preparation.hpp"
 #include "openrc/ps2_save_bundle.hpp"
+#include "openrc/rac_gameplay_bank.hpp"
 #include "openrc/scene_animation_bank.hpp"
 #include "openrc/scene_block_directory.hpp"
 #include "openrc/scene_block_task_execute.hpp"
@@ -126,6 +127,7 @@ void print_usage() {
         << "                                                    Export one explicitly selected decoded payload\n"
         << "  openrc-cli wad-scene-animation <disc.iso> <unique>\n"
         << "                                                    Inspect camera and actor animation tracks\n"
+        << "  openrc-cli wad-gameplay <disc.iso> <unique>      Inspect RAC1 level objects and gameplay blocks\n"
         << "  openrc-cli wad-subtitles <disc.iso> <unique>     Inspect a localized subtitle bank\n"
         << "  openrc-cli vagp <disc.iso> <global-slot> [output.wav]\n"
         << "                                                    Inspect/export VAGp as mono PCM\n"
@@ -463,6 +465,7 @@ struct WadPayloadCorpusReportV1 {
     openrc::WadPayloadInventoryV1 inventory;
     openrc::WadPayloadFamilyInventoryV1 families;
     WadPayloadCorpusCountersV1 counters;
+    std::vector<std::string> format_names;
     std::optional<CapturedWadPayloadV1> captured_payload;
 };
 
@@ -579,6 +582,11 @@ struct WadPayloadCorpusReportV1 {
          kMaximumCliSceneAnimationActorTracks,
          kMaximumCliSceneAnimationTotalFrameRanges,
          kMaximumCliLocalizedSubtitleEntries});
+    std::vector<std::string> format_names;
+    format_names.reserve(probes.size());
+    for (const auto& probe : probes) {
+        format_names.push_back(probe.format_name);
+    }
     openrc::WadPayloadInventoryBuilderV1 builder(
         std::move(probes),
         openrc::WadPayloadInventoryLimitsV1{
@@ -932,6 +940,7 @@ struct WadPayloadCorpusReportV1 {
         std::move(inventory),
         std::move(families),
         counters,
+        std::move(format_names),
         capture ? std::move(capture->captured) : std::nullopt};
 }
 
@@ -1940,6 +1949,60 @@ int run(const std::vector<std::filesystem::path>& arguments) {
         }
     }
 
+    if (command == "wad-gameplay") {
+        if (arguments.size() != 3U) {
+            std::cerr
+                << "error: wad-gameplay expects an ISO path and a decimal "
+                   "unique payload index\n";
+            return kUsageError;
+        }
+        const auto requested_unique = parse_decimal_argument(arguments[2]);
+        if (!requested_unique) {
+            std::cerr << "error: unique payload index must be decimal\n";
+            return kUsageError;
+        }
+        try {
+            std::cerr
+                << "Scanning indexed WadV1 sources for RAC1 gameplay payload "
+                << *requested_unique << "...\n";
+            const auto report = inventory_disc_wad_payloads_v1(
+                arguments[1], *requested_unique);
+            if (!report.captured_payload) {
+                throw std::runtime_error(
+                    "The requested WadV1 payload was not captured");
+            }
+            const auto& captured = *report.captured_payload;
+            const auto gameplay = openrc::parse_rac_gameplay_bank_v1(
+                captured.bytes,
+                openrc::RacGameplayBankLimitsV1{
+                    kMaximumCliDecodedWadBytes});
+            std::cout
+                << "OpenRC RacGameplayBankV1 report\n"
+                << "Unique index:          " << *requested_unique << '\n'
+                << "Decoded bytes:         " << captured.bytes.size() << '\n'
+                << "Present blocks:        " << gameplay.blocks.size() << '\n'
+                << "Moby classes:          " << gameplay.moby_class_count
+                << '\n'
+                << "Static moby instances: " << gameplay.static_moby_count
+                << '\n'
+                << "Spawnable mobies:      " << gameplay.spawnable_moby_count
+                << "\n\nBlocks:\n";
+            for (const auto& block : gameplay.blocks) {
+                std::cout
+                    << "  [header 0x" << std::hex
+                    << block.header_pointer_offset << "] " << std::left
+                    << std::setw(28)
+                    << openrc::rac_gameplay_block_name_v1(block.kind)
+                    << std::right << " 0x" << block.range.offset
+                    << "+0x" << block.range.size << std::dec << '\n';
+            }
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << "error: " << error.what() << '\n';
+            return kOperationError;
+        }
+    }
+
     if (command == "wad-subtitles") {
         if (arguments.size() != 3U) {
             std::cerr
@@ -2184,22 +2247,18 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 << "Scanning every indexed WadV1 source with bounded decoders...\n";
             const auto report = inventory_disc_wad_payloads_v1(arguments[1]);
             const auto& inventory = report.inventory;
-            std::array<std::uint64_t, 5> format_unique_counts{};
-            std::array<std::uint64_t, 5> format_observation_counts{};
-            constexpr std::array<std::string_view, 5> kFormatNames{
-                "TwoFipV1",
-                "MapArtV1",
-                "SceneBlockDirectoryV1",
-                "WadBundleV1",
-                "SceneAnimationBankV1"};
+            std::vector<std::uint64_t> format_unique_counts(
+                report.format_names.size(), 0U);
+            std::vector<std::uint64_t> format_observation_counts(
+                report.format_names.size(), 0U);
             for (const auto& unique : inventory.unique_payloads) {
                 for (std::size_t format_index = 0U;
-                     format_index < kFormatNames.size();
+                     format_index < report.format_names.size();
                      ++format_index) {
                     if (std::find(
                             unique.matched_format_names.begin(),
                             unique.matched_format_names.end(),
-                            kFormatNames[format_index]) !=
+                            report.format_names[format_index]) !=
                         unique.matched_format_names.end()) {
                         ++format_unique_counts[format_index];
                         format_observation_counts[format_index] +=
@@ -2237,10 +2296,12 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 << "  companion records: "
                 << report.counters.companion_record_payloads << "\n\n"
                 << "Recognized formats (unique / observations):\n";
-            for (std::size_t index = 0U; index < kFormatNames.size(); ++index) {
+            for (std::size_t index = 0U;
+                 index < report.format_names.size();
+                 ++index) {
                 std::cout
                     << "  " << std::left << std::setw(24)
-                    << kFormatNames[index] << std::right
+                    << report.format_names[index] << std::right
                     << format_unique_counts[index] << " / "
                     << format_observation_counts[index] << '\n';
             }
