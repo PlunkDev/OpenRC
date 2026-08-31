@@ -14,6 +14,9 @@
 #include "openrc/preparation.hpp"
 #include "openrc/ps2_save_bundle.hpp"
 #include "openrc/rac_gameplay_bank.hpp"
+#include "openrc/rac_level_core.hpp"
+#include "openrc/rac_moby_class.hpp"
+#include "openrc/rac_moby_packet_geometry.hpp"
 #include "openrc/scene_animation_bank.hpp"
 #include "openrc/scene_block_directory.hpp"
 #include "openrc/scene_block_task_execute.hpp"
@@ -128,6 +131,7 @@ void print_usage() {
         << "  openrc-cli wad-scene-animation <disc.iso> <unique>\n"
         << "                                                    Inspect camera and actor animation tracks\n"
         << "  openrc-cli wad-gameplay <disc.iso> <unique>      Inspect RAC1 level objects and gameplay blocks\n"
+        << "  openrc-cli wad-moby-class <disc.iso> <unique>    Inspect one decoded RAC1 object model core\n"
         << "  openrc-cli wad-subtitles <disc.iso> <unique>     Inspect a localized subtitle bank\n"
         << "  openrc-cli vagp <disc.iso> <global-slot> [output.wav]\n"
         << "                                                    Inspect/export VAGp as mono PCM\n"
@@ -142,6 +146,7 @@ void print_usage() {
         << "  openrc-cli scene-blocks <disc.iso> <level-id>    Inspect a level scene-block directory\n"
         << "  openrc-cli scene-block-vu-run <disc.iso> <elf> <level-id> <record> <entry-pair> [output.tga]\n"
         << "                                                    Execute and optionally export an auto-fit wireframe\n"
+        << "  openrc-cli level-core <disc.iso> <level-id>      Link RAC1 model classes, assets, and placements\n"
         << "  openrc-cli companion-wads <disc.iso> <level-id>  Inspect the terminal common WAD index\n"
         << "  openrc-cli wad-bundle <disc.iso> <lba> <sectors> Inspect a WadBundleV1 (64 MiB cap)\n"
         << "  openrc-cli twofip <disc.iso> <global-slot> [output.tga]\n"
@@ -2003,6 +2008,88 @@ int run(const std::vector<std::filesystem::path>& arguments) {
         }
     }
 
+    if (command == "wad-moby-class") {
+        if (arguments.size() != 3U) {
+            std::cerr
+                << "error: wad-moby-class expects an ISO path and a decimal "
+                   "unique payload index\n";
+            return kUsageError;
+        }
+        const auto requested_unique = parse_decimal_argument(arguments[2]);
+        if (!requested_unique) {
+            std::cerr << "error: unique payload index must be decimal\n";
+            return kUsageError;
+        }
+        try {
+            std::cerr
+                << "Scanning indexed WadV1 sources for RAC1 MobyClass payload "
+                << *requested_unique << "...\n";
+            const auto report = inventory_disc_wad_payloads_v1(
+                arguments[1], *requested_unique);
+            if (!report.captured_payload) {
+                throw std::runtime_error(
+                    "The requested WadV1 payload was not captured");
+            }
+            const auto& captured = *report.captured_payload;
+            const auto moby = openrc::parse_rac_moby_class_v1(
+                captured.bytes,
+                openrc::RacMobyClassLimitsV1{
+                    kMaximumCliDecodedWadBytes, true});
+            const auto present_sequences = static_cast<std::size_t>(
+                std::count_if(
+                    moby.sequence_offsets.begin(),
+                    moby.sequence_offsets.end(),
+                    [](const std::uint32_t offset) { return offset != 0U; }));
+            std::cout
+                << "OpenRC RacMobyClassV1 report\n"
+                << "Unique index:          " << *requested_unique << '\n'
+                << "Decoded bytes:         " << captured.bytes.size() << '\n'
+                << "Packet table:          "
+                << hexadecimal(moby.packet_table_range.offset, 8) << "+"
+                << hexadecimal(moby.packet_table_range.size, 8) << '\n'
+                << "Packets high/low/metal: "
+                << static_cast<std::uint32_t>(moby.high_lod_packet_count)
+                << '/' << static_cast<std::uint32_t>(moby.low_lod_packet_count)
+                << '/' << static_cast<std::uint32_t>(moby.metal_packet_count)
+                << '\n'
+                << "Joints:                "
+                << static_cast<std::uint32_t>(moby.joint_count) << '\n'
+                << "Sequences present:     " << present_sequences << '/'
+                << static_cast<std::uint32_t>(moby.sequence_count) << '\n'
+                << "Sound definitions:     "
+                << static_cast<std::uint32_t>(moby.sound_count) << '\n'
+                << "Scale:                 " << moby.scale << '\n'
+                << "Bounding sphere:       " << moby.bounding_sphere[0U] << ", "
+                << moby.bounding_sphere[1U] << ", "
+                << moby.bounding_sphere[2U] << ", radius "
+                << moby.bounding_sphere[3U] << "\n\nPackets:\n";
+            for (std::size_t index = 0U; index < moby.packets.size(); ++index) {
+                const auto& packet = moby.packets[index];
+                const char* kind = "metal";
+                if (packet.kind == openrc::RacMobyPacketKindV1::high_lod) {
+                    kind = "high";
+                } else if (packet.kind ==
+                           openrc::RacMobyPacketKindV1::low_lod) {
+                    kind = "low";
+                }
+                std::cout
+                    << "  [" << index << "] " << std::left << std::setw(5)
+                    << kind << std::right << " VIF "
+                    << hexadecimal(packet.vif_range.offset, 8) << "+"
+                    << hexadecimal(packet.vif_range.size, 8) << ", vertices "
+                    << hexadecimal(packet.vertex_range.offset, 8) << "+"
+                    << hexadecimal(packet.vertex_range.size, 8) << ", transfer "
+                    << static_cast<std::uint32_t>(
+                           packet.transfer_vertex_count)
+                    << '\n';
+            }
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << "error: " << error.what() << '\n';
+            return kOperationError;
+        }
+    }
+
     if (command == "wad-subtitles") {
         if (arguments.size() != 3U) {
             std::cerr
@@ -3737,6 +3824,333 @@ int run(const std::vector<std::filesystem::path>& arguments) {
         }
     }
 
+    if (command == "level-core") {
+        if (arguments.size() != 3U) {
+            std::cerr
+                << "error: level-core expects an ISO path and a level ID\n";
+            return kUsageError;
+        }
+
+        const auto level_value = parse_decimal_argument(arguments[2]);
+        if (!level_value || *level_value >= openrc::kDiscTocLevelCount) {
+            std::cerr << "error: level ID must be a decimal number from 0 to "
+                      << (openrc::kDiscTocLevelCount - 1U) << '\n';
+            return kUsageError;
+        }
+        const auto level_id = static_cast<std::uint32_t>(*level_value);
+
+        try {
+            const auto assets = openrc::inspect_disc_toc_assets(arguments[1]);
+            const auto level_assets = std::find_if(
+                assets.levels.begin(),
+                assets.levels.end(),
+                [level_id](const openrc::DiscTocLevelAssets& candidate) {
+                    return candidate.level_id == level_id;
+                });
+            const auto level_layout = std::find_if(
+                assets.layout.levels.begin(),
+                assets.layout.levels.end(),
+                [level_id](const openrc::DiscTocLevelDescriptor& candidate) {
+                    return candidate.level_id == level_id;
+                });
+            if (level_assets == assets.levels.end() ||
+                level_layout == assets.layout.levels.end()) {
+                throw std::runtime_error(
+                    "The requested level is absent from DiscTocV1");
+            }
+
+            constexpr std::size_t kLevelCoreIndexSubrange = 2U;
+            constexpr std::size_t kLevelCoreAssetSubrange = 10U;
+            const auto& index_subrange = level_assets->primary_extent0
+                                             .subranges[kLevelCoreIndexSubrange];
+            const auto& asset_subrange = level_assets->primary_extent0
+                                             .subranges[kLevelCoreAssetSubrange];
+            if (index_subrange.byte_size == 0U ||
+                asset_subrange.byte_size == 0U ||
+                asset_subrange.signature != openrc::DiscTocSignature::wad) {
+                throw std::runtime_error(
+                    "The level-core index or asset WadV1 is absent");
+            }
+
+            const auto& primary_extent = level_layout->primary_extents.front();
+            const auto primary_bytes = read_disc_extent(
+                arguments[1],
+                primary_extent.lba,
+                primary_extent.sectors,
+                kMaximumCliDecodedWadBytes);
+            const auto bounded_subrange =
+                [&primary_bytes](const openrc::DiscTocSubrange& subrange,
+                                 const char* const description) {
+                    const auto offset =
+                        static_cast<std::uint64_t>(subrange.relative_offset);
+                    const auto size =
+                        static_cast<std::uint64_t>(subrange.byte_size);
+                    if (offset > primary_bytes.size() ||
+                        size > primary_bytes.size() - offset) {
+                        throw std::runtime_error(
+                            std::string(description) +
+                            " lies outside primary extent 0");
+                    }
+                    return std::span<const std::byte>(primary_bytes).subspan(
+                        static_cast<std::size_t>(offset),
+                        static_cast<std::size_t>(size));
+                };
+            const auto index_bytes = bounded_subrange(
+                index_subrange, "The level-core index");
+            const auto encoded_assets = bounded_subrange(
+                asset_subrange, "The level-core asset WadV1");
+            const auto decoded_assets = openrc::decode_wad_bytes(
+                encoded_assets, kMaximumCliDecodedWadBytes);
+            const auto core = openrc::parse_rac_level_core_index_v1(
+                index_bytes,
+                encoded_assets,
+                decoded_assets.bytes,
+                openrc::RacLevelCoreLimitsV1{
+                    kMaximumCliDecodedWadBytes,
+                    kMaximumCliDecodedWadBytes,
+                    kMaximumCliDecodedWadBytes,
+                    4096U,
+                    255U,
+                    4096U});
+
+            const auto& gameplay_ref = level_assets->primary_wads.front();
+            if (gameplay_ref.signature != openrc::DiscTocSignature::wad ||
+                gameplay_ref.occupied_sectors == 0U) {
+                throw std::runtime_error(
+                    "The level's primary gameplay WadV1 is absent");
+            }
+            const auto decoded_gameplay = openrc::decode_wad(
+                arguments[1],
+                gameplay_ref.lba,
+                gameplay_ref.occupied_sectors,
+                kMaximumCliDecodedWadBytes);
+            const auto gameplay = openrc::parse_rac_gameplay_bank_v1(
+                decoded_gameplay.bytes,
+                openrc::RacGameplayBankLimitsV1{
+                    kMaximumCliDecodedWadBytes});
+            if (gameplay.moby_class_ids.size() != core.moby_classes.size()) {
+                throw std::runtime_error(
+                    "Gameplay and level-core Moby class counts disagree");
+            }
+            for (std::size_t index = 0U;
+                 index < core.moby_classes.size();
+                 ++index) {
+                if (gameplay.moby_class_ids[index] !=
+                    static_cast<std::uint32_t>(
+                        core.moby_classes[index].class_id)) {
+                    throw std::runtime_error(
+                        "Gameplay and level-core Moby class order disagrees");
+                }
+            }
+
+            std::vector<std::uint32_t> instance_counts(
+                core.moby_classes.size(), 0U);
+            for (const auto& instance : gameplay.static_mobies) {
+                const auto found = std::find_if(
+                    core.moby_classes.begin(),
+                    core.moby_classes.end(),
+                    [&instance](
+                        const openrc::RacLevelCoreMobyClassEntryV1& entry) {
+                        return static_cast<std::uint32_t>(entry.class_id) ==
+                            instance.class_id;
+                    });
+                if (found == core.moby_classes.end()) {
+                    throw std::runtime_error(
+                        "A gameplay Moby instance is absent from level core");
+                }
+                const auto index = static_cast<std::size_t>(
+                    std::distance(core.moby_classes.begin(), found));
+                ++instance_counts[index];
+            }
+
+            struct ParsedMobySummaryV1 {
+                std::int32_t class_id = 0;
+                std::uint8_t high_packets = 0U;
+                std::uint8_t low_packets = 0U;
+                std::uint8_t metal_packets = 0U;
+                std::uint8_t joints = 0U;
+                std::uint64_t decoded_regular_packets = 0U;
+                std::uint64_t diagnostic_vertices = 0U;
+                std::uint64_t diagnostic_triangles = 0U;
+                std::uint64_t unresolved_duplicates = 0U;
+            };
+            std::vector<ParsedMobySummaryV1> local_models;
+            std::vector<ParsedMobySummaryV1> gadget_models;
+            std::uint64_t local_model_bytes = 0U;
+            for (const auto& entry : core.moby_classes) {
+                if (entry.asset_range.size == 0U) {
+                    continue;
+                }
+                const auto model_bytes =
+                    std::span<const std::byte>(decoded_assets.bytes).subspan(
+                        static_cast<std::size_t>(entry.asset_range.offset),
+                        static_cast<std::size_t>(entry.asset_range.size));
+                openrc::RacMobyClassV1 model;
+                try {
+                    model = openrc::parse_rac_moby_class_v1(
+                        model_bytes,
+                        openrc::RacMobyClassLimitsV1{
+                            kMaximumCliDecodedWadBytes});
+                } catch (const openrc::RacMobyClassError& error) {
+                    throw std::runtime_error(
+                        "Local Moby class " + std::to_string(entry.class_id) +
+                        " failed validation: " + error.what());
+                }
+                local_model_bytes += entry.asset_range.size;
+                ParsedMobySummaryV1 summary{
+                    entry.class_id,
+                    model.high_lod_packet_count,
+                    model.low_lod_packet_count,
+                    model.metal_packet_count,
+                    model.joint_count};
+                for (std::size_t packet_index = 0U;
+                     packet_index < model.packets.size();
+                     ++packet_index) {
+                    const auto& packet = model.packets[packet_index];
+                    if (packet.kind == openrc::RacMobyPacketKindV1::metal) {
+                        continue;
+                    }
+                    try {
+                        const auto geometry =
+                            openrc::parse_rac_moby_packet_geometry_v1(
+                                model_bytes,
+                                packet,
+                                model.scale,
+                                openrc::RacMobyPacketGeometryLimitsV1{
+                                    kMaximumCliDecodedWadBytes,
+                                    4096U,
+                                    4096U,
+                                    4096U,
+                                    1'000'000U,
+                                    4096U,
+                                    1'000'000U});
+                        ++summary.decoded_regular_packets;
+                        summary.diagnostic_vertices += geometry.vertices.size();
+                        summary.diagnostic_triangles +=
+                            geometry.triangles.size();
+                        summary.unresolved_duplicates +=
+                            geometry.unresolved_duplicate_count;
+                    } catch (const openrc::RacMobyPacketGeometryError& error) {
+                        throw std::runtime_error(
+                            "Local Moby class " +
+                            std::to_string(entry.class_id) + " packet " +
+                            std::to_string(packet_index) +
+                            " failed geometry validation: " + error.what());
+                    }
+                }
+                local_models.push_back(summary);
+            }
+            std::uint64_t gadget_decoded_bytes = 0U;
+            for (const auto& entry : core.gadgets) {
+                const auto wad_bytes =
+                    std::span<const std::byte>(decoded_assets.bytes).subspan(
+                        static_cast<std::size_t>(entry.encoded_range.offset),
+                        static_cast<std::size_t>(entry.encoded_range.size));
+                if (gadget_decoded_bytes >= kMaximumCliDecodedWadBytes) {
+                    throw std::runtime_error(
+                        "Shared gadget models exceed the aggregate decode limit");
+                }
+                const auto remaining =
+                    kMaximumCliDecodedWadBytes - gadget_decoded_bytes;
+                const auto decoded = openrc::decode_wad_bytes(
+                    wad_bytes, remaining);
+                gadget_decoded_bytes += decoded.bytes.size();
+                const auto model = openrc::parse_rac_moby_class_v1(
+                    decoded.bytes,
+                    openrc::RacMobyClassLimitsV1{
+                        kMaximumCliDecodedWadBytes, true});
+                gadget_models.push_back(ParsedMobySummaryV1{
+                    entry.class_id,
+                    model.high_lod_packet_count,
+                    model.low_lod_packet_count,
+                    model.metal_packet_count,
+                    model.joint_count});
+            }
+
+            if (local_models.size() > core.moby_classes.size() ||
+                gadget_models.size() >
+                    core.moby_classes.size() - local_models.size()) {
+                throw std::runtime_error(
+                    "Parsed Moby model ownership exceeds the class table");
+            }
+            const auto external_models = core.moby_classes.size() -
+                local_models.size() - gadget_models.size();
+            const auto used_classes = static_cast<std::size_t>(std::count_if(
+                instance_counts.begin(),
+                instance_counts.end(),
+                [](const std::uint32_t count) { return count != 0U; }));
+            std::uint64_t decoded_regular_packets = 0U;
+            std::uint64_t diagnostic_vertices = 0U;
+            std::uint64_t diagnostic_triangles = 0U;
+            std::uint64_t unresolved_duplicates = 0U;
+            for (const auto& model : local_models) {
+                decoded_regular_packets += model.decoded_regular_packets;
+                diagnostic_vertices += model.diagnostic_vertices;
+                diagnostic_triangles += model.diagnostic_triangles;
+                unresolved_duplicates += model.unresolved_duplicates;
+            }
+            std::cout
+                << "OpenRC RacLevelCoreIndexV1 report\n"
+                << "Image:                 "
+                << openrc::path_to_utf8(arguments[1]) << '\n'
+                << "Level ID:              " << level_id << '\n'
+                << "Index bytes:           " << core.index_input_bytes << '\n'
+                << "Encoded asset bytes:   "
+                << core.encoded_asset_input_bytes << '\n'
+                << "Decoded asset bytes:   "
+                << core.decoded_asset_input_bytes << '\n'
+                << "Moby classes:          " << core.moby_classes.size()
+                << '\n'
+                << "Local model cores:     " << local_models.size()
+                << " (" << local_model_bytes << " bounded bytes)\n"
+                << "Shared gadget models:  " << gadget_models.size()
+                << " (" << gadget_decoded_bytes << " decoded bytes)\n"
+                << "External/zero models:  " << external_models << '\n'
+                << "Moby textures:         "
+                << core.header.moby_textures.count << '\n'
+                << "Static placements:     " << gameplay.static_mobies.size()
+                << '\n'
+                << "Classes placed:        " << used_classes << '\n'
+                << "Gameplay class link:   exact count and order\n\n"
+                << "Regular mesh packets:  " << decoded_regular_packets
+                << '\n'
+                << "Packet-local vertices: " << diagnostic_vertices << '\n'
+                << "Decoded triangles:     " << diagnostic_triangles << '\n'
+                << "Inherited duplicates:  " << unresolved_duplicates
+                << " (preserved unresolved)\n\n"
+                << "Local model cores:\n";
+            for (const auto& model : local_models) {
+                const auto class_entry = std::find_if(
+                    core.moby_classes.begin(),
+                    core.moby_classes.end(),
+                    [&model](
+                        const openrc::RacLevelCoreMobyClassEntryV1& entry) {
+                        return entry.class_id == model.class_id;
+                    });
+                const auto class_index = static_cast<std::size_t>(
+                    std::distance(core.moby_classes.begin(), class_entry));
+                std::cout
+                    << "  class " << std::setw(4) << model.class_id
+                    << ": packets "
+                    << static_cast<std::uint32_t>(model.high_packets) << '/'
+                    << static_cast<std::uint32_t>(model.low_packets) << '/'
+                    << static_cast<std::uint32_t>(model.metal_packets)
+                    << ", joints "
+                    << static_cast<std::uint32_t>(model.joints)
+                    << ", textures "
+                    << static_cast<std::uint32_t>(
+                           class_entry->used_texture_slot_count)
+                    << ", triangles " << model.diagnostic_triangles
+                    << ", placements " << instance_counts[class_index]
+                    << '\n';
+            }
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << "error: " << error.what() << '\n';
+            return kOperationError;
+        }
+    }
+
     if (command == "companion-wads") {
         if (arguments.size() != 3) {
             std::cerr
@@ -3831,7 +4245,13 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                     1'000'000U,
                     kMaximumCliDecodedWadBytes});
 
+            struct CompanionMobySummaryV1 {
+                std::uint64_t decoded_bytes = 0U;
+                openrc::RacMobyClassV1 moby;
+            };
             std::uint64_t nested_decoded_bytes = 0;
+            std::vector<CompanionMobySummaryV1> companion_mobies;
+            companion_mobies.reserve(index.records.size());
             for (const auto& record : index.records) {
                 const auto remaining_decoded_bytes =
                     kMaximumCliDecodedWadBytes - nested_decoded_bytes;
@@ -3844,6 +4264,12 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                         "The companion WADs exceed the aggregate decoded-byte limit");
                 }
                 nested_decoded_bytes += nested.bytes.size();
+                companion_mobies.push_back(CompanionMobySummaryV1{
+                    nested.bytes.size(),
+                    openrc::parse_rac_moby_class_v1(
+                        nested.bytes,
+                        openrc::RacMobyClassLimitsV1{
+                            kMaximumCliDecodedWadBytes, true})});
             }
 
             std::cout
@@ -3884,6 +4310,33 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                     << "Last WAD:            offset "
                     << hexadecimal(last.target_offset, 8)
                     << ", logical " << last.logical_size << " bytes\n";
+            }
+            std::cout << "\nRAC1 shared gadget classes:\n";
+            for (std::size_t record_index = 0U;
+                 record_index < index.records.size();
+                 ++record_index) {
+                const auto& record = index.records[record_index];
+                const auto& summary = companion_mobies[record_index];
+                std::cout
+                    << "  [" << std::setw(2) << record_index << "] class "
+                    << std::setw(4) << record.opaque_word << " ("
+                    << hexadecimal(record.opaque_word, 4) << "), decoded "
+                    << std::setw(5) << summary.decoded_bytes << ", packets "
+                    << static_cast<std::uint32_t>(
+                           summary.moby.high_lod_packet_count)
+                    << '/'
+                    << static_cast<std::uint32_t>(
+                           summary.moby.low_lod_packet_count)
+                    << '/'
+                    << static_cast<std::uint32_t>(
+                           summary.moby.metal_packet_count)
+                    << ", joints "
+                    << static_cast<std::uint32_t>(summary.moby.joint_count)
+                    << ", sequences "
+                    << static_cast<std::uint32_t>(summary.moby.sequence_count)
+                    << ", sounds "
+                    << static_cast<std::uint32_t>(summary.moby.sound_count)
+                    << '\n';
             }
             return 0;
         } catch (const std::exception& error) {

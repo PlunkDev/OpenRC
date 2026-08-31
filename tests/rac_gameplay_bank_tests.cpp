@@ -1,6 +1,7 @@
 #include "openrc/rac_gameplay_bank.hpp"
 
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -64,6 +65,30 @@ void write_le32(std::vector<std::byte>& bytes,
     write_le32(bytes,
                kMobyInstancesOffset + 0x10U,
                openrc::kRacGameplayMobyRecordBytesV1);
+    write_le32(bytes, kMobyInstancesOffset + 0x28U, 0x123U);
+    write_le32(bytes,
+               kMobyInstancesOffset + 0x2cU,
+               std::bit_cast<std::uint32_t>(1.5F));
+    write_le32(bytes, kMobyInstancesOffset + 0x30U, 256U);
+    write_le32(bytes, kMobyInstancesOffset + 0x40U,
+               std::bit_cast<std::uint32_t>(10.0F));
+    write_le32(bytes, kMobyInstancesOffset + 0x44U,
+               std::bit_cast<std::uint32_t>(20.0F));
+    write_le32(bytes, kMobyInstancesOffset + 0x48U,
+               std::bit_cast<std::uint32_t>(30.0F));
+    write_le32(bytes, kMobyInstancesOffset + 0x4cU,
+               std::bit_cast<std::uint32_t>(0.1F));
+    write_le32(bytes, kMobyInstancesOffset + 0x50U,
+               std::bit_cast<std::uint32_t>(0.2F));
+    write_le32(bytes, kMobyInstancesOffset + 0x54U,
+               std::bit_cast<std::uint32_t>(0.3F));
+    write_le32(bytes, kMobyInstancesOffset + 0x58U, 7U);
+    write_le32(bytes, kMobyInstancesOffset + 0x60U,
+               std::bit_cast<std::uint32_t>(4.0F));
+    write_le32(bytes, kMobyInstancesOffset + 0x68U, 9U);
+    write_le32(bytes, kMobyInstancesOffset + 0x6cU, 10U);
+    write_le32(bytes, kMobyInstancesOffset + 0x70U, 0x11223344U);
+    write_le32(bytes, kMobyInstancesOffset + 0x80U, 11U);
     return bytes;
 }
 
@@ -85,9 +110,22 @@ void test_valid_bank() {
     expect(result.input_bytes == kBankBytes &&
                result.blocks.size() == openrc::kRacGameplayBlockCountV1 &&
                result.moby_class_count == 2U &&
+               result.moby_class_ids ==
+                   std::vector<std::uint32_t>{0x123U, 0x456U} &&
                result.static_moby_count == 1U &&
-               result.spawnable_moby_count == 3U,
+               result.spawnable_moby_count == 3U &&
+               result.static_mobies.size() == 1U,
            "RAC gameplay semantic metadata is wrong");
+    const auto& moby = result.static_mobies.front();
+    expect(moby.record_range == openrc::RacGameplayRangeV1{0x1e0U, 0x78U} &&
+               moby.class_id == 0x123U && moby.scale == 1.5F &&
+               moby.draw_distance_raw == 256U &&
+               moby.position == std::array<float, 3>{10.0F, 20.0F, 30.0F} &&
+               moby.rotation == std::array<float, 3>{0.1F, 0.2F, 0.3F} &&
+               moby.group_index == 7 && moby.rooted_distance == 4.0F &&
+               moby.pvar_index == 9 && moby.occlusion == 10 &&
+               moby.mode_bits == 0x11223344U && moby.light_index == 11,
+           "RAC gameplay moby-instance placement metadata is wrong");
     expect(result.header_range == openrc::RacGameplayRangeV1{0U, 0x94U} &&
                result.header_padding_range ==
                    openrc::RacGameplayRangeV1{0x94U, 0x0cU},
@@ -120,7 +158,9 @@ void test_limits() {
     const auto bytes = make_bank();
     for (const auto limits :
          {openrc::RacGameplayBankLimitsV1{0U},
-          openrc::RacGameplayBankLimitsV1{kBankBytes - 1U}}) {
+          openrc::RacGameplayBankLimitsV1{kBankBytes - 1U},
+          openrc::RacGameplayBankLimitsV1{kBankBytes, 1U, 65'536U},
+          openrc::RacGameplayBankLimitsV1{kBankBytes, 65'536U, 0U}}) {
         try {
             (void)openrc::parse_rac_gameplay_bank_v1(bytes, limits);
         } catch (const openrc::RacGameplayBankError&) {
@@ -161,6 +201,26 @@ void test_structural_rejections() {
             write_le32(bytes, kMobyInstancesOffset + 0x10U, 0x70U);
         },
         "a wrong RAC1 moby record size was accepted");
+    expect_rejected(
+        [](auto& bytes) {
+            write_le32(bytes, kMobyInstancesOffset + 0x28U, 0x999U);
+        },
+        "a RAC1 moby reference to an absent class was accepted");
+    expect_rejected(
+        [](auto& bytes) {
+            write_le32(bytes, kMobyClassesOffset + 8U, 0x123U);
+        },
+        "duplicate RAC1 moby class IDs were accepted");
+    expect_rejected(
+        [](auto& bytes) {
+            write_le32(bytes, kMobyInstancesOffset + 0x2cU, 0x7fc00000U);
+        },
+        "a non-finite RAC1 moby scale was accepted");
+    expect_rejected(
+        [](auto& bytes) {
+            write_le32(bytes, kMobyInstancesOffset + 0x40U, 0x7f800000U);
+        },
+        "a non-finite RAC1 moby position was accepted");
     expect_rejected(
         [](auto& bytes) { bytes[kMobyInstancesOffset + 0x88U] = std::byte{1}; },
         "non-zero moby alignment padding was accepted");

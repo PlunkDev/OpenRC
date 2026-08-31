@@ -541,6 +541,12 @@ logical sizes, compressed payload hashes, decoded sizes, and decoded hashes.
 Only the nine auxiliary WadV1 header bytes vary, so this is a shared asset bank
 rather than per-level scene geometry.
 
+The 21 decoded payload hashes are now identified as strict `RacMobyClassV1`
+model cores. They account for 21 unique payloads and all 399 companion
+observations. The standalone shared-bank probe requires the observed `0xFF`
+format byte at class-header offset `0x0B`; local level-core models legitimately
+use other values and are validated under their separate owning context.
+
 | Level | Subrange-2 bytes / SHA-256 | Table offset | Opaque header | First WAD | Last WAD | Indexed size |
 | ---: | --- | ---: | ---: | ---: | ---: | ---: |
 | 0 | `0x7DE0` / `3f048365b73b522a4e7b046478e2cf9d6a3b4445f34e80645ea08e4ea90efbb4` | `0x7C90` | `0x0091489B` | `0xF96130` | `0x1000D80` | `0x10036C0` |
@@ -567,7 +573,7 @@ classification metadata. The exact PAL v2.00 sweep contains:
 
 Those observations decode to 1,093,912,988 bytes and deduplicate to 4,605
 payloads totaling 1,066,576,972 bytes. Strict complete-payload probes produce
-4,510 recognized unique payloads, 95 unknown unique payloads, and zero
+4,531 recognized unique payloads, 74 unknown unique payloads, and zero
 ambiguous payloads:
 
 | Semantic format | Unique payloads | Observations |
@@ -578,20 +584,22 @@ ambiguous payloads:
 | `WadBundleV1` | 1 | 1 |
 | `SceneAnimationBankV1` | 4,081 | 4,081 |
 | `RacGameplayBankV1` | 38 | 38 |
+| `RacMobyClassV1` | 21 | 399 |
 
-The optional observation TSV is 1,107,697 bytes with SHA-256
-`ef9c58cd37d095307d69d8d49ad4eedcf5c5e6c180733b1f915f076a6a079a95`.
+The optional observation TSV is 1,114,480 bytes with SHA-256
+`1c7c8ed2f8a141a92eb9c75eaabd64a963bb8c0c6ed52e3160ff72caafd1505e`.
 Its nested rows identify the exact parent observation as well as the parent's
 deduplicated payload. The production scene-directory probe uses a separate
 4096-record allocation cap; the largest reference directory contains 2,144
 records. Scene-animation probing has independent limits of 256 actor tracks,
 65,536 total frame ranges, and 4,096 subtitle entries.
-The gameplay-bank probe is allocation-constant beyond its 36 fixed range
-records and shares the 64 MiB decoded-payload envelope. Unknown remains an
-explicit result rather than a guessed format. The 95 remaining unique payloads
-occupy 52 candidate families and continue to provide the queue for the next
-semantic pass. The matching family TSV is 21,450 bytes with SHA-256
-`a0a1f800ed194ff7f9db0b5866b8958c56580e8df2625b57d94b7d011d51db30`.
+The gameplay-bank probe is allocation-constant beyond its fixed ranges and
+bounded class/instance metadata; the Moby-class probe has its own packet and
+input envelopes. Unknown remains an explicit result rather than a guessed
+format. The 74 remaining unique payloads occupy 31 candidate families and
+continue to provide the queue for the next semantic pass. The matching family
+TSV is 10,880 bytes with SHA-256
+`34afaf05993ed81dff13cdece5a397f42cecdfa9863dd10a7dfc59d974764e74`.
 
 ## RAC1 gameplay instance banks
 
@@ -610,8 +618,12 @@ Its semantic anchors are the exact 0x50-byte RAC1 level-settings block, a
 non-empty bounded moby class list, and the moby instance block. The latter has
 a 0x10-byte header, two zero reserved words, and `static_count` records whose
 first word is exactly the proven RAC1 record size `0x78`. The parser exposes
-moby-class, static-moby-instance, and spawnable-moby counts without copying the
-large block bodies.
+moby-class IDs plus static and spawnable counts. Each static instance owns its
+class ID, scale, position, rotation, group/rooting fields, pvar/occlusion/mode
+references, and light index. Offset `0x20` is retained as an integer-like raw
+word: although external tooling labels it a floating draw distance, all 16,232
+PAL records observed here contain small integer bit patterns from 0 through
+1,023, so OpenRC does not currently invent floating-point units for it.
 
 For every level, the NTSC and PAL payloads have equal decoded sizes and
 identical first `0xA0` bytes. Every regional byte difference lies only in the
@@ -619,6 +631,42 @@ pvar-data block selected by header slot `0x58`; OpenRC preserves those bytes as
 opaque and does not yet label them as timing constants. The production sweep
 matches exactly 38 unique payloads/38 observations and introduces no ambiguous
 classification.
+
+## RAC1 level core and Moby model packets
+
+`RacLevelCoreIndexV1` binds raw primary-extent-0 subrange 2 to the encoded and
+decoded subrange-10 asset WAD. It validates the fixed `0xBC` header and exact
+RAC1 `0x24` trailer, parses 0x20-byte Moby class entries and texture slots,
+parses the 0x10-byte shared-gadget table, validates its exact WAD chain, and
+derives every local class asset range only from proven neighboring boundaries.
+For every level, the resulting class IDs match the regional gameplay bank in
+exact count and order.
+
+Across levels 0-18, the index contains 3,645 Moby class entries: 2,972 local
+model occurrences, 399 shared-gadget occurrences, and 274 external or zero
+model references. The matching gameplay banks contain 16,232 static
+placements. All 2,972 local model cores and all 399 shared occurrences parse as
+`RacMobyClassV1`, including meshless classes, shared/out-of-order packet
+storage, sequence metadata, optional skeleton/common-translation ranges, and
+owned high-LOD, low-LOD, metal, and shadow ranges.
+
+The regular packet decoder validates signed TOPS-relative VIF UNPACKs for
+fixed-12 texture coordinates, V4-8 strip indices, and optional V4-32 AD-GIF
+texture primitives. It reconstructs delayed 512-entry vertex-cache indices,
+restart strips, texture switches, and non-degenerate triangle topology. A
+logical secret-index terminator may precede zero vector padding; non-zero bytes
+after it remain a hard format error. The complete local-model sweep validates
+25,748 regular packets, 1,916,153 packet-local vertices, and 2,203,773
+triangles. It preserves 202,551 duplicate references that inherit cache state
+from an earlier packet rather than fabricating packet-local sources.
+
+Veldin alone links 125 classes to 96 local model cores, 21 shared gadgets, and
+eight external/zero references, with 124 texture-table entries and 296 static
+placements. Its 857 regular packets contain 65,191 packet-local vertices and
+77,280 reconstructed triangles. These are model-space diagnostics, not yet a
+faithful scene submission: metal packets, texture image decoding, skeletal
+bind/animation transforms, instance/world transforms, and renderer integration
+remain separate work.
 
 ## VAGp V1 audio
 

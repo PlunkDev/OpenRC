@@ -23,7 +23,10 @@ openrc_core
 ├── streaming decoded-WAD corpus inventory, provenance, deduplication, and strict probes
 ├── deterministic structural candidate-family profiling and Veldin-ranked TSV export
 ├── strict bounded SceneAnimationBankV1 camera/actor/frame/root parsing
-├── strict RacGameplayBankV1 directory plus RAC1 moby class/instance anchors
+├── strict RacGameplayBankV1 directory plus RAC1 Moby IDs/static placements
+├── RacLevelCoreIndexV1 ownership/linking for local and shared Moby model cores
+├── bounded RacMobyClassV1 headers, packet ownership, and fixed asset ranges
+├── regular Moby VIF/vertex-cache/strip/packet-local triangle recovery
 ├── shared PAL five-language subtitle-directory timing/text parsing
 ├── neutral SceneBlockDirectoryV1 parsing with owned blocks and 8-section layouts
 ├── bounded zero-copy SceneBlock VIF command parsing across sections 0-4
@@ -51,7 +54,8 @@ openrc_core
 
 openrc-cli
 ├── disc inspection and inventory
-├── TOC, WAD/bundle/companion/corpus/family/gameplay/scene-animation/subtitle diagnostics
+├── TOC, WAD/bundle/companion/corpus/family/gameplay/level-core/Moby diagnostics
+├── scene-animation and subtitle diagnostics
 ├── scene-block/VIF/VU/GS, 2FIP, MapArt, PS2D, VAGp, and SBlk diagnostics
 ├── explicit-policy SBlk WAV and EE/R5900 boundary diagnostics
 ├── auto-fit wireframe TGA export from a selected real SceneBlock invocation
@@ -78,7 +82,7 @@ openrc-runtime
 
 ```text
 tools/
-├── audio, texture, model, and remaining TOC-table decoders
+├── remaining audio, texture, terrain/collision, and TOC-table decoders
 ├── MIPS/R5900 analysis pipeline
 ├── symbol and type database
 └── asset converters
@@ -208,6 +212,19 @@ header words are zero and whose static records each declare the proven 0x78
 byte RAC1 layout. Both regional variants on all 19 levels pass, while their
 differences remain isolated to opaque pvar data rather than being assigned an
 unproved timing meaning.
+The raw level index in primary-extent-0 subrange 2 is independently parsed as
+`RacLevelCoreIndexV1` and cross-checked against the encoded/decoded subrange-10
+asset WAD. Its Moby class list must agree with the gameplay bank in exact count
+and order. Local model offsets are converted into bounded ranges only from
+proven neighboring asset boundaries; zero/external entries and shared gadget
+WADs remain distinct ownership cases.
+`RacMobyClassV1` then owns copied header, sequence, packet, skeleton, shadow,
+and fixed-range metadata without retaining input pointers. The packet geometry
+layer accepts only regular high/low packets and reconstructs VIF-delivered
+texture coordinates, texture switches, delayed vertex-cache indices, strips,
+and topology. Positions remain explicitly packet-local. Metal geometry,
+cross-packet duplicate resolution, textures, skeletal bind/animation, instance
+transforms, and runtime submission are not silently folded into this parser.
 MapArtV1 composes three palette-compatible images without assigning gameplay
 meaning to the remaining opaque regions. The PS2D parser likewise retains
 unknown header words and tagged payload keys rather than treating guesses as

@@ -60,6 +60,8 @@ enum class RacGameplayBlockKindV1 : std::uint8_t {
 
 struct RacGameplayBankLimitsV1 {
     std::uint64_t max_input_bytes = 0U;
+    std::uint64_t max_moby_classes = 65'536U;
+    std::uint64_t max_static_mobies = 65'536U;
 };
 
 struct RacGameplayRangeV1 {
@@ -75,6 +77,30 @@ struct RacGameplayBlockV1 {
     RacGameplayRangeV1 range;
 };
 
+struct RacGameplayMobyInstanceV1 {
+    RacGameplayRangeV1 record_range;
+    std::uint32_t class_id = 0U;
+    std::uint32_t scale_bits = 0U;
+    float scale = 0.0F;
+    // Wrench labels offset 0x20 as an f32 draw distance, but every PAL v2.00
+    // record observed so far stores a small integer-like word (0..1023).
+    // Preserve the value without inventing units until runtime use is proven.
+    std::uint32_t draw_distance_raw = 0U;
+    std::int32_t update_distance = 0;
+    std::array<std::uint32_t, 3> position_bits{};
+    std::array<float, 3> position{};
+    std::array<std::uint32_t, 3> rotation_bits{};
+    std::array<float, 3> rotation{};
+    std::int32_t group_index = 0;
+    std::int32_t rooted = 0;
+    std::uint32_t rooted_distance_bits = 0U;
+    float rooted_distance = 0.0F;
+    std::int32_t pvar_index = 0;
+    std::int32_t occlusion = 0;
+    std::uint32_t mode_bits = 0U;
+    std::int32_t light_index = 0;
+};
+
 struct RacGameplayBankV1 {
     std::uint64_t input_bytes = 0U;
     RacGameplayRangeV1 header_range;
@@ -84,8 +110,10 @@ struct RacGameplayBankV1 {
     std::vector<RacGameplayBlockV1> blocks;
 
     std::uint32_t moby_class_count = 0U;
+    std::vector<std::uint32_t> moby_class_ids;
     std::uint32_t static_moby_count = 0U;
     std::uint32_t spawnable_moby_count = 0U;
+    std::vector<RacGameplayMobyInstanceV1> static_mobies;
 };
 
 class RacGameplayBankError final : public std::runtime_error {
@@ -103,7 +131,10 @@ find_rac_gameplay_block_v1(const RacGameplayBankV1& bank,
 // Parses one complete, decoded Ratchet & Clank (2002) level gameplay bank.
 // The fixed pointer directory and its physical ordering are validated, while
 // every section remains a zero-copy range. The class list and 0x78-byte moby
-// instance records provide a strict semantic anchor for format probing.
+// instance records provide a strict semantic anchor for format probing. The
+// class, scale, position, and rotation fields are decoded so callers can map
+// validated model classes to their level placements without copying the
+// opaque remainder of each record.
 [[nodiscard]] RacGameplayBankV1
 parse_rac_gameplay_bank_v1(std::span<const std::byte> bytes,
                            RacGameplayBankLimitsV1 limits);

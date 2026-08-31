@@ -65,9 +65,10 @@ This roadmap describes technical milestones rather than release dates.
 - [x] identify the fixed 37-slot `RacGameplayBankV1` directory, all 36 named
   gameplay blocks, and the RAC1 moby class/instance anchors across both
   regional payloads for all 19 levels
-- [ ] identify the semantic formats inside the remaining 95 unique WAD
-  payloads spanning 52 candidate families; the next high-impact candidates are
-  the 21 shared companion-bank payloads
+- [x] identify all 21 shared companion-bank payloads as bounded
+  `RacMobyClassV1` model cores across their 399 level observations
+- [ ] identify the semantic formats inside the remaining 74 unique WAD
+  payloads spanning 31 candidate families
 - [x] inventory bounded EE/R5900 executable regions, control transfers, and
   PS2 system-call wrapper sites
 - [ ] recover EE/R5900 function boundaries and construct the call graph
@@ -86,7 +87,12 @@ This roadmap describes technical milestones rather than release dates.
 - [ ] recover the original per-frame camera transform from its EE caller
 - [x] parse the top-level gameplay-instance bank and validate bounded
   0x78-byte RAC1 moby-record envelopes/counts
-- [ ] parse terrain, collision, full model classes, and textures
+- [x] link level-core Moby tables to gameplay classes and parse every bounded
+  local/shared `RacMobyClassV1` core on all 19 levels
+- [x] recover regular high/low Moby packet-local vertices, texture switches,
+  strips, and triangle topology across the complete PAL level corpus
+- [ ] parse and classify terrain, collision, model textures, skeletal bind
+  poses, and animation transforms
 - [ ] render a classified, textured Veldin scene in a native window
 - [ ] compare geometry and transforms with reference captures
 

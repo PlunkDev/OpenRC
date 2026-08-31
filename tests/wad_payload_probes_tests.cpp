@@ -1,6 +1,7 @@
 #include "openrc/localized_subtitle_bank.hpp"
 #include "openrc/map_art.hpp"
 #include "openrc/rac_gameplay_bank.hpp"
+#include "openrc/rac_moby_class.hpp"
 #include "openrc/scene_animation_bank.hpp"
 #include "openrc/scene_block_directory.hpp"
 #include "openrc/two_fip.hpp"
@@ -338,6 +339,32 @@ void write_scene_entry(
         bytes,
         kRacGameplayMobyInstancesOffset + 0x10U,
         openrc::kRacGameplayMobyRecordBytesV1);
+    write_le32(bytes, kRacGameplayMobyInstancesOffset + 0x28U, 0x123U);
+    write_le32(bytes, kRacGameplayMobyInstancesOffset + 0x2cU, 0x3f800000U);
+    return bytes;
+}
+
+[[nodiscard]] std::vector<std::byte> make_rac_moby_class() {
+    constexpr std::uint32_t kPacketTableOffset = 0x80U;
+    constexpr std::uint32_t kVifOffset = 0x90U;
+    constexpr std::uint32_t kVertexOffset = 0xb0U;
+    std::vector<std::byte> bytes(0xd0U, std::byte{0});
+    write_le32(bytes, 0x00U, kPacketTableOffset);
+    bytes[0x04U] = std::byte{1};
+    bytes[0x07U] = std::byte{1};
+    bytes[0x0bU] = std::byte{0xff};
+    bytes[0x0cU] = std::byte{1};
+    write_le32(bytes, 0x1cU, 0x70U);
+    write_le32(bytes, 0x24U, 0x3f800000U);
+    write_le32(bytes, 0x3cU, 0x40000000U);
+    write_le32(bytes, 0x48U, 0x50U);
+    write_le32(bytes, kPacketTableOffset, kVifOffset);
+    write_le16(bytes, kPacketTableOffset + 4U, 2U);
+    write_le32(bytes, kPacketTableOffset + 8U, kVertexOffset);
+    bytes[kPacketTableOffset + 0x0cU] = std::byte{2};
+    bytes[kPacketTableOffset + 0x0dU] = std::byte{2};
+    bytes[kPacketTableOffset + 0x0eU] = std::byte{1};
+    bytes[kPacketTableOffset + 0x0fU] = std::byte{4};
     return bytes;
 }
 
@@ -363,14 +390,15 @@ void test_factory_and_strict_format_matches() {
          kMaximumSceneAnimationActors,
          kMaximumSceneAnimationFrames,
          kMaximumSubtitleEntries});
-    expect(probes.size() == 6U, "known probe count is wrong");
+    expect(probes.size() == 7U, "known probe count is wrong");
     expect(
         probes[0].format_name == "TwoFipV1" &&
             probes[1].format_name == "MapArtV1" &&
             probes[2].format_name == "SceneBlockDirectoryV1" &&
             probes[3].format_name == "WadBundleV1" &&
             probes[4].format_name == "SceneAnimationBankV1" &&
-            probes[5].format_name == "RacGameplayBankV1",
+            probes[5].format_name == "RacGameplayBankV1" &&
+            probes[6].format_name == "RacMobyClassV1",
         "known probe registration order or names changed");
 
     expect_only_probe_matches(probes, 0U, make_two_fip(), "TwoFipV1");
@@ -391,6 +419,11 @@ void test_factory_and_strict_format_matches() {
         5U,
         make_rac_gameplay_bank(),
         "RacGameplayBankV1");
+    expect_only_probe_matches(
+        probes,
+        6U,
+        make_rac_moby_class(),
+        "RacMobyClassV1");
 }
 
 void test_every_probe_rejects_a_near_miss() {
@@ -453,6 +486,13 @@ void test_every_probe_rejects_a_near_miss() {
         probes[5].inspect(incomplete_gameplay) ==
             openrc::WadPayloadProbeDecisionV1::no_match,
         "RacGameplayBankV1 probe accepted an incomplete directory");
+
+    auto moby_class = make_rac_moby_class();
+    moby_class[0x07U] = std::byte{2};
+    expect(
+        probes[6].inspect(moby_class) ==
+            openrc::WadPayloadProbeDecisionV1::no_match,
+        "RacMobyClassV1 probe accepted a bad metal-begin index");
 }
 
 void test_factory_limits() {

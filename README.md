@@ -30,7 +30,17 @@ Stage 1 is in progress. The repository currently provides:
   transforms, and optional PAL five-language subtitle tails;
 - a strict `RacGameplayBankV1` parser for both regional gameplay payloads on
   all 19 levels, exposing 36 named block ranges plus validated RAC1 moby-class
-  counts and 0x78-byte instance envelopes;
+  IDs and 0x78-byte static-instance placements;
+- a strict `RacLevelCoreIndexV1` parser that links every gameplay Moby class in
+  exact count/order to its local model range, shared gadget WAD, texture slots,
+  and placement count on all 19 levels;
+- a bounded `RacMobyClassV1` parser for all local level models and the 21 shared
+  companion-bank models, including packet directories, animation/skeleton
+  ranges, and regular high/low/metal packet ownership;
+- bounded regular Moby packet recovery for VIF texture coordinates, strip
+  indices, AD-GIF texture switches, delayed vertex-cache indices, packet-local
+  vertices, strips, and triangle topology, while explicitly leaving metal
+  geometry and skeletal bind/world transforms outside the current contract;
 - a bounded `2FIP` indexed-texture parser with PS2 CLUT normalization,
   RGBA expansion, and lossless TGA export;
 - a neutral seven-region boundary-table parser for decoded level payloads;
@@ -97,10 +107,11 @@ Stage 1 is in progress. The repository currently provides:
 - application directories following the `PlunkDev/OpenRC` convention;
 - synthetic ISO, ELF, SHA-256, disc, WAD, bundle, 2FIP, boundary-table,
   MapArtV1, PS2 save-bundle, PS ADPCM, VAGp, SBlk/audio/WAV, decoded-WAD
-  inventory/probes, RAC gameplay, scene-animation/subtitle, EE/R5900 boundaries, scene-block,
-  scene-block VIF/VU execution and phase grouping, DVP VU microprogram
-  decoding/execution, companion-WAD-index, and preparation tests that contain
-  no copyrighted game data.
+  inventory/probes, RAC gameplay/level-core/Moby-class/packet geometry,
+  scene-animation/subtitle, EE/R5900 boundaries, scene-block, scene-block
+  VIF/VU execution and phase grouping, DVP VU microprogram decoding/execution,
+  companion-WAD-index, and preparation tests that contain no copyrighted game
+  data.
 
 **Prepare game files** becomes available after the supported reference
 executable is detected. After preparation succeeds, **Play** starts the native
@@ -165,6 +176,7 @@ build/Debug/openrc-cli.exe wad-payload-inventory local/ratchet-and-clank.iso wad
 build/Debug/openrc-cli.exe wad-families local/ratchet-and-clank.iso wad-families.tsv
 build/Debug/openrc-cli.exe wad-scene-animation local/ratchet-and-clank.iso 661
 build/Debug/openrc-cli.exe wad-gameplay local/ratchet-and-clank.iso 706
+build/Debug/openrc-cli.exe wad-moby-class local/ratchet-and-clank.iso 707
 build/Debug/openrc-cli.exe wad-subtitles local/ratchet-and-clank.iso 604
 build/Debug/openrc-cli.exe wad-payload-export local/ratchet-and-clank.iso 604 payload-604.bin
 build/Debug/openrc-cli.exe vagp local/ratchet-and-clank.iso 51 sample.wav
@@ -176,6 +188,7 @@ build/Debug/openrc-cli.exe sblk-wav local/ratchet-and-clank.iso 0 0 sample.wav s
 build/Debug/openrc-cli.exe sblk-wav local/ratchet-and-clank.iso 0 0 sample-22050.wav caller-supplied-hz 22050
 build/Debug/openrc-cli.exe scene-blocks local/ratchet-and-clank.iso 0
 build/Debug/openrc-cli.exe scene-block-vu-run local/ratchet-and-clank.iso path/to/prepared/files/SCES_509.16 0 0 16 scene-block.tga
+build/Debug/openrc-cli.exe level-core local/ratchet-and-clank.iso 0
 build/Debug/openrc-cli.exe companion-wads local/ratchet-and-clank.iso 0
 build/Debug/openrc-cli.exe wad-bundle local/ratchet-and-clank.iso 14365 162
 build/Debug/openrc-cli.exe twofip local/ratchet-and-clank.iso 100 texture.tga
@@ -258,6 +271,19 @@ unmapped, or limit termination. Exact task execution belongs to
 buffer, checks every exact WadV1 range and zero alignment gap, and then
 actually decodes all indexed WAD streams under an aggregate limit.
 
+`level-core` links that same raw level index to its encoded and decoded asset
+WAD, verifies that the gameplay and level-core Moby class lists have identical
+counts and order, parses every bounded local and shared model core, and reports
+static placement counts. For regular high/low packets it also reconstructs
+packet-local vertices and triangle strips. These coordinates are diagnostic
+model data; animated classes still require skeleton bind transforms before
+they can be submitted as faithful world geometry.
+
+`wad-moby-class` inspects one decoded standalone RAC1 object-model payload by
+its inventory unique index. It validates the class header, packet ranges,
+sequence offsets, optional skeleton metadata, shadow range, and regular
+high/low packet geometry without treating metal packets as the same format.
+
 `wad-payload-inventory` streams all 5,069 decoded WadV1 observations reachable
 from the PAL reference disc's global catalog and tail bundle, local WAD runs,
 primary records, bundle children, and companion banks. It retains metadata and
@@ -269,11 +295,12 @@ probing has a separate 4096-record cap, safely above the PAL corpus maximum of
 2144. Scene-animation probing separately permits at most 256 actor tracks and
 65,536 total frame ranges; subtitle tails have a 4096-entry cap, so a byte
 envelope cannot imply an unbounded metadata allocation. The PAL sweep
-deduplicates to 4,605 payloads: 4,510 are recognized, 95 remain unknown, and
+deduplicates to 4,605 payloads: 4,531 are recognized, 74 remain unknown, and
 none is ambiguous. `SceneAnimationBankV1` accounts for exactly all 4,081 local
 resource-block WAD-run payloads. `RacGameplayBankV1` accounts for exactly both
-regional primary gameplay extents on all 19 levels.
-The remaining 95 unique unknown payloads occupy 52 structural candidate
+regional primary gameplay extents on all 19 levels, while `RacMobyClassV1`
+accounts for 21 unique shared models across all 399 companion observations.
+The remaining 74 unique unknown payloads occupy 31 structural candidate
 families.
 
 `wad-families` profiles every unique decoded payload in the same streaming pass

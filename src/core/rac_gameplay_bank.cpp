@@ -2,11 +2,14 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <span>
 #include <string>
+#include <unordered_set>
 
 namespace openrc {
 namespace {
@@ -99,6 +102,16 @@ constexpr std::array<BlockDescriptionV1, kRacGameplayBlockCountV1>
            (static_cast<std::uint32_t>(byte_value(bytes[offset + 3U])) << 24U);
 }
 
+[[nodiscard]] float read_le_float(const std::span<const std::byte> bytes,
+                                  const std::size_t offset) noexcept {
+    return std::bit_cast<float>(read_le32(bytes, offset));
+}
+
+[[nodiscard]] std::int32_t read_le_i32(const std::span<const std::byte> bytes,
+                                       const std::size_t offset) noexcept {
+    return std::bit_cast<std::int32_t>(read_le32(bytes, offset));
+}
+
 [[nodiscard]] bool is_zero(const std::span<const std::byte> bytes,
                            const std::size_t begin,
                            const std::size_t end) {
@@ -151,7 +164,8 @@ checked_table_bytes(const std::uint32_t count,
 }
 
 void validate_semantic_anchors(const std::span<const std::byte> bytes,
-                               RacGameplayBankV1& result) {
+                               RacGameplayBankV1& result,
+                               const RacGameplayBankLimitsV1 limits) {
     const auto& level_settings = require_block(
         result, RacGameplayBlockKindV1::level_settings, "level-settings block");
     if (level_settings.range.size < kRacLevelSettingsBytes) {
@@ -173,7 +187,7 @@ void validate_semantic_anchors(const std::span<const std::byte> bytes,
     }
     const auto classes_offset = static_cast<std::size_t>(classes.range.offset);
     const auto raw_class_count = read_le32(bytes, classes_offset);
-    if (raw_class_count == 0U ||
+    if (raw_class_count == 0U || raw_class_count > limits.max_moby_classes ||
         raw_class_count > static_cast<std::uint32_t>(
                               std::numeric_limits<std::int32_t>::max())) {
         fail("RacGameplayBankV1 has an invalid moby-class count");
@@ -184,6 +198,21 @@ void validate_semantic_anchors(const std::span<const std::byte> bytes,
                                                  "the moby-class list");
     validate_zero_tail(bytes, classes, class_bytes, "the moby-class list");
     result.moby_class_count = raw_class_count;
+    result.moby_class_ids.reserve(raw_class_count);
+    std::unordered_set<std::uint32_t> class_id_membership;
+    class_id_membership.reserve(raw_class_count);
+    for (std::uint32_t index = 0U; index < raw_class_count; ++index) {
+        const auto class_id = read_le32(
+            bytes,
+            classes_offset + sizeof(std::uint32_t) +
+                static_cast<std::size_t>(index) * sizeof(std::uint32_t));
+        if (class_id > static_cast<std::uint32_t>(
+                           std::numeric_limits<std::int32_t>::max()) ||
+            !class_id_membership.insert(class_id).second) {
+            fail("RacGameplayBankV1 has an invalid moby-class ID list");
+        }
+        result.moby_class_ids.push_back(class_id);
+    }
 
     const auto& mobies = require_block(
         result, RacGameplayBlockKindV1::moby_instances, "moby-instance block");
@@ -194,6 +223,7 @@ void validate_semantic_anchors(const std::span<const std::byte> bytes,
     const auto raw_static_count = read_le32(bytes, moby_offset);
     const auto raw_spawnable_count = read_le32(bytes, moby_offset + 4U);
     if (raw_static_count == 0U ||
+        raw_static_count > limits.max_static_mobies ||
         raw_static_count > static_cast<std::uint32_t>(
                                std::numeric_limits<std::int32_t>::max()) ||
         raw_spawnable_count > static_cast<std::uint32_t>(
@@ -209,6 +239,7 @@ void validate_semantic_anchors(const std::span<const std::byte> bytes,
     if (moby_bytes > mobies.range.size) {
         fail("RacGameplayBankV1 has a truncated moby-instance list");
     }
+    result.static_mobies.reserve(raw_static_count);
     for (std::uint32_t index = 0U; index < raw_static_count; ++index) {
         const auto record_offset =
             moby_offset + kMobyBlockHeaderBytes +
@@ -216,6 +247,53 @@ void validate_semantic_anchors(const std::span<const std::byte> bytes,
         if (read_le32(bytes, record_offset) != kRacGameplayMobyRecordBytesV1) {
             fail("RacGameplayBankV1 has an invalid 0x78-byte moby record");
         }
+
+        RacGameplayMobyInstanceV1 instance;
+        instance.record_range = {
+            record_offset, kRacGameplayMobyRecordBytesV1};
+        instance.class_id = read_le32(bytes, record_offset + 0x18U);
+        if (!class_id_membership.contains(instance.class_id)) {
+            fail("A RacGameplayBankV1 moby instance references an absent class");
+        }
+        instance.scale_bits = read_le32(bytes, record_offset + 0x1cU);
+        instance.scale = read_le_float(bytes, record_offset + 0x1cU);
+        instance.draw_distance_raw = read_le32(bytes, record_offset + 0x20U);
+        instance.update_distance = read_le_i32(bytes, record_offset + 0x24U);
+        for (std::size_t component = 0U; component < 3U; ++component) {
+            const auto position_offset =
+                record_offset + 0x30U + component * sizeof(std::uint32_t);
+            const auto rotation_offset =
+                record_offset + 0x3cU + component * sizeof(std::uint32_t);
+            instance.position_bits[component] =
+                read_le32(bytes, position_offset);
+            instance.position[component] =
+                read_le_float(bytes, position_offset);
+            instance.rotation_bits[component] =
+                read_le32(bytes, rotation_offset);
+            instance.rotation[component] =
+                read_le_float(bytes, rotation_offset);
+        }
+        instance.group_index = read_le_i32(bytes, record_offset + 0x48U);
+        instance.rooted = read_le_i32(bytes, record_offset + 0x4cU);
+        instance.rooted_distance_bits =
+            read_le32(bytes, record_offset + 0x50U);
+        instance.rooted_distance =
+            read_le_float(bytes, record_offset + 0x50U);
+        if (!std::isfinite(instance.scale) || instance.scale <= 0.0F ||
+            !std::isfinite(instance.rooted_distance) ||
+            std::any_of(instance.position.begin(),
+                        instance.position.end(),
+                        [](const float value) { return !std::isfinite(value); }) ||
+            std::any_of(instance.rotation.begin(),
+                        instance.rotation.end(),
+                        [](const float value) { return !std::isfinite(value); })) {
+            fail("A RacGameplayBankV1 moby instance has invalid transforms");
+        }
+        instance.pvar_index = read_le_i32(bytes, record_offset + 0x58U);
+        instance.occlusion = read_le_i32(bytes, record_offset + 0x5cU);
+        instance.mode_bits = read_le32(bytes, record_offset + 0x60U);
+        instance.light_index = read_le_i32(bytes, record_offset + 0x70U);
+        result.static_mobies.push_back(instance);
     }
     validate_zero_tail(bytes, mobies, moby_bytes, "the moby-instance list");
     result.static_moby_count = raw_static_count;
@@ -247,8 +325,9 @@ find_rac_gameplay_block_v1(const RacGameplayBankV1& bank,
 RacGameplayBankV1
 parse_rac_gameplay_bank_v1(const std::span<const std::byte> bytes,
                            const RacGameplayBankLimitsV1 limits) {
-    if (limits.max_input_bytes == 0U) {
-        fail("RacGameplayBankV1 caller limits must be non-zero");
+    if (limits.max_input_bytes == 0U || limits.max_moby_classes == 0U ||
+        limits.max_static_mobies == 0U) {
+        fail("RacGameplayBankV1 caller limits must all be non-zero");
     }
     if (bytes.size() > limits.max_input_bytes) {
         fail("RacGameplayBankV1 exceeds the caller's input-byte limit");
@@ -314,7 +393,7 @@ parse_rac_gameplay_bank_v1(const std::span<const std::byte> bytes,
             end - result.blocks[index].range.offset;
     }
 
-    validate_semantic_anchors(bytes, result);
+    validate_semantic_anchors(bytes, result, limits);
     return result;
 }
 
