@@ -655,18 +655,41 @@ fixed-12 texture coordinates, V4-8 strip indices, and optional V4-32 AD-GIF
 texture primitives. It reconstructs delayed 512-entry vertex-cache indices,
 restart strips, texture switches, and non-degenerate triangle topology. A
 logical secret-index terminator may precede zero vector padding; non-zero bytes
-after it remain a hard format error. The complete local-model sweep validates
-25,748 regular packets, 1,916,153 packet-local vertices, and 2,203,773
-triangles. It preserves 202,551 duplicate references that inherit cache state
-from an earlier packet rather than fabricating packet-local sources.
+after it remain a hard format error. The full LOD assembler resets state
+between high and low LOD, but executes each LOD's packets in table order while
+carrying the 512-entry vertex cache and current texture. All local and shared
+model occurrences across the 19 levels validate as 31,809 regular packets,
+2,409,108 source vertex records, 2,760,391 transfer vertices, and 2,729,636
+triangles. Exactly 232,096 duplicate transfers inherit a cache entry from an
+earlier packet, and every one resolves without a fabricated source.
 
 Veldin alone links 125 classes to 96 local model cores, 21 shared gadgets, and
 eight external/zero references, with 124 texture-table entries and 296 static
-placements. Its 857 regular packets contain 65,191 packet-local vertices and
-77,280 reconstructed triangles. These are model-space diagnostics, not yet a
-faithful scene submission: metal packets, texture image decoding, skeletal
-bind/animation transforms, instance/world transforms, and renderer integration
+placements. Including its shared gadgets, 1,176 regular packets contain 91,136
+source records, 102,855 transfer vertices, 104,957 reconstructed triangles,
+and 8,477 resolved cross-packet duplicate transfers.
+
+The production static-scene path assembles only high LOD for classes without
+joints, compacts vertices actually referenced by triangles, and applies the
+verified instance matrix order `T * S * Rz * Ry * Rx`; class scale was already
+applied during packet decoding and is not multiplied twice. On Veldin, five
+classes account for 133 rendered placements, 20,370 output vertices, 13,130
+triangles, and world-space diagnostic bounds X `[81.5255, 206.495]`, Y
+`[85.0339, 301.295]`, Z `[29.4775, 76.6971]`. Another 153 placements use
+jointed models and ten use external/zero ownership, so both groups are skipped
+rather than drawn incorrectly. Across all levels, the same bounded path builds
+9,122 placements into 3,214,949 vertices and 2,628,565 triangles, while 6,237
+animated and 873 external/zero placements remain pending. Metal/bangle meshes,
+texture images, skeletal bind/animation transforms, and original visibility
 remain separate work.
+
+The CLI keeps those reported bounds in world units. The current recovered
+SceneBlock source batch deliberately preserves the signed integer inputs to
+`ITOF0`, and the reference tfrag/model decoders establish a scale of 1,024 raw
+units per world unit. Runtime integration therefore selects an explicit
+`scene_block_itof0_units` policy and scales the complete transformed Moby
+position by 1,024 before merging; mixing the two domains directly is rejected
+by design and the conversion has a deterministic test.
 
 ## VAGp V1 audio
 

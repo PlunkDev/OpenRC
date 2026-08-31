@@ -39,8 +39,13 @@ Stage 1 is in progress. The repository currently provides:
   ranges, and regular high/low/metal packet ownership;
 - bounded regular Moby packet recovery for VIF texture coordinates, strip
   indices, AD-GIF texture switches, delayed vertex-cache indices, packet-local
-  vertices, strips, and triangle topology, while explicitly leaving metal
-  geometry and skeletal bind/world transforms outside the current contract;
+  vertices, strips, and triangle topology;
+- complete regular high/low LOD assembly with the 512-entry vertex cache and
+  current texture carried across packets, resolving every inherited duplicate
+  on all 19 reference levels;
+- a bounded level Moby asset loader and static-instance scene builder that
+  applies the verified `T * S * Rz * Ry * Rx` placement transform while
+  explicitly skipping animated classes until bind transforms are recovered;
 - a bounded `2FIP` indexed-texture parser with PS2 CLUT normalization,
   RGBA expansion, and lossless TGA export;
 - a neutral seven-region boundary-table parser for decoded level payloads;
@@ -97,8 +102,10 @@ Stage 1 is in progress. The repository currently provides:
   against its prepared boot ELF before exposing reusable decoded level data;
 - a native Windows D3D11 level-viewer window that independently executes and
   merges every supported SceneBlock record in the selected level, defaults to
-  an auto-fit recovered-source 3D orbit view, retains the aggregate decoded GS
-  projection for comparison, and falls back from hardware rendering to WARP;
+  an auto-fit recovered-level 3D orbit view, adds static high-LOD Moby
+  placements as orange diagnostic wireframes, retains the aggregate decoded
+  GS projection for comparison, and falls back from hardware rendering to
+  WARP;
 - recognition of the PAL (`SCES-50916`) reference executable and detection of
   the NTSC-U/C (`SCUS-97199`) release;
 - a native Windows launcher with disc inspection, asynchronous Prepare,
@@ -107,7 +114,8 @@ Stage 1 is in progress. The repository currently provides:
 - application directories following the `PlunkDev/OpenRC` convention;
 - synthetic ISO, ELF, SHA-256, disc, WAD, bundle, 2FIP, boundary-table,
   MapArtV1, PS2 save-bundle, PS ADPCM, VAGp, SBlk/audio/WAV, decoded-WAD
-  inventory/probes, RAC gameplay/level-core/Moby-class/packet geometry,
+  inventory/probes, RAC gameplay/level-core/Moby-class/packet/LOD geometry,
+  static Moby scene transforms,
   scene-animation/subtitle, EE/R5900 boundaries, scene-block, scene-block
   VIF/VU execution and phase grouping, DVP VU microprogram decoding/execution,
   companion-WAD-index, and preparation tests that contain no copyrighted game
@@ -120,7 +128,7 @@ are executed independently from the same validated entry-0 state; records that
 stop diagnostically after a complete GS packet and non-drawing records are
 counted rather than allowed to abort the aggregate.
 
-The initial viewer opens in **recovered source 3D (debug orbit)** mode. Drag the
+The initial viewer opens in **recovered level 3D (debug orbit)** mode. Drag the
 left mouse button or use the arrow keys to orbit, use the mouse wheel or `+/-`
 to zoom, press `R` to reset, and press `Tab` to compare the decoded GS 2D
 output. This camera belongs only to the diagnostic viewer; it is not presented
@@ -189,6 +197,7 @@ build/Debug/openrc-cli.exe sblk-wav local/ratchet-and-clank.iso 0 0 sample-22050
 build/Debug/openrc-cli.exe scene-blocks local/ratchet-and-clank.iso 0
 build/Debug/openrc-cli.exe scene-block-vu-run local/ratchet-and-clank.iso path/to/prepared/files/SCES_509.16 0 0 16 scene-block.tga
 build/Debug/openrc-cli.exe level-core local/ratchet-and-clank.iso 0
+build/Debug/openrc-cli.exe level-moby-scene local/ratchet-and-clank.iso 0
 build/Debug/openrc-cli.exe companion-wads local/ratchet-and-clank.iso 0
 build/Debug/openrc-cli.exe wad-bundle local/ratchet-and-clank.iso 14365 162
 build/Debug/openrc-cli.exe twofip local/ratchet-and-clank.iso 100 texture.tga
@@ -251,8 +260,20 @@ contains 80 submitted vertices, 73 unique descriptors, and 71 unique source
 positions. An isolated debug orbit can inspect the merged 3D mesh, while `Tab`
 retains the aggregate GS-output comparison. The DVP VU layer still does not
 emulate bit-exact VU floating point or live PATH1 arbitration, and the geometry
-is not yet
-classified as terrain, collision, or models.
+is not yet classified as terrain or collision.
+
+For full-level entry-16 views, the runtime additionally loads the independently
+indexed gameplay and level-core Moby assets. It carries the 512-entry vertex
+cache and texture state across each high-LOD packet sequence, applies each
+static placement's verified `T * S * Rz * Ry * Rx` transform, then explicitly
+converts world coordinates to the current SceneBlock diagnostic domain at
+1,024 raw ITOF0 units per world unit before the bounded merge. On Veldin this
+adds 133 placements from five
+non-animated classes: 20,370 compacted vertices and 13,130 triangles beside
+the existing 22,428/18,660 recovered SceneBlock batch. They are deliberately
+orange wireframes; texture images, metal/bangle meshes, and 153 animated
+placements still wait for their respective decoders and bind transforms. Ten
+Veldin placements reference external/zero model ownership and remain skipped.
 
 `dvp-vu` accepts comma-separated decimal VU pair addresses and ELF overlay
 section indices, with at most 128 values in either list. The example selects
@@ -274,10 +295,18 @@ actually decodes all indexed WAD streams under an aggregate limit.
 `level-core` links that same raw level index to its encoded and decoded asset
 WAD, verifies that the gameplay and level-core Moby class lists have identical
 counts and order, parses every bounded local and shared model core, and reports
-static placement counts. For regular high/low packets it also reconstructs
-packet-local vertices and triangle strips. These coordinates are diagnostic
-model data; animated classes still require skeleton bind transforms before
-they can be submitted as faithful world geometry.
+static placement counts. For regular high/low packets it also reconstructs the
+complete per-LOD transfer geometry, carrying the vertex cache and current
+texture across packets. Missing inherited cache entries are hard errors; the
+reference sweep resolves every one. Animated coordinates remain diagnostic
+until skeleton bind transforms are applied.
+
+`level-moby-scene` runs the same production loader and static-placement builder
+used by the native viewer without opening D3D. It reports the rendered,
+animated, missing, and empty placement counts plus compacted geometry bounds.
+Across all 19 levels it builds 9,122 static placements into 3,214,949 vertices
+and 2,628,565 triangles; 6,237 animated and 873 external/zero-model placements
+remain explicitly skipped.
 
 `wad-moby-class` inspects one decoded standalone RAC1 object-model payload by
 its inventory unique index. It validates the class header, packet ranges,

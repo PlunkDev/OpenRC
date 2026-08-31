@@ -25,8 +25,10 @@ openrc_core
 ├── strict bounded SceneAnimationBankV1 camera/actor/frame/root parsing
 ├── strict RacGameplayBankV1 directory plus RAC1 Moby IDs/static placements
 ├── RacLevelCoreIndexV1 ownership/linking for local and shared Moby model cores
+├── bounded per-level gameplay/model loading for local and shared Moby assets
 ├── bounded RacMobyClassV1 headers, packet ownership, and fixed asset ranges
 ├── regular Moby VIF/vertex-cache/strip/packet-local triangle recovery
+├── regular high/low LOD assembly with cross-packet cache/material state
 ├── shared PAL five-language subtitle-directory timing/text parsing
 ├── neutral SceneBlockDirectoryV1 parsing with owned blocks and 8-section layouts
 ├── bounded zero-copy SceneBlock VIF command parsing across sections 0-4
@@ -55,6 +57,7 @@ openrc_core
 openrc-cli
 ├── disc inspection and inventory
 ├── TOC, WAD/bundle/companion/corpus/family/gameplay/level-core/Moby diagnostics
+├── static high-LOD Moby placement/bounds diagnostics
 ├── scene-animation and subtitle diagnostics
 ├── scene-block/VIF/VU/GS, 2FIP, MapArt, PS2D, VAGp, and SBlk diagnostics
 ├── explicit-policy SBlk WAV and EE/R5900 boundary diagnostics
@@ -73,7 +76,8 @@ openrc-runtime
 ├── named ISO/ELF/level/record/entry process contract
 ├── exact ISO-to-prepared-ELF SHA-256 binding before scene access
 ├── emitted GS-triangle conversion with raster-context coordinates
-├── recovered-source 3D wireframe with bounded debug orbit controls
+├── recovered-level 3D wireframe with bounded debug orbit controls
+├── explicit world-to-SceneBlock ×1024 Moby unit conversion and bounded merge
 ├── Tab comparison against the decoded GS 2D output
 └── native D3D11 submission, auto-fit resize, and WARP fallback
 ```
@@ -222,9 +226,18 @@ WADs remain distinct ownership cases.
 and fixed-range metadata without retaining input pointers. The packet geometry
 layer accepts only regular high/low packets and reconstructs VIF-delivered
 texture coordinates, texture switches, delayed vertex-cache indices, strips,
-and topology. Positions remain explicitly packet-local. Metal geometry,
-cross-packet duplicate resolution, textures, skeletal bind/animation, instance
-transforms, and runtime submission are not silently folded into this parser.
+and topology. Positions remain explicitly packet-local at this layer. The LOD
+assembler executes packets in table order, carrying the 512-entry vertex cache
+and current texture separately for high and low LOD; duplicate vertices retain
+their transfer-local UV and exact source provenance. The level asset loader
+links local/shared ownership back to gameplay placements, and the runtime's
+static builder applies `T * S * Rz * Ry * Rx`. Its coordinate-domain policy is
+explicit: CLI diagnostics retain world units, while the current source viewer
+converts Moby output to 1,024 raw SceneBlock ITOF0 units per world unit before
+the bounded merge. Model loading and preparation also have aggregate workspace
+caps rather than multiplying per-model limits by the class count.
+Metal and bangle geometry, texture images, skeletal bind/animation, and the
+original visibility policy remain separate rather than being guessed.
 MapArtV1 composes three palette-compatible images without assigning gameplay
 meaning to the remaining opaque regions. The PS2D parser likewise retains
 unknown header words and tagged payload keys rather than treating guesses as

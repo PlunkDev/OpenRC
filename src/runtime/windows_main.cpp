@@ -1,4 +1,5 @@
 #include "d3d11_renderer.hpp"
+#include "moby_scene_geometry.hpp"
 #include "scene_geometry.hpp"
 
 #include "openrc/dvp_vu.hpp"
@@ -67,6 +68,13 @@ struct LoadedSceneGeometry {
     std::uint64_t no_event_record_count = 0U;
     std::uint64_t incomplete_stream_record_count = 0U;
     std::uint64_t unavailable_source_record_count = 0U;
+    std::uint64_t moby_model_count = 0U;
+    std::uint64_t moby_rendered_model_count = 0U;
+    std::uint64_t moby_placement_count = 0U;
+    std::uint64_t moby_rendered_placement_count = 0U;
+    std::uint64_t moby_animated_placement_count = 0U;
+    std::uint64_t moby_missing_or_empty_placement_count = 0U;
+    std::uint64_t moby_triangle_count = 0U;
 };
 
 void add_aggregate_size(
@@ -302,6 +310,45 @@ make_execution_limits() {
     };
 }
 
+[[nodiscard]] openrc::RacLevelMobyAssetLimitsV1
+make_moby_asset_limits() {
+    constexpr openrc::RacMobyPacketGeometryLimitsV1 packet_limits{
+        kMaximumRuntimeBytes,
+        4096U,
+        4096U,
+        4096U,
+        1'000'000U,
+        4096U,
+        1'000'000U,
+    };
+    return openrc::RacLevelMobyAssetLimitsV1{
+        kMaximumRuntimeBytes,
+        kMaximumRuntimeBytes,
+        kMaximumRuntimeBytes,
+        4096U,
+        65'536U,
+        1'000'000U,
+        1'000'000U,
+        openrc::RacLevelCoreLimitsV1{
+            kMaximumRuntimeBytes,
+            kMaximumRuntimeBytes,
+            kMaximumRuntimeBytes,
+            4096U,
+            255U,
+            4096U,
+        },
+        openrc::RacGameplayBankLimitsV1{kMaximumRuntimeBytes},
+        openrc::RacMobyClassLimitsV1{kMaximumRuntimeBytes, false},
+        openrc::RacMobyClassLimitsV1{kMaximumRuntimeBytes, true},
+        openrc::RacMobyModelGeometryLimitsV1{
+            packet_limits,
+            4096U,
+            1'000'000U,
+            1'000'000U,
+        },
+    };
+}
+
 [[nodiscard]] openrc::SceneBlockTaskFrameInputV1
 make_identity_frame_input() {
     openrc::SceneBlockTaskFrameInputV1 result;
@@ -512,12 +559,66 @@ load_scene_geometry(const RuntimeArguments& arguments) {
     return result;
 }
 
+void attach_static_moby_geometry(
+    const RuntimeArguments& arguments,
+    LoadedSceneGeometry& geometry) {
+    if (!arguments.all_records ||
+        arguments.entrypoint !=
+            openrc::kSceneBlockSourceGeometryEntrypointV1 ||
+        !geometry.source) {
+        return;
+    }
+
+    const auto assets = openrc::load_rac_level_moby_assets_v1(
+        arguments.disc_image,
+        arguments.level_id,
+        make_moby_asset_limits());
+    constexpr openrc::runtime::MobySceneGeometryLimitsV1 moby_limits{
+        4096U,
+        65'536U,
+        kMaximumAggregateVertices,
+        kMaximumAggregateTriangleIndices,
+        kMaximumAggregateVertices,
+        kMaximumAggregateTriangleIndices,
+    };
+    auto moby = openrc::runtime::build_moby_scene_geometry_v1(
+        assets.models,
+        assets.gameplay.static_mobies,
+        openrc::runtime::MobySceneCoordinateDomainV1::
+            scene_block_itof0_units,
+        moby_limits);
+    geometry.moby_model_count = moby.stats.model_count;
+    geometry.moby_rendered_model_count = moby.stats.rendered_model_count;
+    geometry.moby_placement_count = moby.stats.placement_count;
+    geometry.moby_rendered_placement_count =
+        moby.stats.rendered_placement_count;
+    geometry.moby_animated_placement_count =
+        moby.stats.animated_model_placement_count;
+    geometry.moby_missing_or_empty_placement_count =
+        moby.stats.missing_model_placement_count +
+        moby.stats.empty_model_placement_count;
+    if (!moby.geometry) {
+        return;
+    }
+    geometry.moby_triangle_count = moby.geometry->emitted_triangle_count;
+    std::array<openrc::runtime::SceneGeometry3dV1, 2U> batches{
+        std::move(*geometry.source),
+        std::move(*moby.geometry),
+    };
+    constexpr openrc::runtime::SceneGeometryMergeLimitsV1 merge_limits{
+        kMaximumAggregateVertices,
+        kMaximumAggregateTriangleIndices,
+    };
+    geometry.source = openrc::runtime::merge_scene_geometries_3d_v1(
+        batches, merge_limits);
+}
+
 void refresh_window_title(const HWND window, const WindowState& state) {
     if (!state.renderer) {
         return;
     }
     const auto suffix = state.renderer->is_3d_view()
-        ? L" - recovered source 3D (debug orbit)"
+        ? L" - recovered level 3D (debug orbit)"
         : L" - decoded GS output (2D)";
     SetWindowTextW(window, (state.base_title + suffix).c_str());
 }
@@ -705,8 +806,12 @@ LRESULT CALLBACK window_procedure(
         }
         const auto non_drawing_record_count =
             geometry.total_record_count - geometry.raster_record_count;
-        const auto source_triangle_count = geometry.source
+        const auto total_source_triangle_count = geometry.source
             ? geometry.source->emitted_triangle_count
+            : 0U;
+        const auto source_triangle_count =
+            total_source_triangle_count >= geometry.moby_triangle_count
+            ? total_source_triangle_count - geometry.moby_triangle_count
             : 0U;
         return std::wstring(L"OpenRC - Level ") +
             std::to_wstring(arguments.level_id) +
@@ -715,7 +820,11 @@ LRESULT CALLBACK window_procedure(
             std::to_wstring(geometry.unavailable_source_record_count) +
             L", non-drawing " +
             std::to_wstring(non_drawing_record_count) + L", triangles " +
-            std::to_wstring(source_triangle_count) + L" source / " +
+            std::to_wstring(source_triangle_count) + L" source + " +
+            std::to_wstring(geometry.moby_triangle_count) +
+            L" static-Moby, placements " +
+            std::to_wstring(geometry.moby_rendered_placement_count) + L"/" +
+            std::to_wstring(geometry.moby_placement_count) + L", " +
             std::to_wstring(geometry.raster.emitted_triangle_count) + L" GS";
     }
     return std::wstring(L"OpenRC - Level ") +
@@ -801,7 +910,8 @@ int WINAPI wWinMain(
             return 0;
         }
 
-        const auto geometry = load_scene_geometry(arguments);
+        auto geometry = load_scene_geometry(arguments);
+        attach_static_moby_geometry(arguments, geometry);
         WindowState state;
         state.base_title = make_window_title(arguments, geometry);
         const auto window = create_runtime_window(

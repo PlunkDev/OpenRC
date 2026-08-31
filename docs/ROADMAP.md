@@ -91,8 +91,12 @@ This roadmap describes technical milestones rather than release dates.
   local/shared `RacMobyClassV1` core on all 19 levels
 - [x] recover regular high/low Moby packet-local vertices, texture switches,
   strips, and triangle topology across the complete PAL level corpus
-- [ ] parse and classify terrain, collision, model textures, skeletal bind
-  poses, and animation transforms
+- [x] resolve the 512-entry vertex cache and texture state across complete
+  high/low LOD packet sequences on all 19 levels
+- [x] load and transform static non-animated high-LOD Moby placements into the
+  native Veldin debug view
+- [ ] parse and classify terrain, collision, metal/bangle geometry, model
+  textures, skeletal bind poses, and animation transforms
 - [ ] render a classified, textured Veldin scene in a native window
 - [ ] compare geometry and transforms with reference captures
 

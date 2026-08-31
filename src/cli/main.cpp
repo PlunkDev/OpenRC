@@ -1,3 +1,5 @@
+#include "moby_scene_geometry.hpp"
+
 #include "openrc/boundary_table.hpp"
 #include "openrc/companion_wad_index.hpp"
 #include "openrc/disc.hpp"
@@ -16,6 +18,7 @@
 #include "openrc/rac_gameplay_bank.hpp"
 #include "openrc/rac_level_core.hpp"
 #include "openrc/rac_moby_class.hpp"
+#include "openrc/rac_moby_model_geometry.hpp"
 #include "openrc/rac_moby_packet_geometry.hpp"
 #include "openrc/scene_animation_bank.hpp"
 #include "openrc/scene_block_directory.hpp"
@@ -113,6 +116,17 @@ constexpr std::uint64_t kMaximumCliElfBytes = 64U * 1024U * 1024U;
 constexpr std::size_t kMaximumCliDvpVuListItems = 128U;
 constexpr std::size_t kMapArtFirstGlobalSlot = 259;
 constexpr std::size_t kPs2SaveBundleGlobalSlot = 1;
+constexpr openrc::RacMobyModelGeometryLimitsV1 kCliMobyModelGeometryLimits{
+    {kMaximumCliDecodedWadBytes,
+     4096U,
+     4096U,
+     4096U,
+     1'000'000U,
+     4096U,
+     1'000'000U},
+    4096U,
+    1'000'000U,
+    1'000'000U};
 
 void print_usage() {
     std::cout
@@ -147,6 +161,8 @@ void print_usage() {
         << "  openrc-cli scene-block-vu-run <disc.iso> <elf> <level-id> <record> <entry-pair> [output.tga]\n"
         << "                                                    Execute and optionally export an auto-fit wireframe\n"
         << "  openrc-cli level-core <disc.iso> <level-id>      Link RAC1 model classes, assets, and placements\n"
+        << "  openrc-cli level-moby-scene <disc.iso> <level-id>\n"
+        << "                                                    Build static high-LOD Moby scene geometry\n"
         << "  openrc-cli companion-wads <disc.iso> <level-id>  Inspect the terminal common WAD index\n"
         << "  openrc-cli wad-bundle <disc.iso> <lba> <sectors> Inspect a WadBundleV1 (64 MiB cap)\n"
         << "  openrc-cli twofip <disc.iso> <global-slot> [output.tga]\n"
@@ -2040,6 +2056,18 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                     moby.sequence_offsets.begin(),
                     moby.sequence_offsets.end(),
                     [](const std::uint32_t offset) { return offset != 0U; }));
+            const auto high_geometry =
+                openrc::assemble_rac_moby_model_geometry_v1(
+                    captured.bytes,
+                    moby,
+                    openrc::RacMobyLodV1::high,
+                    kCliMobyModelGeometryLimits);
+            const auto low_geometry =
+                openrc::assemble_rac_moby_model_geometry_v1(
+                    captured.bytes,
+                    moby,
+                    openrc::RacMobyLodV1::low,
+                    kCliMobyModelGeometryLimits);
             std::cout
                 << "OpenRC RacMobyClassV1 report\n"
                 << "Unique index:          " << *requested_unique << '\n'
@@ -2062,7 +2090,19 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 << "Bounding sphere:       " << moby.bounding_sphere[0U] << ", "
                 << moby.bounding_sphere[1U] << ", "
                 << moby.bounding_sphere[2U] << ", radius "
-                << moby.bounding_sphere[3U] << "\n\nPackets:\n";
+                << moby.bounding_sphere[3U] << '\n'
+                << "Regular transfer verts: "
+                << high_geometry.vertices.size() +
+                       low_geometry.vertices.size()
+                << '\n'
+                << "Regular triangles:     "
+                << high_geometry.triangles.size() +
+                       low_geometry.triangles.size()
+                << '\n'
+                << "Inherited duplicates:  "
+                << high_geometry.inherited_duplicate_count +
+                       low_geometry.inherited_duplicate_count
+                << " (resolved)\n\nPackets:\n";
             for (std::size_t index = 0U; index < moby.packets.size(); ++index) {
                 const auto& packet = moby.packets[index];
                 const char* kind = "metal";
@@ -3824,6 +3864,109 @@ int run(const std::vector<std::filesystem::path>& arguments) {
         }
     }
 
+    if (command == "level-moby-scene") {
+        if (arguments.size() != 3U) {
+            std::cerr
+                << "error: level-moby-scene expects an ISO path and a level ID\n";
+            return kUsageError;
+        }
+        const auto level_value = parse_decimal_argument(arguments[2]);
+        if (!level_value || *level_value >= openrc::kDiscTocLevelCount) {
+            std::cerr << "error: level ID must be a decimal number from 0 to "
+                      << (openrc::kDiscTocLevelCount - 1U) << '\n';
+            return kUsageError;
+        }
+        const auto level_id = static_cast<std::uint32_t>(*level_value);
+
+        try {
+            const auto assets = openrc::load_rac_level_moby_assets_v1(
+                arguments[1],
+                level_id,
+                openrc::RacLevelMobyAssetLimitsV1{
+                    kMaximumCliDecodedWadBytes,
+                    kMaximumCliDecodedWadBytes,
+                    kMaximumCliDecodedWadBytes,
+                    4096U,
+                    65'536U,
+                    1'000'000U,
+                    1'000'000U,
+                    openrc::RacLevelCoreLimitsV1{
+                        kMaximumCliDecodedWadBytes,
+                        kMaximumCliDecodedWadBytes,
+                        kMaximumCliDecodedWadBytes,
+                        4096U,
+                        255U,
+                        4096U},
+                    openrc::RacGameplayBankLimitsV1{
+                        kMaximumCliDecodedWadBytes},
+                    openrc::RacMobyClassLimitsV1{
+                        kMaximumCliDecodedWadBytes, false},
+                    openrc::RacMobyClassLimitsV1{
+                        kMaximumCliDecodedWadBytes, true},
+                    kCliMobyModelGeometryLimits});
+            const auto scene = openrc::runtime::build_moby_scene_geometry_v1(
+                assets.models,
+                assets.gameplay.static_mobies,
+                openrc::runtime::MobySceneCoordinateDomainV1::world_units,
+                openrc::runtime::MobySceneGeometryLimitsV1{
+                    4096U,
+                    65'536U,
+                    1'000'000U,
+                    3'000'000U,
+                    1'000'000U,
+                    3'000'000U});
+            std::cout
+                << "OpenRC static RAC1 Moby scene report\n"
+                << "Image:                  "
+                << openrc::path_to_utf8(arguments[1]) << '\n'
+                << "Level ID:               " << level_id << '\n'
+                << "Models local/shared:    "
+                << assets.local_model_count << '/'
+                << assets.shared_model_count << '\n'
+                << "External/zero models:   "
+                << assets.external_model_count << '\n'
+                << "Model packets/vertices/triangles: "
+                << assets.total_model_packet_count << '/'
+                << assets.total_model_vertex_count << '/'
+                << assets.total_model_triangle_count << '\n'
+                << "Static placements:      "
+                << scene.stats.placement_count << '\n'
+                << "Rendered classes:       "
+                << scene.stats.rendered_model_count << '\n'
+                << "Rendered placements:    "
+                << scene.stats.rendered_placement_count << '\n'
+                << "Animated placements:    "
+                << scene.stats.animated_model_placement_count
+                << " (skipped; bind transforms pending)\n"
+                << "Missing model placements: "
+                << scene.stats.missing_model_placement_count << '\n'
+                << "Empty model placements: "
+                << scene.stats.empty_model_placement_count << '\n';
+            if (scene.geometry) {
+                std::cout
+                    << "Output vertices:        "
+                    << scene.geometry->vertices.size() << '\n'
+                    << "Output triangles:       "
+                    << scene.geometry->emitted_triangle_count << '\n'
+                    << "Bounds X:               ["
+                    << scene.geometry->minimum_x << ", "
+                    << scene.geometry->maximum_x << "]\n"
+                    << "Bounds Y:               ["
+                    << scene.geometry->minimum_y << ", "
+                    << scene.geometry->maximum_y << "]\n"
+                    << "Bounds Z:               ["
+                    << scene.geometry->minimum_z << ", "
+                    << scene.geometry->maximum_z << "]\n";
+            } else {
+                std::cout << "Output geometry:        empty\n";
+            }
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << "error: " << error.what() << '\n';
+            return kOperationError;
+        }
+    }
+
     if (command == "level-core") {
         if (arguments.size() != 3U) {
             std::cerr
@@ -3970,12 +4113,46 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 std::uint8_t metal_packets = 0U;
                 std::uint8_t joints = 0U;
                 std::uint64_t decoded_regular_packets = 0U;
-                std::uint64_t diagnostic_vertices = 0U;
+                std::uint64_t diagnostic_source_vertices = 0U;
+                std::uint64_t transfer_vertices = 0U;
                 std::uint64_t diagnostic_triangles = 0U;
-                std::uint64_t unresolved_duplicates = 0U;
+                std::uint64_t resolved_inherited_duplicates = 0U;
             };
             std::vector<ParsedMobySummaryV1> local_models;
             std::vector<ParsedMobySummaryV1> gadget_models;
+            const auto assemble_model_lod =
+                [](const std::span<const std::byte> model_bytes,
+                   const openrc::RacMobyClassV1& model,
+                   const openrc::RacMobyLodV1 lod,
+                   const std::string& description) {
+                    try {
+                        return openrc::assemble_rac_moby_model_geometry_v1(
+                            model_bytes,
+                            model,
+                            lod,
+                            kCliMobyModelGeometryLimits);
+                    } catch (
+                        const openrc::RacMobyModelGeometryError& error) {
+                        const auto lod_name =
+                            lod == openrc::RacMobyLodV1::high ? "high" : "low";
+                        throw std::runtime_error(
+                            description + " " + lod_name +
+                            " LOD failed geometry assembly: " + error.what());
+                    }
+                };
+            const auto add_geometry_summary =
+                [](ParsedMobySummaryV1& summary,
+                   const openrc::RacMobyModelGeometryV1& geometry) {
+                    summary.decoded_regular_packets += geometry.packets.size();
+                    summary.transfer_vertices += geometry.vertices.size();
+                    summary.diagnostic_triangles += geometry.triangles.size();
+                    summary.resolved_inherited_duplicates +=
+                        geometry.inherited_duplicate_count;
+                    for (const auto& packet : geometry.packets) {
+                        summary.diagnostic_source_vertices +=
+                            packet.local_vertex_count;
+                    }
+                };
             std::uint64_t local_model_bytes = 0U;
             for (const auto& entry : core.moby_classes) {
                 if (entry.asset_range.size == 0U) {
@@ -4003,41 +4180,22 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                     model.low_lod_packet_count,
                     model.metal_packet_count,
                     model.joint_count};
-                for (std::size_t packet_index = 0U;
-                     packet_index < model.packets.size();
-                     ++packet_index) {
-                    const auto& packet = model.packets[packet_index];
-                    if (packet.kind == openrc::RacMobyPacketKindV1::metal) {
-                        continue;
-                    }
-                    try {
-                        const auto geometry =
-                            openrc::parse_rac_moby_packet_geometry_v1(
-                                model_bytes,
-                                packet,
-                                model.scale,
-                                openrc::RacMobyPacketGeometryLimitsV1{
-                                    kMaximumCliDecodedWadBytes,
-                                    4096U,
-                                    4096U,
-                                    4096U,
-                                    1'000'000U,
-                                    4096U,
-                                    1'000'000U});
-                        ++summary.decoded_regular_packets;
-                        summary.diagnostic_vertices += geometry.vertices.size();
-                        summary.diagnostic_triangles +=
-                            geometry.triangles.size();
-                        summary.unresolved_duplicates +=
-                            geometry.unresolved_duplicate_count;
-                    } catch (const openrc::RacMobyPacketGeometryError& error) {
-                        throw std::runtime_error(
-                            "Local Moby class " +
-                            std::to_string(entry.class_id) + " packet " +
-                            std::to_string(packet_index) +
-                            " failed geometry validation: " + error.what());
-                    }
-                }
+                const auto description =
+                    "Local Moby class " + std::to_string(entry.class_id);
+                add_geometry_summary(
+                    summary,
+                    assemble_model_lod(
+                        model_bytes,
+                        model,
+                        openrc::RacMobyLodV1::high,
+                        description));
+                add_geometry_summary(
+                    summary,
+                    assemble_model_lod(
+                        model_bytes,
+                        model,
+                        openrc::RacMobyLodV1::low,
+                        description));
                 local_models.push_back(summary);
             }
             std::uint64_t gadget_decoded_bytes = 0U;
@@ -4059,12 +4217,30 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                     decoded.bytes,
                     openrc::RacMobyClassLimitsV1{
                         kMaximumCliDecodedWadBytes, true});
-                gadget_models.push_back(ParsedMobySummaryV1{
+                ParsedMobySummaryV1 summary{
                     entry.class_id,
                     model.high_lod_packet_count,
                     model.low_lod_packet_count,
                     model.metal_packet_count,
-                    model.joint_count});
+                    model.joint_count};
+                const auto description =
+                    "Shared gadget Moby class " +
+                    std::to_string(entry.class_id);
+                add_geometry_summary(
+                    summary,
+                    assemble_model_lod(
+                        decoded.bytes,
+                        model,
+                        openrc::RacMobyLodV1::high,
+                        description));
+                add_geometry_summary(
+                    summary,
+                    assemble_model_lod(
+                        decoded.bytes,
+                        model,
+                        openrc::RacMobyLodV1::low,
+                        description));
+                gadget_models.push_back(summary);
             }
 
             if (local_models.size() > core.moby_classes.size() ||
@@ -4080,15 +4256,25 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 instance_counts.end(),
                 [](const std::uint32_t count) { return count != 0U; }));
             std::uint64_t decoded_regular_packets = 0U;
-            std::uint64_t diagnostic_vertices = 0U;
+            std::uint64_t diagnostic_source_vertices = 0U;
+            std::uint64_t transfer_vertices = 0U;
             std::uint64_t diagnostic_triangles = 0U;
-            std::uint64_t unresolved_duplicates = 0U;
-            for (const auto& model : local_models) {
-                decoded_regular_packets += model.decoded_regular_packets;
-                diagnostic_vertices += model.diagnostic_vertices;
-                diagnostic_triangles += model.diagnostic_triangles;
-                unresolved_duplicates += model.unresolved_duplicates;
-            }
+            std::uint64_t resolved_inherited_duplicates = 0U;
+            const auto add_totals =
+                [&](const std::vector<ParsedMobySummaryV1>& models) {
+                    for (const auto& model : models) {
+                        decoded_regular_packets +=
+                            model.decoded_regular_packets;
+                        diagnostic_source_vertices +=
+                            model.diagnostic_source_vertices;
+                        transfer_vertices += model.transfer_vertices;
+                        diagnostic_triangles += model.diagnostic_triangles;
+                        resolved_inherited_duplicates +=
+                            model.resolved_inherited_duplicates;
+                    }
+                };
+            add_totals(local_models);
+            add_totals(gadget_models);
             std::cout
                 << "OpenRC RacLevelCoreIndexV1 report\n"
                 << "Image:                 "
@@ -4114,10 +4300,12 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 << "Gameplay class link:   exact count and order\n\n"
                 << "Regular mesh packets:  " << decoded_regular_packets
                 << '\n'
-                << "Packet-local vertices: " << diagnostic_vertices << '\n'
+                << "Source vertices:       " << diagnostic_source_vertices
+                << '\n'
+                << "Transfer vertices:     " << transfer_vertices << '\n'
                 << "Decoded triangles:     " << diagnostic_triangles << '\n'
-                << "Inherited duplicates:  " << unresolved_duplicates
-                << " (preserved unresolved)\n\n"
+                << "Inherited duplicates:  " << resolved_inherited_duplicates
+                << " (resolved)\n\n"
                 << "Local model cores:\n";
             for (const auto& model : local_models) {
                 const auto class_entry = std::find_if(
