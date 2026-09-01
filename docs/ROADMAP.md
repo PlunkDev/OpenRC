@@ -95,8 +95,10 @@ This roadmap describes technical milestones rather than release dates.
   high/low LOD packet sequences on all 19 levels
 - [x] load and transform static non-animated high-LOD Moby placements into the
   native Veldin debug view
-- [ ] parse and classify terrain, collision, metal/bangle geometry, model
-  textures, skeletal bind poses, and animation transforms
+- [x] decode every RAC1 Moby base-texture bank, normalize its PSMT8 CLUT/alpha,
+  and preserve local-slot to global-texture material batches and UVs
+- [ ] parse and classify terrain, collision, metal/bangle geometry, skeletal
+  bind poses, and animation transforms
 - [ ] render a classified, textured Veldin scene in a native window
 - [ ] compare geometry and transforms with reference captures
 

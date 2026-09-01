@@ -2,9 +2,11 @@
 
 #include "openrc/rac_gameplay_bank.hpp"
 #include "openrc/rac_level_core.hpp"
+#include "openrc/rac_level_moby_texture.hpp"
 #include "openrc/rac_moby_class.hpp"
 #include "openrc/rac_moby_model_geometry.hpp"
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <stdexcept>
@@ -22,6 +24,8 @@ struct RacLevelMobyModelV1 {
   RacLevelMobyModelSourceV1 source =
       RacLevelMobyModelSourceV1::local_level_core;
   std::uint8_t joint_count = 0U;
+  std::array<std::uint8_t, 16U> texture_slots{};
+  std::uint8_t used_texture_slot_count = 0U;
   RacMobyModelGeometryV1 high_lod;
 };
 
@@ -38,11 +42,13 @@ struct RacLevelMobyAssetLimitsV1 {
   RacMobyClassLimitsV1 local_class;
   RacMobyClassLimitsV1 shared_class;
   RacMobyModelGeometryLimitsV1 model_geometry;
+  RacLevelMobyTextureLimitsV1 textures;
 };
 
 struct RacLevelMobyAssetsV1 {
   std::uint32_t level_id = 0U;
   RacGameplayBankV1 gameplay;
+  RacLevelMobyTextureBankV1 textures;
   std::vector<RacLevelMobyModelV1> models;
   std::uint64_t local_model_count = 0U;
   std::uint64_t shared_model_count = 0U;

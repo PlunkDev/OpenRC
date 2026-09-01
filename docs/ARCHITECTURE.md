@@ -230,14 +230,21 @@ and topology. Positions remain explicitly packet-local at this layer. The LOD
 assembler executes packets in table order, carrying the 512-entry vertex cache
 and current texture separately for high and low LOD; duplicate vertices retain
 their transfer-local UV and exact source provenance. The level asset loader
-links local/shared ownership back to gameplay placements, and the runtime's
-static builder applies `T * S * Rz * Ry * Rx`. Its coordinate-domain policy is
+links local/shared ownership back to gameplay placements. It also slices raw
+GS RAM from primary-extent-0 subrange 3 and decodes every 0x10-byte Moby
+texture record against the shared-texture block in decompressed subrange 10.
+Base pixels remain linear PSMT8 indices; the decoder swaps GS CLUT address bits
+3/4, expands PS2 alpha, and owns both indexed and RGBA output. Each model keeps
+its 16 local material slots, and the static scene builder retains UVs while
+resolving every triangle to a contiguous global-texture batch or an explicit
+untextured fallback. The runtime's static builder applies
+`T * S * Rz * Ry * Rx`. Its coordinate-domain policy is
 explicit: CLI diagnostics retain world units, while the current source viewer
 converts Moby output to 1,024 raw SceneBlock ITOF0 units per world unit before
 the bounded merge. Model loading and preparation also have aggregate workspace
 caps rather than multiplying per-model limits by the class count.
-Metal and bangle geometry, texture images, skeletal bind/animation, and the
-original visibility policy remain separate rather than being guessed.
+Metal and bangle geometry, D3D11 texture sampling, skeletal bind/animation,
+and the original visibility policy remain separate rather than being guessed.
 MapArtV1 composes three palette-compatible images without assigning gameplay
 meaning to the remaining opaque regions. The PS2D parser likewise retains
 unknown header words and tagged payload keys rather than treating guesses as

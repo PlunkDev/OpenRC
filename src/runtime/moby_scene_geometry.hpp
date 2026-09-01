@@ -9,6 +9,7 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
+#include <vector>
 
 namespace openrc::runtime {
 
@@ -38,8 +39,21 @@ struct MobySceneGeometryStatsV1 {
     std::uint64_t empty_model_placement_count = 0U;
 };
 
+// One contiguous run in the instantiated triangle-index buffer. The first
+// field is a triangle ordinal; index_count is therefore always divisible by
+// three. An empty texture index is the explicit untextured fallback material.
+struct MobySceneMaterialBatchV1 {
+    std::uint64_t first_triangle = 0U;
+    std::uint64_t index_count = 0U;
+    std::optional<std::uint32_t> global_texture_index;
+
+    [[nodiscard]] bool operator==(
+        const MobySceneMaterialBatchV1&) const = default;
+};
+
 struct MobySceneGeometryV1 {
     std::optional<SceneGeometry3dV1> geometry;
+    std::vector<MobySceneMaterialBatchV1> material_batches;
     MobySceneGeometryStatsV1 stats;
     MobySceneCoordinateDomainV1 coordinate_domain =
         MobySceneCoordinateDomainV1::world_units;

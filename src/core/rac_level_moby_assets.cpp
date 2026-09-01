@@ -11,6 +11,7 @@
 #include <limits>
 #include <span>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -19,6 +20,7 @@ namespace openrc {
 namespace {
 
 constexpr std::size_t kLevelCoreIndexSubrangeV1 = 2U;
+constexpr std::size_t kLevelCoreGsRamSubrangeV1 = 3U;
 constexpr std::size_t kLevelCoreAssetSubrangeV1 = 10U;
 
 [[noreturn]] void fail(const std::string &message) {
@@ -51,7 +53,16 @@ void validate_limits(const RacLevelMobyAssetLimitsV1 &limits) {
       packet.max_triangles == 0U ||
       limits.model_geometry.max_packets == 0U ||
       limits.model_geometry.max_output_vertices == 0U ||
-      limits.model_geometry.max_output_triangles == 0U) {
+      limits.model_geometry.max_output_triangles == 0U ||
+      limits.textures.max_texture_table_bytes == 0U ||
+      limits.textures.max_decoded_core_bytes == 0U ||
+      limits.textures.max_gs_ram_bytes == 0U ||
+      limits.textures.max_textures == 0U ||
+      limits.textures.max_width == 0U ||
+      limits.textures.max_height == 0U ||
+      limits.textures.max_pixels_per_texture == 0U ||
+      limits.textures.max_total_pixels == 0U ||
+      limits.textures.max_total_rgba_bytes == 0U) {
     fail("RAC1 level Moby asset limits must all be non-zero");
   }
   if (limits.local_class.require_shared_bank_byte_b_ff ||
@@ -196,11 +207,14 @@ RacLevelMobyAssetsV1 load_rac_level_moby_assets_v1(
 
   const auto &index_subrange = level_assets->primary_extent0
                                    .subranges[kLevelCoreIndexSubrangeV1];
+  const auto &gs_ram_subrange = level_assets->primary_extent0
+                                    .subranges[kLevelCoreGsRamSubrangeV1];
   const auto &asset_subrange = level_assets->primary_extent0
                                    .subranges[kLevelCoreAssetSubrangeV1];
-  if (index_subrange.byte_size == 0U || asset_subrange.byte_size == 0U ||
+  if (index_subrange.byte_size == 0U || gs_ram_subrange.byte_size == 0U ||
+      asset_subrange.byte_size == 0U ||
       asset_subrange.signature != DiscTocSignature::wad) {
-    fail("The RAC1 level-core index or asset WadV1 is absent");
+    fail("The RAC1 level-core index, GS RAM, or asset WadV1 is absent");
   }
   const auto &primary_extent = level_layout->primary_extents.front();
   const auto primary_bytes = read_disc_extent(
@@ -209,12 +223,20 @@ RacLevelMobyAssetsV1 load_rac_level_moby_assets_v1(
   const auto primary_span = std::span<const std::byte>(primary_bytes);
   const auto index_bytes = bounded_subrange(
       primary_span, index_subrange, "The RAC1 level-core index");
+  const auto raw_gs_ram = bounded_subrange(
+      primary_span, gs_ram_subrange, "The RAC1 level-core GS RAM");
   const auto encoded_assets = bounded_subrange(
       primary_span, asset_subrange, "The RAC1 level-core asset WadV1");
   const auto decoded_assets =
       decode_wad_bytes(encoded_assets, limits.max_decoded_wad_bytes);
   const auto core = parse_rac_level_core_index_v1(
       index_bytes, encoded_assets, decoded_assets.bytes, limits.level_core);
+  const auto texture_table_bytes = index_bytes.subspan(
+      static_cast<std::size_t>(core.moby_texture_table_range.offset),
+      static_cast<std::size_t>(core.moby_texture_table_range.size));
+  auto textures = decode_rac_level_moby_texture_bank_v1(
+      texture_table_bytes, decoded_assets.bytes, raw_gs_ram,
+      core.header.textures_base_offset, limits.textures);
 
   const auto &gameplay_ref = level_assets->primary_wads.front();
   if (gameplay_ref.signature != DiscTocSignature::wad ||
@@ -238,11 +260,25 @@ RacLevelMobyAssetsV1 load_rac_level_moby_assets_v1(
 
   RacLevelMobyAssetsV1 result;
   result.level_id = level_id;
+  result.textures = std::move(textures);
   if (core.moby_classes.size() > limits.max_models ||
       core.moby_classes.size() > result.models.max_size()) {
     fail("The RAC1 level Moby model count exceeds its output limit");
   }
   result.models.reserve(core.moby_classes.size());
+  std::unordered_map<std::uint32_t,
+                     const RacLevelCoreMobyClassEntryV1 *>
+      class_entries;
+  if (core.moby_classes.size() > class_entries.max_size()) {
+    fail("The RAC1 level Moby class metadata lookup exceeds the host container");
+  }
+  class_entries.reserve(core.moby_classes.size());
+  for (const auto &entry : core.moby_classes) {
+    const auto class_id = static_cast<std::uint32_t>(entry.class_id);
+    if (!class_entries.emplace(class_id, &entry).second) {
+      fail("The RAC1 level-core contains duplicate Moby class metadata");
+    }
+  }
   std::unordered_set<std::uint32_t> loaded_class_ids;
   if (core.moby_classes.size() > loaded_class_ids.max_size()) {
     fail("The RAC1 level Moby class lookup exceeds the host container");
@@ -282,6 +318,8 @@ RacLevelMobyAssetsV1 load_rac_level_moby_assets_v1(
         class_id,
         RacLevelMobyModelSourceV1::local_level_core,
         model.joint_count,
+        entry.texture_slots,
+        entry.used_texture_slot_count,
         std::move(high_geometry)});
     ++result.local_model_count;
     result.local_model_bytes += entry.asset_range.size;
@@ -313,6 +351,10 @@ RacLevelMobyAssetsV1 load_rac_level_moby_assets_v1(
            " failed validation: " + error.what());
     }
     const auto class_id = static_cast<std::uint32_t>(entry.class_id);
+    const auto class_entry = class_entries.find(class_id);
+    if (class_entry == class_entries.end()) {
+      fail("A shared RAC1 Moby class has no level-core texture slots");
+    }
     if (!loaded_class_ids.insert(class_id).second) {
       fail("A shared RAC1 Moby class duplicates another loaded class");
     }
@@ -325,6 +367,8 @@ RacLevelMobyAssetsV1 load_rac_level_moby_assets_v1(
         class_id,
         RacLevelMobyModelSourceV1::shared_gadget,
         model.joint_count,
+        class_entry->second->texture_slots,
+        class_entry->second->used_texture_slot_count,
         std::move(high_geometry)});
     ++result.shared_model_count;
   }

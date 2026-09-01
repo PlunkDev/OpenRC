@@ -127,6 +127,40 @@ constexpr openrc::RacMobyModelGeometryLimitsV1 kCliMobyModelGeometryLimits{
     4096U,
     1'000'000U,
     1'000'000U};
+constexpr openrc::RacLevelMobyTextureLimitsV1 kCliMobyTextureLimits{
+    kMaximumCliDecodedWadBytes,
+    kMaximumCliDecodedWadBytes,
+    kMaximumCliDecodedWadBytes,
+    255U,
+    4096U,
+    4096U,
+    kMaximumCliTwoFipPixels,
+    kMaximumCliTwoFipPixels,
+    kMaximumCliTwoFipPixels * 4U};
+
+[[nodiscard]] openrc::RacLevelMobyAssetLimitsV1
+make_cli_moby_asset_limits() {
+    return openrc::RacLevelMobyAssetLimitsV1{
+        kMaximumCliDecodedWadBytes,
+        kMaximumCliDecodedWadBytes,
+        kMaximumCliDecodedWadBytes,
+        4096U,
+        65'536U,
+        1'000'000U,
+        1'000'000U,
+        openrc::RacLevelCoreLimitsV1{
+            kMaximumCliDecodedWadBytes,
+            kMaximumCliDecodedWadBytes,
+            kMaximumCliDecodedWadBytes,
+            4096U,
+            255U,
+            4096U},
+        openrc::RacGameplayBankLimitsV1{kMaximumCliDecodedWadBytes},
+        openrc::RacMobyClassLimitsV1{kMaximumCliDecodedWadBytes, false},
+        openrc::RacMobyClassLimitsV1{kMaximumCliDecodedWadBytes, true},
+        kCliMobyModelGeometryLimits,
+        kCliMobyTextureLimits};
+}
 
 void print_usage() {
     std::cout
@@ -163,6 +197,8 @@ void print_usage() {
         << "  openrc-cli level-core <disc.iso> <level-id>      Link RAC1 model classes, assets, and placements\n"
         << "  openrc-cli level-moby-scene <disc.iso> <level-id>\n"
         << "                                                    Build static high-LOD Moby scene geometry\n"
+        << "  openrc-cli level-moby-texture <disc.iso> <level-id> <texture> [output.tga]\n"
+        << "                                                    Decode/export one level Moby texture\n"
         << "  openrc-cli companion-wads <disc.iso> <level-id>  Inspect the terminal common WAD index\n"
         << "  openrc-cli wad-bundle <disc.iso> <lba> <sectors> Inspect a WadBundleV1 (64 MiB cap)\n"
         << "  openrc-cli twofip <disc.iso> <global-slot> [output.tga]\n"
@@ -3864,6 +3900,77 @@ int run(const std::vector<std::filesystem::path>& arguments) {
         }
     }
 
+    if (command == "level-moby-texture") {
+        if (arguments.size() != 4U && arguments.size() != 5U) {
+            std::cerr
+                << "error: level-moby-texture expects an ISO path, level ID, "
+                   "texture index, and optional output TGA\n";
+            return kUsageError;
+        }
+        const auto level_value = parse_decimal_argument(arguments[2]);
+        if (!level_value || *level_value >= openrc::kDiscTocLevelCount) {
+            std::cerr << "error: level ID must be a decimal number from 0 to "
+                      << (openrc::kDiscTocLevelCount - 1U) << '\n';
+            return kUsageError;
+        }
+        const auto texture_value = parse_decimal_argument(arguments[3]);
+        if (!texture_value) {
+            std::cerr << "error: texture index must be a decimal number\n";
+            return kUsageError;
+        }
+
+        try {
+            const auto level_id = static_cast<std::uint32_t>(*level_value);
+            const auto assets = openrc::load_rac_level_moby_assets_v1(
+                arguments[1], level_id, make_cli_moby_asset_limits());
+            if (*texture_value >= assets.textures.textures.size()) {
+                throw std::runtime_error(
+                    "The texture index exceeds this level's Moby texture bank");
+            }
+            const auto& texture = assets.textures.textures[
+                static_cast<std::size_t>(*texture_value)];
+            std::cout
+                << "OpenRC RAC1 level Moby texture report\n"
+                << "Image:                  "
+                << openrc::path_to_utf8(arguments[1]) << '\n'
+                << "Level ID:               " << level_id << '\n'
+                << "Texture index/count:    " << texture.global_index << '/'
+                << assets.textures.textures.size() << '\n'
+                << "Dimensions:             " << texture.entry.width << 'x'
+                << texture.entry.height << '\n'
+                << "Type/mipmap/trailing:   " << texture.entry.type << '/'
+                << texture.entry.mipmap_block << '/'
+                << texture.entry.trailing_block << '\n'
+                << "Pixel range:            "
+                << hexadecimal(texture.entry.pixel_range.offset, 8) << " + "
+                << texture.entry.pixel_range.size << " bytes\n"
+                << "Palette range:          "
+                << hexadecimal(texture.entry.palette_range.offset, 8) << " + "
+                << texture.entry.palette_range.size << " bytes\n"
+                << "Bank pixels/RGBA bytes: "
+                << assets.textures.total_pixel_count << '/'
+                << assets.textures.total_rgba_bytes << '\n';
+
+            if (arguments.size() == 5U) {
+                constexpr auto kMaximumTgaBytes =
+                    kMaximumCliTwoFipPixels * 4U +
+                    openrc::kRacLevelMobyTextureTgaHeaderBytesV1;
+                const auto tga =
+                    openrc::encode_rac_level_moby_texture_tga_v1(
+                        texture, kMaximumTgaBytes);
+                write_new_binary_file(arguments[4], tga.bytes);
+                std::cout
+                    << "TGA output:             "
+                    << openrc::path_to_utf8(arguments[4]) << '\n'
+                    << "TGA bytes:              " << tga.bytes.size() << '\n';
+            }
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << "error: " << error.what() << '\n';
+            return kOperationError;
+        }
+    }
+
     if (command == "level-moby-scene") {
         if (arguments.size() != 3U) {
             std::cerr
@@ -3882,28 +3989,7 @@ int run(const std::vector<std::filesystem::path>& arguments) {
             const auto assets = openrc::load_rac_level_moby_assets_v1(
                 arguments[1],
                 level_id,
-                openrc::RacLevelMobyAssetLimitsV1{
-                    kMaximumCliDecodedWadBytes,
-                    kMaximumCliDecodedWadBytes,
-                    kMaximumCliDecodedWadBytes,
-                    4096U,
-                    65'536U,
-                    1'000'000U,
-                    1'000'000U,
-                    openrc::RacLevelCoreLimitsV1{
-                        kMaximumCliDecodedWadBytes,
-                        kMaximumCliDecodedWadBytes,
-                        kMaximumCliDecodedWadBytes,
-                        4096U,
-                        255U,
-                        4096U},
-                    openrc::RacGameplayBankLimitsV1{
-                        kMaximumCliDecodedWadBytes},
-                    openrc::RacMobyClassLimitsV1{
-                        kMaximumCliDecodedWadBytes, false},
-                    openrc::RacMobyClassLimitsV1{
-                        kMaximumCliDecodedWadBytes, true},
-                    kCliMobyModelGeometryLimits});
+                make_cli_moby_asset_limits());
             const auto scene = openrc::runtime::build_moby_scene_geometry_v1(
                 assets.models,
                 assets.gameplay.static_mobies,
@@ -3925,6 +4011,9 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 << assets.shared_model_count << '\n'
                 << "External/zero models:   "
                 << assets.external_model_count << '\n'
+                << "Moby textures/pixels:   "
+                << assets.textures.textures.size() << '/'
+                << assets.textures.total_pixel_count << '\n'
                 << "Model packets/vertices/triangles: "
                 << assets.total_model_packet_count << '/'
                 << assets.total_model_vertex_count << '/'
@@ -3935,6 +4024,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 << scene.stats.rendered_model_count << '\n'
                 << "Rendered placements:    "
                 << scene.stats.rendered_placement_count << '\n'
+                << "Material batches:       "
+                << scene.material_batches.size() << '\n'
                 << "Animated placements:    "
                 << scene.stats.animated_model_placement_count
                 << " (skipped; bind transforms pending)\n"

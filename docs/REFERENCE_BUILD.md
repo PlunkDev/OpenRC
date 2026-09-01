@@ -669,6 +669,17 @@ placements. Including its shared gadgets, 1,176 regular packets contain 91,136
 source records, 102,855 transfer vertices, 104,957 reconstructed triangles,
 and 8,477 resolved cross-packet duplicate transfers.
 
+Primary-extent-0 subrange 3 is the raw GS RAM image paired with the decoded
+subrange-10 core. Across all 19 levels, the 3,896 Moby texture records decode
+to 42,187,520 linear PSMT8 base pixels and 168,750,080 RGBA bytes. Every
+`textures_base_offset + data_offset + width * height` envelope and every
+`palette_block * 0x100 + 0x400` CLUT envelope is in range. The decoder swaps
+GS CLUT address bits 3/4, doubles PS2 alpha below `0x80` and saturates the rest,
+but performs no pixel unswizzle or vertical flip for RAC1. Veldin contributes
+124 images and 1,592,320 base pixels; texture 0 is a valid 256x256 Ratchet
+atlas. Packet texture numbers remain local class slots and are resolved through
+each class's 16-byte slot map before scene material batches are formed.
+
 The production static-scene path assembles only high LOD for classes without
 joints, compacts vertices actually referenced by triangles, and applies the
 verified instance matrix order `T * S * Rz * Ry * Rx`; class scale was already
@@ -680,8 +691,8 @@ jointed models and ten use external/zero ownership, so both groups are skipped
 rather than drawn incorrectly. Across all levels, the same bounded path builds
 9,122 placements into 3,214,949 vertices and 2,628,565 triangles, while 6,237
 animated and 873 external/zero placements remain pending. Metal/bangle meshes,
-texture images, skeletal bind/animation transforms, and original visibility
-remain separate work.
+D3D11 texture sampling, skeletal bind/animation transforms, and original
+visibility remain separate work.
 
 The CLI keeps those reported bounds in world units. The current recovered
 SceneBlock source batch deliberately preserves the signed integer inputs to

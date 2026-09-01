@@ -35,6 +35,9 @@ void expect_near(const float actual,
     const bool animated = false) {
     openrc::RacLevelMobyModelV1 model;
     model.class_id = class_id;
+    model.texture_slots.fill(openrc::kRacLevelCoreUnusedTextureSlotV1);
+    model.texture_slots[0U] = 17U;
+    model.used_texture_slot_count = 1U;
     model.high_lod.lod = openrc::RacMobyLodV1::high;
     model.high_lod.requires_bind_transforms = animated;
     for (const auto& position :
@@ -45,6 +48,8 @@ void expect_near(const float actual,
              std::array<float, 3U>{1000.0F, 1000.0F, 1000.0F}}) {
         openrc::RacMobyModelVertexV1 vertex;
         vertex.diagnostic_position = position;
+        vertex.texture_coordinate = {
+            position[0U] + 0.125F, position[1U] + 0.25F};
         model.high_lod.vertices.push_back(vertex);
     }
     model.high_lod.triangles.push_back(
@@ -111,6 +116,16 @@ void test_static_instance_transform_and_compaction() {
                geometry.emitted_triangle_count == 2U &&
                geometry.vertices.front().rgba == UINT32_C(0xff30b0ff),
            "the instantiated Moby scene topology, compaction, or bounds are wrong");
+    expect(result.material_batches ==
+               std::vector<openrc::runtime::MobySceneMaterialBatchV1>{
+                   {0U, 6U, 17U}},
+           "equal adjacent Moby materials were not coalesced across placements");
+    expect_near(geometry.vertices[0U].u, 0.125F,
+                "the first Moby texture U coordinate was lost");
+    expect_near(geometry.vertices[0U].v, 0.25F,
+                "the first Moby texture V coordinate was lost");
+    expect_near(geometry.vertices[4U].u, 1.125F,
+                "the instanced Moby texture U coordinate was changed");
     expect_near(geometry.minimum_x, -1.0F,
                 "the instantiated Moby minimum X bound is wrong");
     expect_near(geometry.maximum_x, 12.0F,
@@ -135,6 +150,41 @@ void test_static_instance_transform_and_compaction() {
                 "the rotated Moby Y coordinate is wrong");
     expect_near(geometry.vertices[5U].x, -1.0F,
                 "the rotated Moby second X coordinate is wrong");
+}
+
+void test_material_slot_mapping_and_batch_boundaries() {
+    auto model = make_model(42U);
+    model.texture_slots.fill(openrc::kRacLevelCoreUnusedTextureSlotV1);
+    model.texture_slots[0U] = 4U;
+    model.texture_slots[1U] = 9U;
+    model.used_texture_slot_count = 2U;
+    model.high_lod.triangles = {
+        openrc::RacMobyModelTriangleV1{{0U, 1U, 2U}, 0, 0U},
+        openrc::RacMobyModelTriangleV1{{0U, 2U, 1U}, 0, 0U},
+        openrc::RacMobyModelTriangleV1{{1U, 0U, 2U}, 1, 0U},
+        openrc::RacMobyModelTriangleV1{{2U, 1U, 0U}, -1, 0U},
+        openrc::RacMobyModelTriangleV1{{0U, 1U, 2U}, -1, 0U},
+        openrc::RacMobyModelTriangleV1{{0U, 2U, 1U}, 0, 0U},
+    };
+    const std::vector models{std::move(model)};
+    const std::vector placements{make_placement(42U)};
+    const auto result = openrc::runtime::build_moby_scene_geometry_v1(
+        models, placements,
+        openrc::runtime::MobySceneCoordinateDomainV1::world_units,
+        kLimits);
+
+    expect(result.geometry.has_value() &&
+               result.geometry->triangle_indices.size() == 18U,
+           "the material fixture did not produce six triangles");
+    expect(
+        result.material_batches ==
+            std::vector<openrc::runtime::MobySceneMaterialBatchV1>{
+                {0U, 6U, 4U},
+                {2U, 3U, 9U},
+                {3U, 6U, std::nullopt},
+                {5U, 3U, 4U},
+            },
+        "local texture slots were not mapped into contiguous global batches");
 }
 
 void test_scene_block_coordinate_domain() {
@@ -190,6 +240,8 @@ void test_explicit_skip_policy() {
                result.stats.empty_model_placement_count == 1U &&
                result.stats.missing_model_placement_count == 1U,
            "the Moby scene skip policy is wrong");
+    expect(result.material_batches.empty(),
+           "a skipped Moby scene unexpectedly retained material batches");
 }
 
 void test_limits_and_structural_rejections() {
@@ -245,6 +297,28 @@ void test_limits_and_structural_rejections() {
                 std::numeric_limits<float>::quiet_NaN();
         },
         "a non-finite Moby placement transform was accepted");
+    expect_rejected(
+        [](auto& models, auto&, auto&) {
+            models[0U].high_lod.triangles[0U].texture_index = 1;
+        },
+        "an unavailable local Moby texture slot was accepted");
+    expect_rejected(
+        [](auto& models, auto&, auto&) {
+            models[0U].texture_slots[0U] =
+                openrc::kRacLevelCoreUnusedTextureSlotV1;
+        },
+        "an explicitly unused Moby texture slot was accepted");
+    expect_rejected(
+        [](auto& models, auto&, auto&) {
+            models[0U].high_lod.triangles[0U].texture_index = -2;
+        },
+        "an invalid negative Moby texture slot was accepted");
+    expect_rejected(
+        [](auto& models, auto&, auto&) {
+            models[0U].high_lod.vertices[0U].texture_coordinate[0U] =
+                std::numeric_limits<float>::quiet_NaN();
+        },
+        "a non-finite Moby texture coordinate was accepted");
 }
 
 } // namespace
@@ -252,6 +326,7 @@ void test_limits_and_structural_rejections() {
 int main() {
     try {
         test_static_instance_transform_and_compaction();
+        test_material_slot_mapping_and_batch_boundaries();
         test_scene_block_coordinate_domain();
         test_invalid_coordinate_domain();
         test_explicit_skip_policy();

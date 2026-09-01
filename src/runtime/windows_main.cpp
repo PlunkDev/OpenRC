@@ -346,6 +346,17 @@ make_moby_asset_limits() {
             1'000'000U,
             1'000'000U,
         },
+        openrc::RacLevelMobyTextureLimitsV1{
+            kMaximumRuntimeBytes,
+            kMaximumRuntimeBytes,
+            kMaximumRuntimeBytes,
+            255U,
+            4096U,
+            4096U,
+            16U * 1024U * 1024U,
+            16U * 1024U * 1024U,
+            64U * 1024U * 1024U,
+        },
     };
 }
 

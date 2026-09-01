@@ -38,6 +38,7 @@ add_library(openrc_core STATIC
     src/core/rac_gameplay_bank.cpp
     src/core/rac_level_core.cpp
     src/core/rac_level_moby_assets.cpp
+    src/core/rac_level_moby_texture.cpp
     src/core/rac_moby_class.cpp
     src/core/rac_moby_model_geometry.cpp
     src/core/rac_moby_packet_geometry.cpp
@@ -207,6 +208,21 @@ if(OPENRC_BUILD_TESTS)
     )
     target_compile_features(
         openrc-rac-level-core-tests
+        PRIVATE
+        cxx_std_20
+    )
+
+    add_executable(
+        openrc-rac-level-moby-texture-tests
+        tests/rac_level_moby_texture_tests.cpp
+    )
+    target_link_libraries(
+        openrc-rac-level-moby-texture-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-rac-level-moby-texture-tests
         PRIVATE
         cxx_std_20
     )
@@ -462,6 +478,7 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-localized-subtitle-bank-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-gameplay-bank-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-level-core-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-rac-level-moby-texture-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-moby-class-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-moby-model-geometry-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-moby-packet-geometry-tests PRIVATE /W4 /permissive- /utf-8)
@@ -496,6 +513,7 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-localized-subtitle-bank-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-gameplay-bank-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-level-core-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-rac-level-moby-texture-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-moby-class-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-moby-model-geometry-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-moby-packet-geometry-tests PRIVATE -Wall -Wextra -Wpedantic)
@@ -531,6 +549,7 @@ if(OPENRC_BUILD_TESTS)
     add_test(NAME localized-subtitle-bank COMMAND openrc-localized-subtitle-bank-tests)
     add_test(NAME rac-gameplay-bank COMMAND openrc-rac-gameplay-bank-tests)
     add_test(NAME rac-level-core COMMAND openrc-rac-level-core-tests)
+    add_test(NAME rac-level-moby-texture COMMAND openrc-rac-level-moby-texture-tests)
     add_test(NAME rac-moby-class COMMAND openrc-rac-moby-class-tests)
     add_test(NAME rac-moby-model-geometry COMMAND openrc-rac-moby-model-geometry-tests)
     add_test(NAME rac-moby-packet-geometry COMMAND openrc-rac-moby-packet-geometry-tests)

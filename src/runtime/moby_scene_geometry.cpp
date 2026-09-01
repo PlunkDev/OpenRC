@@ -48,7 +48,79 @@ void require_append_capacity(const std::uint64_t current,
 struct PreparedModelV1 {
     std::vector<std::uint32_t> used_vertex_indices;
     std::vector<std::uint32_t> compact_triangle_indices;
+    std::vector<MobySceneMaterialBatchV1> material_batches;
 };
+
+[[nodiscard]] std::optional<std::uint32_t> resolve_global_texture_index(
+    const RacLevelMobyModelV1& model,
+    const std::int32_t local_texture_index) {
+    if (local_texture_index == -1) {
+        return std::nullopt;
+    }
+    if (local_texture_index < -1) {
+        fail("A Moby scene triangle has an invalid negative texture slot");
+    }
+    if (model.used_texture_slot_count > model.texture_slots.size()) {
+        fail("A Moby scene model has too many texture slots");
+    }
+    const auto slot = static_cast<std::uint32_t>(local_texture_index);
+    if (slot >= model.used_texture_slot_count ||
+        slot >= model.texture_slots.size()) {
+        fail("A Moby scene triangle references an unavailable texture slot");
+    }
+    const auto global_texture_index = model.texture_slots[slot];
+    if (global_texture_index == kRacLevelCoreUnusedTextureSlotV1) {
+        fail("A Moby scene triangle references an unused texture slot");
+    }
+    return global_texture_index;
+}
+
+void append_material_batch(
+    std::vector<MobySceneMaterialBatchV1>& batches,
+    const std::uint64_t first_triangle,
+    const std::uint64_t index_count,
+    const std::optional<std::uint32_t> global_texture_index) {
+    if (index_count == 0U || index_count % 3U != 0U) {
+        fail("A Moby scene material batch has an invalid index count");
+    }
+    if (first_triangle >
+        std::numeric_limits<std::uint64_t>::max() - index_count / 3U) {
+        fail("A Moby scene material batch range overflows");
+    }
+    if (batches.empty()) {
+        if (first_triangle != 0U) {
+            fail("The first Moby scene material batch does not begin at zero");
+        }
+    } else {
+        auto& previous = batches.back();
+        if (previous.index_count == 0U ||
+            previous.index_count % 3U != 0U ||
+            previous.first_triangle >
+                std::numeric_limits<std::uint64_t>::max() -
+                    previous.index_count / 3U) {
+            fail("The preceding Moby scene material batch is invalid");
+        }
+        const auto expected_first =
+            previous.first_triangle + previous.index_count / 3U;
+        if (first_triangle != expected_first) {
+            fail("Moby scene material batches are not contiguous");
+        }
+        if (previous.global_texture_index == global_texture_index) {
+            if (index_count >
+                std::numeric_limits<std::uint64_t>::max() -
+                    previous.index_count) {
+                fail("A Moby scene material batch index count overflows");
+            }
+            previous.index_count += index_count;
+            return;
+        }
+    }
+    if (batches.size() >= batches.max_size()) {
+        fail("The Moby scene material batch count exceeds the host container");
+    }
+    batches.push_back(MobySceneMaterialBatchV1{
+        first_triangle, index_count, global_texture_index});
+}
 
 [[nodiscard]] PreparedModelV1 prepare_model(
     const RacLevelMobyModelV1& model,
@@ -80,7 +152,12 @@ struct PreparedModelV1 {
         model.high_lod.vertices.size(), kMissingIndex);
     result.compact_triangle_indices.reserve(
         model.high_lod.triangles.size() * 3U);
+    result.material_batches.reserve(model.high_lod.triangles.size());
     for (const auto& triangle : model.high_lod.triangles) {
+        const auto first_triangle =
+            result.compact_triangle_indices.size() / 3U;
+        const auto global_texture_index =
+            resolve_global_texture_index(model, triangle.texture_index);
         for (const auto source_index : triangle.vertex_indices) {
             if (source_index >= model.high_lod.vertices.size()) {
                 fail("A Moby scene triangle references a missing vertex");
@@ -96,6 +173,9 @@ struct PreparedModelV1 {
             }
             result.compact_triangle_indices.push_back(compact_index);
         }
+        append_material_batch(
+            result.material_batches, first_triangle, 3U,
+            global_texture_index);
     }
     return result;
 }
@@ -244,14 +324,21 @@ MobySceneGeometryV1 build_moby_scene_geometry_v1(
             "The instantiated Moby scene index count");
         const auto vertex_begin =
             static_cast<std::uint32_t>(geometry.vertices.size());
+        const auto first_triangle = geometry.triangle_indices.size() / 3U;
         for (const auto source_index : compact.used_vertex_indices) {
             const auto& source_vertex = source.vertices[source_index];
+            if (!std::isfinite(source_vertex.texture_coordinate[0U]) ||
+                !std::isfinite(source_vertex.texture_coordinate[1U])) {
+                fail("A Moby scene vertex has non-finite texture coordinates");
+            }
             const auto transformed = transform_position(
                 source_vertex.diagnostic_position, placement,
                 coordinate_scale);
             const SceneVertex3dV1 vertex{
                 transformed[0U], transformed[1U], transformed[2U],
-                kMobyDiagnosticColor};
+                kMobyDiagnosticColor,
+                source_vertex.texture_coordinate[0U],
+                source_vertex.texture_coordinate[1U]};
             geometry.vertices.push_back(vertex);
             if (!has_bounds) {
                 geometry.minimum_x = vertex.x;
@@ -273,6 +360,17 @@ MobySceneGeometryV1 build_moby_scene_geometry_v1(
         for (const auto compact_index : compact.compact_triangle_indices) {
             geometry.triangle_indices.push_back(vertex_begin + compact_index);
         }
+        for (const auto& batch : compact.material_batches) {
+            if (batch.first_triangle >
+                std::numeric_limits<std::uint64_t>::max() - first_triangle) {
+                fail("An instantiated Moby material batch offset overflows");
+            }
+            append_material_batch(
+                result.material_batches,
+                first_triangle + batch.first_triangle,
+                batch.index_count,
+                batch.global_texture_index);
+        }
         ++result.stats.rendered_placement_count;
         rendered_models[model_index] = true;
     }
@@ -282,6 +380,14 @@ MobySceneGeometryV1 build_moby_scene_geometry_v1(
     if (has_bounds && !geometry.triangle_indices.empty()) {
         geometry.emitted_triangle_count =
             geometry.triangle_indices.size() / 3U;
+        if (result.material_batches.empty()) {
+            fail("Instantiated Moby geometry has no material batches");
+        }
+        const auto& final_batch = result.material_batches.back();
+        if (final_batch.first_triangle + final_batch.index_count / 3U !=
+            geometry.emitted_triangle_count) {
+            fail("Instantiated Moby material batches do not cover the geometry");
+        }
         result.geometry = std::move(geometry);
     }
     return result;

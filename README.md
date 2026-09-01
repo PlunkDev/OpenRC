@@ -45,7 +45,12 @@ Stage 1 is in progress. The repository currently provides:
   on all 19 reference levels;
 - a bounded level Moby asset loader and static-instance scene builder that
   applies the verified `T * S * Rz * Ry * Rx` placement transform while
-  explicitly skipping animated classes until bind transforms are recovered;
+  explicitly skipping animated classes until bind transforms are recovered,
+  while retaining per-class material slots, per-vertex UVs, and contiguous
+  resolved material batches;
+- a bounded RAC1 level Moby texture-bank decoder for the raw GS RAM and decoded
+  level core, including linear PSMT8 pixels, GS CLUT permutation, PS2 alpha
+  expansion, RGBA output, and single-texture TGA export;
 - a bounded `2FIP` indexed-texture parser with PS2 CLUT normalization,
   RGBA expansion, and lossless TGA export;
 - a neutral seven-region boundary-table parser for decoded level payloads;
@@ -114,8 +119,8 @@ Stage 1 is in progress. The repository currently provides:
 - application directories following the `PlunkDev/OpenRC` convention;
 - synthetic ISO, ELF, SHA-256, disc, WAD, bundle, 2FIP, boundary-table,
   MapArtV1, PS2 save-bundle, PS ADPCM, VAGp, SBlk/audio/WAV, decoded-WAD
-  inventory/probes, RAC gameplay/level-core/Moby-class/packet/LOD geometry,
-  static Moby scene transforms,
+  inventory/probes, RAC gameplay/level-core/Moby texture/class/packet/LOD
+  geometry, static Moby scene transforms and material-slot mapping,
   scene-animation/subtitle, EE/R5900 boundaries, scene-block, scene-block
   VIF/VU execution and phase grouping, DVP VU microprogram decoding/execution,
   companion-WAD-index, and preparation tests that contain no copyrighted game
@@ -198,6 +203,7 @@ build/Debug/openrc-cli.exe scene-blocks local/ratchet-and-clank.iso 0
 build/Debug/openrc-cli.exe scene-block-vu-run local/ratchet-and-clank.iso path/to/prepared/files/SCES_509.16 0 0 16 scene-block.tga
 build/Debug/openrc-cli.exe level-core local/ratchet-and-clank.iso 0
 build/Debug/openrc-cli.exe level-moby-scene local/ratchet-and-clank.iso 0
+build/Debug/openrc-cli.exe level-moby-texture local/ratchet-and-clank.iso 0 0 veldin-moby-000.tga
 build/Debug/openrc-cli.exe companion-wads local/ratchet-and-clank.iso 0
 build/Debug/openrc-cli.exe wad-bundle local/ratchet-and-clank.iso 14365 162
 build/Debug/openrc-cli.exe twofip local/ratchet-and-clank.iso 100 texture.tga
@@ -214,6 +220,11 @@ PAL v2.00 reference image; they are not assumed for other revisions.
 The `twofip` command accepts either a direct 2FIP global slot or a WadV1 slot
 whose decoded payload is 2FIP. The optional output is created only when the
 target path does not already exist.
+`level-moby-texture` selects one global entry from a level's Moby texture table,
+validates the complete bank against decoded core data and raw GS RAM, and can
+create one normalized RGBA TGA without overwriting an existing file. A model's
+packet texture number is first resolved through that model class's 16 local
+slots; it is not treated as a global table index.
 `map-art` accepts a level ID from 0 through 18 and can create one 384x128 TGA
 containing its three validated 2FIP layers side by side. `ps2-save` inventories
 the reference build's PS2D memory-card resources without exporting game data.

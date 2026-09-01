@@ -36,9 +36,11 @@ struct SceneVertex3dV1 {
     float y = 0.0F;
     float z = 0.0F;
     std::uint32_t rgba = 0xffffffffU;
+    float u = 0.0F;
+    float v = 0.0F;
 };
 
-static_assert(sizeof(SceneVertex3dV1) == 16U);
+static_assert(sizeof(SceneVertex3dV1) == 24U);
 
 // Source-space geometry used by the diagnostic orbit view. These coordinates
 // are the signed integer inputs consumed by VITOF0 in the recovered VU path;
