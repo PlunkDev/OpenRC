@@ -78,6 +78,8 @@ openrc-runtime
 ├── emitted GS-triangle conversion with raster-context coordinates
 ├── recovered-level 3D wireframe with bounded debug orbit controls
 ├── explicit world-to-SceneBlock ×1024 Moby unit conversion and bounded merge
+├── static-Moby UV/material batches and decoded base-texture sampling
+├── D24 depth ordering and explicit untextured wireframe fallback
 ├── Tab comparison against the decoded GS 2D output
 └── native D3D11 submission, auto-fit resize, and WARP fallback
 ```
@@ -161,8 +163,11 @@ from the same validated entry-0/TOP=0 state, merges complete raster and source
 triangle batches under aggregate limits, and reports diagnostic GS-only records
 separately. The viewer can orbit the merged source mesh, but that orbit is
 isolated PC-side diagnostic state: it never rewrites the VU frame transform or
-claims to reproduce the original camera. Scene classification, textures, the
-live game camera, and gameplay remain outside this layer.
+claims to reproduce the original camera. Static Moby batches now retain their
+decoded material UVs and sample their normalized base textures with D3D depth
+ordering; untextured batches remain explicit wireframe fallbacks. Terrain
+classification/textures, metal and animated model paths, the live game camera,
+and gameplay remain outside this layer.
 
 The current CFG is deliberately context-insensitive and folds each decoded
 delay pair into its transfer block. It rejects an instruction-run start,

@@ -61,6 +61,10 @@ struct WindowState {
 struct LoadedSceneGeometry {
     openrc::runtime::SceneGeometryV1 raster;
     std::optional<openrc::runtime::SceneGeometry3dV1> source;
+    std::optional<openrc::RacLevelMobyTextureBankV1> moby_texture_bank;
+    std::vector<openrc::runtime::MobySceneMaterialBatchV1>
+        moby_material_batches;
+    std::optional<std::uint64_t> moby_first_triangle;
     std::uint64_t total_record_count = 0U;
     std::uint64_t decoded_record_count = 0U;
     std::uint64_t raster_record_count = 0U;
@@ -580,7 +584,7 @@ void attach_static_moby_geometry(
         return;
     }
 
-    const auto assets = openrc::load_rac_level_moby_assets_v1(
+    auto assets = openrc::load_rac_level_moby_assets_v1(
         arguments.disc_image,
         arguments.level_id,
         make_moby_asset_limits());
@@ -612,6 +616,14 @@ void attach_static_moby_geometry(
         return;
     }
     geometry.moby_triangle_count = moby.geometry->emitted_triangle_count;
+    if (geometry.source->triangle_indices.size() % 3U != 0U) {
+        throw std::runtime_error(
+            "The terrain source geometry is not a triangle list");
+    }
+    geometry.moby_first_triangle =
+        geometry.source->triangle_indices.size() / 3U;
+    geometry.moby_material_batches = std::move(moby.material_batches);
+    geometry.moby_texture_bank = std::move(assets.textures);
     std::array<openrc::runtime::SceneGeometry3dV1, 2U> batches{
         std::move(*geometry.source),
         std::move(*moby.geometry),
@@ -931,9 +943,25 @@ int WINAPI wWinMain(
             state.base_title);
         try {
             if (geometry.source) {
-                state.renderer =
-                    std::make_unique<openrc::runtime::D3d11Renderer>(
-                        window, geometry.raster, *geometry.source);
+                if (geometry.moby_texture_bank &&
+                    geometry.moby_first_triangle) {
+                    const openrc::runtime::D3d11MobyTextureSourceV1
+                        moby_textures{
+                            *geometry.moby_first_triangle,
+                            geometry.moby_material_batches,
+                            geometry.moby_texture_bank->textures,
+                        };
+                    state.renderer =
+                        std::make_unique<openrc::runtime::D3d11Renderer>(
+                            window,
+                            geometry.raster,
+                            *geometry.source,
+                            moby_textures);
+                } else {
+                    state.renderer =
+                        std::make_unique<openrc::runtime::D3d11Renderer>(
+                            window, geometry.raster, *geometry.source);
+                }
             } else {
                 state.renderer =
                     std::make_unique<openrc::runtime::D3d11Renderer>(

@@ -108,9 +108,10 @@ Stage 1 is in progress. The repository currently provides:
 - a native Windows D3D11 level-viewer window that independently executes and
   merges every supported SceneBlock record in the selected level, defaults to
   an auto-fit recovered-level 3D orbit view, adds static high-LOD Moby
-  placements as orange diagnostic wireframes, retains the aggregate decoded
-  GS projection for comparison, and falls back from hardware rendering to
-  WARP;
+  placements with their decoded base textures and material UVs, uses a depth
+  buffer plus an explicit wireframe fallback for untextured batches, retains
+  the aggregate decoded GS projection for comparison, and falls back from
+  hardware rendering to WARP;
 - recognition of the PAL (`SCES-50916`) reference executable and detection of
   the NTSC-U/C (`SCUS-97199`) release;
 - a native Windows launcher with disc inspection, asynchronous Prepare,
@@ -281,8 +282,11 @@ converts world coordinates to the current SceneBlock diagnostic domain at
 1,024 raw ITOF0 units per world unit before the bounded merge. On Veldin this
 adds 133 placements from five
 non-animated classes: 20,370 compacted vertices and 13,130 triangles beside
-the existing 22,428/18,660 recovered SceneBlock batch. They are deliberately
-orange wireframes; texture images, metal/bangle meshes, and 153 animated
+the existing 22,428/18,660 recovered SceneBlock batch. They are now submitted
+through contiguous material batches with perspective-correct
+UV interpolation, decoded RGBA base textures, alpha-zero rejection, and depth
+testing. Explicitly untextured batches and the still-unclassified SceneBlock
+terrain remain diagnostic wireframes. Metal/bangle meshes and 153 animated
 placements still wait for their respective decoders and bind transforms. Ten
 Veldin placements reference external/zero model ownership and remain skipped.
 

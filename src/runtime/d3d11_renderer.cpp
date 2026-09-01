@@ -1,5 +1,7 @@
 #include "d3d11_renderer.hpp"
 
+#include "generated/source_textured_ps_dxbc.hpp"
+#include "generated/source_textured_vs_dxbc.hpp"
 #include "generated/wireframe_ps_dxbc.hpp"
 #include "generated/wireframe_vs_dxbc.hpp"
 
@@ -15,6 +17,7 @@
 #include <cstring>
 #include <iomanip>
 #include <limits>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -32,6 +35,21 @@ struct alignas(16) FitConstants {
 };
 
 static_assert(sizeof(FitConstants) == 16U);
+
+struct ProjectedSourceVertex {
+    std::array<float, 4U> clip_position{};
+    std::uint32_t rgba = 0xffffffffU;
+    float u = 0.0F;
+    float v = 0.0F;
+};
+
+static_assert(sizeof(ProjectedSourceVertex) == 28U);
+
+struct GpuMobyMaterialBatch {
+    UINT start_index = 0U;
+    UINT index_count = 0U;
+    std::optional<std::uint32_t> global_texture_index;
+};
 
 constexpr float kPi = 3.14159265358979323846F;
 constexpr float kDefaultVerticalFov = kPi / 3.0F;
@@ -115,16 +133,24 @@ void require_success(const HRESULT result, const char* const operation) {
 struct D3d11Renderer::Implementation {
     explicit Implementation(HWND native_window,
                             const SceneGeometryV1& geometry)
-        : Implementation(native_window, geometry, nullptr) {}
+        : Implementation(native_window, geometry, nullptr, nullptr) {}
 
     Implementation(HWND native_window,
                    const SceneGeometryV1& geometry,
                    const SceneGeometry3dV1& source_geometry)
-        : Implementation(native_window, geometry, &source_geometry) {}
+        : Implementation(native_window, geometry, &source_geometry, nullptr) {}
 
     Implementation(HWND native_window,
                    const SceneGeometryV1& geometry,
-                   const SceneGeometry3dV1* const source_geometry)
+                   const SceneGeometry3dV1& source_geometry,
+                   const D3d11MobyTextureSourceV1& moby_textures)
+        : Implementation(
+              native_window, geometry, &source_geometry, &moby_textures) {}
+
+    Implementation(HWND native_window,
+                   const SceneGeometryV1& geometry,
+                   const SceneGeometry3dV1* const source_geometry,
+                   const D3d11MobyTextureSourceV1* const moby_textures)
         : window(native_window),
           minimum_x(geometry.minimum_x),
           maximum_x(geometry.maximum_x),
@@ -150,12 +176,22 @@ struct D3d11Renderer::Implementation {
         if (source_geometry != nullptr) {
             initialize_source_geometry(*source_geometry);
         }
+        if (moby_textures != nullptr) {
+            if (source_geometry == nullptr) {
+                throw std::invalid_argument(
+                    "Textured Moby batches require source-space geometry");
+            }
+            initialize_moby_texture_source(*source_geometry, *moby_textures);
+        }
 
         create_device_and_swap_chain();
         create_pipeline();
         create_raster_geometry_buffers(geometry);
         if (source_geometry != nullptr) {
             create_source_geometry_buffers(*source_geometry);
+        }
+        if (moby_textures != nullptr) {
+            create_moby_texture_resources(moby_textures->textures);
         }
         create_render_target();
 
@@ -177,6 +213,18 @@ struct D3d11Renderer::Implementation {
             throw std::invalid_argument(
                 "The D3D11 source-space renderer requires non-empty triangle geometry");
         }
+        if (!std::isfinite(geometry.minimum_x) ||
+            !std::isfinite(geometry.maximum_x) ||
+            !std::isfinite(geometry.minimum_y) ||
+            !std::isfinite(geometry.maximum_y) ||
+            !std::isfinite(geometry.minimum_z) ||
+            !std::isfinite(geometry.maximum_z) ||
+            geometry.minimum_x > geometry.maximum_x ||
+            geometry.minimum_y > geometry.maximum_y ||
+            geometry.minimum_z > geometry.maximum_z) {
+            throw std::invalid_argument(
+                "The D3D11 source-space geometry has invalid bounds");
+        }
         if (geometry.triangle_indices.size() >
             static_cast<std::size_t>(std::numeric_limits<UINT>::max())) {
             throw std::runtime_error(
@@ -188,11 +236,21 @@ struct D3d11Renderer::Implementation {
                     "The D3D11 source-space geometry contains an invalid index");
             }
         }
+        for (const auto& vertex : geometry.vertices) {
+            if (!std::isfinite(vertex.x) || !std::isfinite(vertex.y) ||
+                !std::isfinite(vertex.z) || !std::isfinite(vertex.u) ||
+                !std::isfinite(vertex.v)) {
+                throw std::invalid_argument(
+                    "The D3D11 source-space geometry has a non-finite vertex");
+            }
+        }
 
         source_vertices = geometry.vertices;
         projected_vertices.resize(source_vertices.size());
         for (std::size_t index = 0U; index < source_vertices.size(); ++index) {
             projected_vertices[index].rgba = source_vertices[index].rgba;
+            projected_vertices[index].u = source_vertices[index].u;
+            projected_vertices[index].v = source_vertices[index].v;
         }
         source_index_count =
             static_cast<UINT>(geometry.triangle_indices.size());
@@ -212,6 +270,80 @@ struct D3d11Renderer::Implementation {
         if (!(orbit_radius > 0.0F) || !std::isfinite(orbit_radius)) {
             orbit_radius = 1.0F;
         }
+    }
+
+    void initialize_moby_texture_source(
+        const SceneGeometry3dV1& geometry,
+        const D3d11MobyTextureSourceV1& source) {
+        const auto triangle_count = static_cast<std::uint64_t>(
+            geometry.triangle_indices.size() / 3U);
+        if (geometry.triangle_indices.size() % 3U != 0U ||
+            source.first_triangle > triangle_count ||
+            source.material_batches.empty()) {
+            throw std::invalid_argument(
+                "The D3D11 Moby texture source has an invalid envelope");
+        }
+        if (source.first_triangle >
+            static_cast<std::uint64_t>(std::numeric_limits<UINT>::max()) / 3U) {
+            throw std::runtime_error(
+                "The D3D11 Moby prefix exceeds the draw-index domain");
+        }
+        source_terrain_index_count =
+            static_cast<UINT>(source.first_triangle * 3U);
+        const auto moby_triangle_capacity =
+            triangle_count - source.first_triangle;
+
+        std::uint64_t expected_first_triangle = 0U;
+        if (source.material_batches.size() > moby_material_batches.max_size()) {
+            throw std::runtime_error(
+                "The D3D11 Moby material batches exceed the host container");
+        }
+        moby_material_batches.reserve(source.material_batches.size());
+        for (const auto& batch : source.material_batches) {
+            if (batch.first_triangle != expected_first_triangle ||
+                batch.index_count == 0U || batch.index_count % 3U != 0U) {
+                throw std::invalid_argument(
+                    "The D3D11 Moby material batches are not contiguous");
+            }
+            const auto batch_triangles = batch.index_count / 3U;
+            if (batch_triangles >
+                std::numeric_limits<std::uint64_t>::max() -
+                    expected_first_triangle) {
+                throw std::runtime_error(
+                    "The D3D11 Moby material range overflows");
+            }
+            if (batch.first_triangle > moby_triangle_capacity ||
+                batch_triangles >
+                    moby_triangle_capacity - batch.first_triangle) {
+                throw std::invalid_argument(
+                    "A D3D11 Moby material batch exceeds source geometry");
+            }
+            const auto global_first_triangle =
+                source.first_triangle + batch.first_triangle;
+            if (global_first_triangle >
+                    static_cast<std::uint64_t>(
+                        std::numeric_limits<UINT>::max()) /
+                        3U ||
+                batch.index_count > std::numeric_limits<UINT>::max()) {
+                throw std::invalid_argument(
+                    "A D3D11 Moby material batch exceeds source geometry");
+            }
+            if (batch.global_texture_index &&
+                *batch.global_texture_index >= source.textures.size()) {
+                throw std::invalid_argument(
+                    "A D3D11 Moby material references a missing texture");
+            }
+            moby_material_batches.push_back(GpuMobyMaterialBatch{
+                static_cast<UINT>(global_first_triangle * 3U),
+                static_cast<UINT>(batch.index_count),
+                batch.global_texture_index});
+            expected_first_triangle += batch_triangles;
+        }
+        if (expected_first_triangle != moby_triangle_capacity) {
+            throw std::invalid_argument(
+                "The D3D11 Moby material batches do not cover the source suffix");
+        }
+        has_moby_textures = true;
     }
 
     void create_device_and_swap_chain() {
@@ -279,15 +411,29 @@ struct D3d11Renderer::Implementation {
                 g_openrc_wireframe_vs,
                 sizeof(g_openrc_wireframe_vs),
                 nullptr,
-                vertex_shader.GetAddressOf()),
+                raster_vertex_shader.GetAddressOf()),
             "ID3D11Device::CreateVertexShader");
         require_success(
             device->CreatePixelShader(
                 g_openrc_wireframe_ps,
                 sizeof(g_openrc_wireframe_ps),
                 nullptr,
-                pixel_shader.GetAddressOf()),
+                wireframe_pixel_shader.GetAddressOf()),
             "ID3D11Device::CreatePixelShader");
+        require_success(
+            device->CreateVertexShader(
+                g_openrc_source_textured_vs,
+                sizeof(g_openrc_source_textured_vs),
+                nullptr,
+                source_vertex_shader.GetAddressOf()),
+            "ID3D11Device::CreateVertexShader(source)");
+        require_success(
+            device->CreatePixelShader(
+                g_openrc_source_textured_ps,
+                sizeof(g_openrc_source_textured_ps),
+                nullptr,
+                textured_pixel_shader.GetAddressOf()),
+            "ID3D11Device::CreatePixelShader(textured source)");
 
         constexpr std::array<D3D11_INPUT_ELEMENT_DESC, 2U> kInputElements{{
             {"POSITION",
@@ -311,8 +457,41 @@ struct D3d11Renderer::Implementation {
                 static_cast<UINT>(kInputElements.size()),
                 g_openrc_wireframe_vs,
                 sizeof(g_openrc_wireframe_vs),
-                input_layout.GetAddressOf()),
+                raster_input_layout.GetAddressOf()),
             "ID3D11Device::CreateInputLayout");
+
+        constexpr std::array<D3D11_INPUT_ELEMENT_DESC, 3U>
+            kSourceInputElements{{
+                {"POSITION",
+                 0U,
+                 DXGI_FORMAT_R32G32B32A32_FLOAT,
+                 0U,
+                 0U,
+                 D3D11_INPUT_PER_VERTEX_DATA,
+                 0U},
+                {"COLOR",
+                 0U,
+                 DXGI_FORMAT_R8G8B8A8_UNORM,
+                 0U,
+                 static_cast<UINT>(offsetof(ProjectedSourceVertex, rgba)),
+                 D3D11_INPUT_PER_VERTEX_DATA,
+                 0U},
+                {"TEXCOORD",
+                 0U,
+                 DXGI_FORMAT_R32G32_FLOAT,
+                 0U,
+                 static_cast<UINT>(offsetof(ProjectedSourceVertex, u)),
+                 D3D11_INPUT_PER_VERTEX_DATA,
+                 0U},
+            }};
+        require_success(
+            device->CreateInputLayout(
+                kSourceInputElements.data(),
+                static_cast<UINT>(kSourceInputElements.size()),
+                g_openrc_source_textured_vs,
+                sizeof(g_openrc_source_textured_vs),
+                source_input_layout.GetAddressOf()),
+            "ID3D11Device::CreateInputLayout(source)");
 
         D3D11_RASTERIZER_DESC rasterizer_description{};
         rasterizer_description.FillMode = D3D11_FILL_WIREFRAME;
@@ -321,8 +500,17 @@ struct D3d11Renderer::Implementation {
         rasterizer_description.AntialiasedLineEnable = TRUE;
         require_success(
             device->CreateRasterizerState(
-                &rasterizer_description, rasterizer_state.GetAddressOf()),
+                &rasterizer_description,
+                wireframe_rasterizer_state.GetAddressOf()),
             "ID3D11Device::CreateRasterizerState");
+
+        rasterizer_description.FillMode = D3D11_FILL_SOLID;
+        rasterizer_description.AntialiasedLineEnable = FALSE;
+        require_success(
+            device->CreateRasterizerState(
+                &rasterizer_description,
+                solid_rasterizer_state.GetAddressOf()),
+            "ID3D11Device::CreateRasterizerState(solid)");
 
         D3D11_DEPTH_STENCIL_DESC depth_description{};
         depth_description.DepthEnable = FALSE;
@@ -330,8 +518,43 @@ struct D3d11Renderer::Implementation {
         depth_description.DepthFunc = D3D11_COMPARISON_ALWAYS;
         require_success(
             device->CreateDepthStencilState(
-                &depth_description, depth_state.GetAddressOf()),
+                &depth_description, depth_disabled_state.GetAddressOf()),
             "ID3D11Device::CreateDepthStencilState");
+
+        depth_description.DepthEnable = TRUE;
+        depth_description.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
+        depth_description.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
+        require_success(
+            device->CreateDepthStencilState(
+                &depth_description, depth_write_state.GetAddressOf()),
+            "ID3D11Device::CreateDepthStencilState(write)");
+
+        depth_description.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+        require_success(
+            device->CreateDepthStencilState(
+                &depth_description, depth_read_state.GetAddressOf()),
+            "ID3D11Device::CreateDepthStencilState(read)");
+
+        D3D11_BLEND_DESC no_color_description{};
+        no_color_description.RenderTarget[0U].RenderTargetWriteMask = 0U;
+        require_success(
+            device->CreateBlendState(
+                &no_color_description, no_color_blend_state.GetAddressOf()),
+            "ID3D11Device::CreateBlendState(depth only)");
+
+        D3D11_SAMPLER_DESC sampler_description{};
+        sampler_description.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+        sampler_description.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
+        sampler_description.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
+        sampler_description.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+        sampler_description.MaxAnisotropy = 1U;
+        sampler_description.ComparisonFunc = D3D11_COMPARISON_NEVER;
+        sampler_description.MinLOD = 0.0F;
+        sampler_description.MaxLOD = D3D11_FLOAT32_MAX;
+        require_success(
+            device->CreateSamplerState(
+                &sampler_description, texture_sampler.GetAddressOf()),
+            "ID3D11Device::CreateSamplerState(Moby textures)");
 
         D3D11_BUFFER_DESC constant_description{};
         constant_description.ByteWidth = sizeof(FitConstants);
@@ -379,7 +602,7 @@ struct D3d11Renderer::Implementation {
         D3D11_BUFFER_DESC vertex_description{};
         vertex_description.ByteWidth = checked_buffer_size(
             projected_vertices.size(),
-            sizeof(SceneVertexV1),
+            sizeof(ProjectedSourceVertex),
             "Projected source vertex buffer");
         vertex_description.Usage = D3D11_USAGE_DYNAMIC;
         vertex_description.BindFlags = D3D11_BIND_VERTEX_BUFFER;
@@ -408,6 +631,66 @@ struct D3d11Renderer::Implementation {
             "ID3D11Device::CreateBuffer(source indices)");
     }
 
+    void create_moby_texture_resources(
+        const std::span<const RacLevelMobyTextureV1> textures) {
+        if (!has_moby_textures ||
+            textures.size() >
+                static_cast<std::size_t>(
+                    std::numeric_limits<std::uint32_t>::max())) {
+            throw std::invalid_argument(
+                "The D3D11 Moby texture bank has an invalid envelope");
+        }
+
+        moby_texture_views.reserve(textures.size());
+        for (std::size_t index = 0U; index < textures.size(); ++index) {
+            const auto& texture = textures[index];
+            if (texture.global_index != index || texture.entry.width <= 0 ||
+                texture.entry.height <= 0) {
+                throw std::invalid_argument(
+                    "The D3D11 Moby texture bank has inconsistent indices or dimensions");
+            }
+            const auto texture_width =
+                static_cast<std::uint32_t>(texture.entry.width);
+            const auto texture_height =
+                static_cast<std::uint32_t>(texture.entry.height);
+            const auto expected_rgba_bytes =
+                static_cast<std::uint64_t>(texture_width) * texture_height *
+                4U;
+            if (expected_rgba_bytes != texture.rgba.size()) {
+                throw std::invalid_argument(
+                    "A D3D11 Moby texture has an invalid RGBA payload size");
+            }
+
+            D3D11_TEXTURE2D_DESC texture_description{};
+            texture_description.Width = texture_width;
+            texture_description.Height = texture_height;
+            texture_description.MipLevels = 1U;
+            texture_description.ArraySize = 1U;
+            texture_description.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            texture_description.SampleDesc.Count = 1U;
+            texture_description.Usage = D3D11_USAGE_IMMUTABLE;
+            texture_description.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+            D3D11_SUBRESOURCE_DATA texture_data{};
+            texture_data.pSysMem = texture.rgba.data();
+            texture_data.SysMemPitch = texture_width * 4U;
+            ComPtr<ID3D11Texture2D> gpu_texture;
+            require_success(
+                device->CreateTexture2D(
+                    &texture_description,
+                    &texture_data,
+                    gpu_texture.GetAddressOf()),
+                "ID3D11Device::CreateTexture2D(Moby texture)");
+
+            ComPtr<ID3D11ShaderResourceView> texture_view;
+            require_success(
+                device->CreateShaderResourceView(
+                    gpu_texture.Get(), nullptr, texture_view.GetAddressOf()),
+                "ID3D11Device::CreateShaderResourceView(Moby texture)");
+            moby_texture_views.push_back(std::move(texture_view));
+        }
+    }
+
     void create_render_target() {
         ComPtr<ID3D11Texture2D> back_buffer;
         require_success(
@@ -420,6 +703,26 @@ struct D3d11Renderer::Implementation {
             device->CreateRenderTargetView(
                 back_buffer.Get(), nullptr, render_target.GetAddressOf()),
             "ID3D11Device::CreateRenderTargetView");
+
+        D3D11_TEXTURE2D_DESC back_buffer_description{};
+        back_buffer->GetDesc(&back_buffer_description);
+        D3D11_TEXTURE2D_DESC depth_description{};
+        depth_description.Width = back_buffer_description.Width;
+        depth_description.Height = back_buffer_description.Height;
+        depth_description.MipLevels = 1U;
+        depth_description.ArraySize = 1U;
+        depth_description.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+        depth_description.SampleDesc = back_buffer_description.SampleDesc;
+        depth_description.Usage = D3D11_USAGE_DEFAULT;
+        depth_description.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+        require_success(
+            device->CreateTexture2D(
+                &depth_description, nullptr, depth_texture.GetAddressOf()),
+            "ID3D11Device::CreateTexture2D(depth)");
+        require_success(
+            device->CreateDepthStencilView(
+                depth_texture.Get(), nullptr, depth_view.GetAddressOf()),
+            "ID3D11Device::CreateDepthStencilView");
     }
 
     [[nodiscard]] float aspect_ratio() const noexcept {
@@ -506,17 +809,23 @@ struct D3d11Renderer::Implementation {
             std::tan(kDefaultVerticalFov * 0.5F);
         const auto tangent_half_horizontal =
             tangent_half_vertical * aspect_ratio();
-        const auto minimum_camera_z = orbit_radius * 0.001F;
+        const auto near_plane = std::max(orbit_radius * 0.001F, 0.001F);
+        const auto far_plane = std::max(
+            near_plane * 2.0F,
+            orbit_distance + orbit_radius * 4.0F);
+        const auto depth_scale = far_plane / (far_plane - near_plane);
+        const auto depth_offset =
+            near_plane * far_plane / (far_plane - near_plane);
 
         for (std::size_t index = 0U; index < source_vertices.size(); ++index) {
             const auto relative = as_vec3(source_vertices[index]) - eye;
-            const auto camera_z = std::max(dot(relative, forward), minimum_camera_z);
-            projected_vertices[index].x =
-                dot(relative, right) /
-                (camera_z * tangent_half_horizontal);
-            projected_vertices[index].y =
-                dot(relative, camera_up) /
-                (camera_z * tangent_half_vertical);
+            const auto camera_z = dot(relative, forward);
+            projected_vertices[index].clip_position = {
+                dot(relative, right) / tangent_half_horizontal,
+                dot(relative, camera_up) / tangent_half_vertical,
+                depth_scale * camera_z - depth_offset,
+                camera_z,
+            };
         }
 
         D3D11_MAPPED_SUBRESOURCE mapped{};
@@ -531,7 +840,7 @@ struct D3d11Renderer::Implementation {
         std::memcpy(
             mapped.pData,
             projected_vertices.data(),
-            projected_vertices.size() * sizeof(SceneVertexV1));
+            projected_vertices.size() * sizeof(ProjectedSourceVertex));
         context->Unmap(source_vertex_buffer.Get(), 0U);
         projected_vertices_dirty = false;
     }
@@ -581,12 +890,15 @@ struct D3d11Renderer::Implementation {
             set_dimensions(0U, 0U);
             return;
         }
-        if (new_width == width && new_height == height && render_target) {
+        if (new_width == width && new_height == height && render_target &&
+            depth_texture && depth_view) {
             return;
         }
 
         context->OMSetRenderTargets(0U, nullptr, nullptr);
         render_target.Reset();
+        depth_view.Reset();
+        depth_texture.Reset();
         require_success(
             swap_chain->ResizeBuffers(
                 0U, new_width, new_height, DXGI_FORMAT_UNKNOWN, 0U),
@@ -596,7 +908,7 @@ struct D3d11Renderer::Implementation {
     }
 
     void render() {
-        if (width == 0U || height == 0U || !render_target) {
+        if (width == 0U || height == 0U || !render_target || !depth_view) {
             return;
         }
 
@@ -611,20 +923,18 @@ struct D3d11Renderer::Implementation {
             18.0F / 255.0F,
             1.0F,
         };
-        constexpr FitConstants kSourceFitConstants{
-            {1.0F, 1.0F},
-            {0.0F, 0.0F},
-        };
-        const auto& active_fit_constants =
-            render_source ? kSourceFitConstants : fit_constants;
-        context->UpdateSubresource(
-            fit_buffer.Get(), 0U, nullptr, &active_fit_constants, 0U, 0U);
         context->ClearRenderTargetView(render_target.Get(), kClearColor.data());
+        if (render_source) {
+            context->ClearDepthStencilView(
+                depth_view.Get(), D3D11_CLEAR_DEPTH, 1.0F, 0U);
+        }
 
         ID3D11RenderTargetView* const render_targets[] = {
             render_target.Get()};
-        context->OMSetRenderTargets(1U, render_targets, nullptr);
-        context->OMSetDepthStencilState(depth_state.Get(), 0U);
+        context->OMSetRenderTargets(
+            1U,
+            render_targets,
+            render_source ? depth_view.Get() : nullptr);
 
         D3D11_VIEWPORT viewport{};
         viewport.Width = static_cast<float>(width);
@@ -632,29 +942,115 @@ struct D3d11Renderer::Implementation {
         viewport.MinDepth = 0.0F;
         viewport.MaxDepth = 1.0F;
         context->RSSetViewports(1U, &viewport);
-        context->RSSetState(rasterizer_state.Get());
-
-        constexpr UINT kStride = sizeof(SceneVertexV1);
-        constexpr UINT kOffset = 0U;
-        ID3D11Buffer* const vertex_buffers[] = {
-            render_source ? source_vertex_buffer.Get() :
-                            raster_vertex_buffer.Get()};
-        context->IASetInputLayout(input_layout.Get());
-        context->IASetVertexBuffers(
-            0U, 1U, vertex_buffers, &kStride, &kOffset);
-        context->IASetIndexBuffer(
-            render_source ? source_index_buffer.Get() : raster_index_buffer.Get(),
-            DXGI_FORMAT_R32_UINT,
-            0U);
         context->IASetPrimitiveTopology(
             D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-        ID3D11Buffer* const constant_buffers[] = {fit_buffer.Get()};
-        context->VSSetShader(vertex_shader.Get(), nullptr, 0U);
-        context->VSSetConstantBuffers(0U, 1U, constant_buffers);
-        context->PSSetShader(pixel_shader.Get(), nullptr, 0U);
-        context->DrawIndexed(
-            render_source ? source_index_count : raster_index_count, 0U, 0);
+        constexpr UINT kOffset = 0U;
+        constexpr std::array<float, 4U> kBlendFactor{};
+        constexpr UINT kAllSamples = 0xffffffffU;
+        ID3D11ShaderResourceView* const no_texture[] = {nullptr};
+
+        if (!render_source) {
+            context->UpdateSubresource(
+                fit_buffer.Get(), 0U, nullptr, &fit_constants, 0U, 0U);
+            constexpr UINT kRasterStride = sizeof(SceneVertexV1);
+            ID3D11Buffer* const vertex_buffers[] = {
+                raster_vertex_buffer.Get()};
+            context->IASetInputLayout(raster_input_layout.Get());
+            context->IASetVertexBuffers(
+                0U, 1U, vertex_buffers, &kRasterStride, &kOffset);
+            context->IASetIndexBuffer(
+                raster_index_buffer.Get(), DXGI_FORMAT_R32_UINT, 0U);
+            context->RSSetState(wireframe_rasterizer_state.Get());
+            context->OMSetDepthStencilState(depth_disabled_state.Get(), 0U);
+            context->OMSetBlendState(
+                nullptr, kBlendFactor.data(), kAllSamples);
+            ID3D11Buffer* const constant_buffers[] = {fit_buffer.Get()};
+            context->VSSetShader(raster_vertex_shader.Get(), nullptr, 0U);
+            context->VSSetConstantBuffers(0U, 1U, constant_buffers);
+            context->PSSetShader(wireframe_pixel_shader.Get(), nullptr, 0U);
+            context->PSSetShaderResources(0U, 1U, no_texture);
+            context->DrawIndexed(raster_index_count, 0U, 0);
+        } else {
+            constexpr UINT kSourceStride = sizeof(ProjectedSourceVertex);
+            ID3D11Buffer* const vertex_buffers[] = {
+                source_vertex_buffer.Get()};
+            context->IASetInputLayout(source_input_layout.Get());
+            context->IASetVertexBuffers(
+                0U, 1U, vertex_buffers, &kSourceStride, &kOffset);
+            context->IASetIndexBuffer(
+                source_index_buffer.Get(), DXGI_FORMAT_R32_UINT, 0U);
+            context->VSSetShader(source_vertex_shader.Get(), nullptr, 0U);
+            ID3D11Buffer* const no_constant_buffer[] = {nullptr};
+            context->VSSetConstantBuffers(0U, 1U, no_constant_buffer);
+
+            const auto draw_depth_only = [this, &kBlendFactor](
+                                             const UINT index_count,
+                                             const UINT start_index) {
+                if (index_count == 0U) {
+                    return;
+                }
+                context->RSSetState(solid_rasterizer_state.Get());
+                context->OMSetDepthStencilState(depth_write_state.Get(), 0U);
+                context->OMSetBlendState(
+                    no_color_blend_state.Get(),
+                    kBlendFactor.data(),
+                    kAllSamples);
+                context->PSSetShader(nullptr, nullptr, 0U);
+                context->DrawIndexed(index_count, start_index, 0);
+            };
+            const auto draw_wireframe = [this, &kBlendFactor, &no_texture](
+                                             const UINT index_count,
+                                             const UINT start_index) {
+                if (index_count == 0U) {
+                    return;
+                }
+                context->RSSetState(wireframe_rasterizer_state.Get());
+                context->OMSetDepthStencilState(depth_read_state.Get(), 0U);
+                context->OMSetBlendState(
+                    nullptr, kBlendFactor.data(), kAllSamples);
+                context->PSSetShader(
+                    wireframe_pixel_shader.Get(), nullptr, 0U);
+                context->PSSetShaderResources(0U, 1U, no_texture);
+                context->DrawIndexed(index_count, start_index, 0);
+            };
+
+            if (!has_moby_textures) {
+                draw_depth_only(source_index_count, 0U);
+                draw_wireframe(source_index_count, 0U);
+            } else {
+                draw_depth_only(source_terrain_index_count, 0U);
+                draw_wireframe(source_terrain_index_count, 0U);
+
+                ID3D11SamplerState* const samplers[] = {
+                    texture_sampler.Get()};
+                context->PSSetSamplers(0U, 1U, samplers);
+                for (const auto& batch : moby_material_batches) {
+                    if (!batch.global_texture_index) {
+                        draw_depth_only(batch.index_count, batch.start_index);
+                        draw_wireframe(batch.index_count, batch.start_index);
+                        continue;
+                    }
+
+                    context->RSSetState(solid_rasterizer_state.Get());
+                    context->OMSetDepthStencilState(
+                        depth_write_state.Get(), 0U);
+                    context->OMSetBlendState(
+                        nullptr, kBlendFactor.data(), kAllSamples);
+                    context->PSSetShader(
+                        textured_pixel_shader.Get(), nullptr, 0U);
+                    ID3D11ShaderResourceView* const texture_views[] = {
+                        moby_texture_views[*batch.global_texture_index].Get()};
+                    context->PSSetShaderResources(
+                        0U, 1U, texture_views);
+                    context->DrawIndexed(
+                        batch.index_count, batch.start_index, 0);
+                }
+            }
+            context->PSSetShaderResources(0U, 1U, no_texture);
+            context->OMSetBlendState(
+                nullptr, kBlendFactor.data(), kAllSamples);
+        }
 
         const auto result = swap_chain->Present(1U, 0U);
         if (result == DXGI_STATUS_OCCLUDED) {
@@ -679,10 +1075,12 @@ struct D3d11Renderer::Implementation {
     std::uint32_t height = 0U;
     UINT raster_index_count = 0U;
     UINT source_index_count = 0U;
+    UINT source_terrain_index_count = 0U;
     D3D_FEATURE_LEVEL feature_level = D3D_FEATURE_LEVEL_10_0;
     FitConstants fit_constants{};
     std::vector<SceneVertex3dV1> source_vertices;
-    std::vector<SceneVertexV1> projected_vertices;
+    std::vector<ProjectedSourceVertex> projected_vertices;
+    std::vector<GpuMobyMaterialBatch> moby_material_batches;
     Vec3 orbit_target{};
     float orbit_radius = 1.0F;
     float orbit_yaw = 0.0F;
@@ -692,21 +1090,33 @@ struct D3d11Renderer::Implementation {
     bool show_source_geometry = false;
     bool camera_initialized = false;
     bool projected_vertices_dirty = false;
+    bool has_moby_textures = false;
 
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> context;
     ComPtr<IDXGISwapChain> swap_chain;
     ComPtr<ID3D11RenderTargetView> render_target;
-    ComPtr<ID3D11VertexShader> vertex_shader;
-    ComPtr<ID3D11PixelShader> pixel_shader;
-    ComPtr<ID3D11InputLayout> input_layout;
-    ComPtr<ID3D11RasterizerState> rasterizer_state;
-    ComPtr<ID3D11DepthStencilState> depth_state;
+    ComPtr<ID3D11Texture2D> depth_texture;
+    ComPtr<ID3D11DepthStencilView> depth_view;
+    ComPtr<ID3D11VertexShader> raster_vertex_shader;
+    ComPtr<ID3D11VertexShader> source_vertex_shader;
+    ComPtr<ID3D11PixelShader> wireframe_pixel_shader;
+    ComPtr<ID3D11PixelShader> textured_pixel_shader;
+    ComPtr<ID3D11InputLayout> raster_input_layout;
+    ComPtr<ID3D11InputLayout> source_input_layout;
+    ComPtr<ID3D11RasterizerState> wireframe_rasterizer_state;
+    ComPtr<ID3D11RasterizerState> solid_rasterizer_state;
+    ComPtr<ID3D11DepthStencilState> depth_disabled_state;
+    ComPtr<ID3D11DepthStencilState> depth_write_state;
+    ComPtr<ID3D11DepthStencilState> depth_read_state;
+    ComPtr<ID3D11BlendState> no_color_blend_state;
+    ComPtr<ID3D11SamplerState> texture_sampler;
     ComPtr<ID3D11Buffer> raster_vertex_buffer;
     ComPtr<ID3D11Buffer> raster_index_buffer;
     ComPtr<ID3D11Buffer> source_vertex_buffer;
     ComPtr<ID3D11Buffer> source_index_buffer;
     ComPtr<ID3D11Buffer> fit_buffer;
+    std::vector<ComPtr<ID3D11ShaderResourceView>> moby_texture_views;
 };
 
 D3d11Renderer::D3d11Renderer(HWND window,
@@ -719,6 +1129,14 @@ D3d11Renderer::D3d11Renderer(
     const SceneGeometry3dV1& source_geometry)
     : implementation_(std::make_unique<Implementation>(
           window, raster_geometry, source_geometry)) {}
+
+D3d11Renderer::D3d11Renderer(
+    HWND window,
+    const SceneGeometryV1& raster_geometry,
+    const SceneGeometry3dV1& source_geometry,
+    const D3d11MobyTextureSourceV1 moby_textures)
+    : implementation_(std::make_unique<Implementation>(
+          window, raster_geometry, source_geometry, moby_textures)) {}
 
 D3d11Renderer::~D3d11Renderer() = default;
 

@@ -691,8 +691,12 @@ jointed models and ten use external/zero ownership, so both groups are skipped
 rather than drawn incorrectly. Across all levels, the same bounded path builds
 9,122 placements into 3,214,949 vertices and 2,628,565 triangles, while 6,237
 animated and 873 external/zero placements remain pending. Metal/bangle meshes,
-D3D11 texture sampling, skeletal bind/animation transforms, and original
-visibility remain separate work.
+skeletal bind/animation transforms, and original visibility remain separate
+work. The native Veldin viewer now submits the 133 supported static placements
+through their contiguous material batches, samples the decoded RGBA base images
+with perspective-correct UVs, rejects only alpha-zero texels, and uses a D24
+depth buffer. Explicitly untextured batches retain a wireframe fallback rather
+than receiving a guessed material.
 
 The CLI keeps those reported bounds in world units. The current recovered
 SceneBlock source batch deliberately preserves the signed integer inputs to

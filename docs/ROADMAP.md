@@ -97,9 +97,12 @@ This roadmap describes technical milestones rather than release dates.
   native Veldin debug view
 - [x] decode every RAC1 Moby base-texture bank, normalize its PSMT8 CLUT/alpha,
   and preserve local-slot to global-texture material batches and UVs
+- [x] submit static Moby material batches with perspective-correct UVs, decoded
+  base textures, alpha rejection, and depth testing in the native viewer
 - [ ] parse and classify terrain, collision, metal/bangle geometry, skeletal
   bind poses, and animation transforms
-- [ ] render a classified, textured Veldin scene in a native window
+- [ ] render classified terrain and the remaining Veldin asset families as one
+  complete textured scene in the native window
 - [ ] compare geometry and transforms with reference captures
 
 ## Stage 3 — First playable vertical slice
