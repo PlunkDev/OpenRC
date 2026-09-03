@@ -99,6 +99,9 @@ This roadmap describes technical milestones rather than release dates.
   and preserve local-slot to global-texture material batches and UVs
 - [x] submit static Moby material batches with perspective-correct UVs, decoded
   base textures, alpha rejection, and depth testing in the native viewer
+- [x] decode level tfrag texture banks, retain TEX0/CLAMP context snapshots,
+  convert recovered SceneBlock STQ, and render bounded terrain material batches
+  in the native viewer
 - [ ] parse and classify terrain, collision, metal/bangle geometry, skeletal
   bind poses, and animation transforms
 - [ ] render classified terrain and the remaining Veldin asset families as one

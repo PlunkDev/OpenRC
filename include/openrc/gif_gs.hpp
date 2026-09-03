@@ -139,6 +139,63 @@ struct GifGsRasterSnapshotV1 {
         default;
 };
 
+// Typed texture-material registers retained per GS drawing context. The raw
+// words preserve reserved and partially known bits while the decoded fields
+// expose the base texture and CLUT binding needed by the level renderer.
+struct GifGsTex0StateV1 {
+    DvpVuWordV1 raw_low;
+    DvpVuWordV1 raw_high;
+    std::optional<std::uint16_t> texture_base_pointer;
+    std::optional<std::uint8_t> texture_buffer_width;
+    std::optional<std::uint8_t> pixel_storage_mode;
+    std::optional<std::uint8_t> width_exponent;
+    std::optional<std::uint8_t> height_exponent;
+    std::optional<bool> color_component_control;
+    std::optional<std::uint8_t> texture_function;
+    std::optional<std::uint16_t> clut_base_pointer;
+    std::optional<std::uint8_t> clut_pixel_storage_mode;
+    std::optional<bool> clut_storage_mode;
+    std::optional<std::uint8_t> clut_start_address;
+    std::optional<std::uint8_t> clut_load_control;
+
+    [[nodiscard]] bool operator==(const GifGsTex0StateV1&) const = default;
+};
+
+struct GifGsClampStateV1 {
+    DvpVuWordV1 raw_low;
+    DvpVuWordV1 raw_high;
+    std::optional<std::uint8_t> horizontal_mode;
+    std::optional<std::uint8_t> vertical_mode;
+    std::optional<std::uint16_t> minimum_u;
+    std::optional<std::uint16_t> maximum_u;
+    std::optional<std::uint16_t> minimum_v;
+    std::optional<std::uint16_t> maximum_v;
+
+    [[nodiscard]] bool operator==(const GifGsClampStateV1&) const = default;
+};
+
+struct GifGsTextureContextStateV1 {
+    std::optional<GifGsTex0StateV1> tex0;
+    std::optional<GifGsClampStateV1> clamp;
+
+    [[nodiscard]] bool operator==(const GifGsTextureContextStateV1&) const =
+        default;
+};
+
+struct GifGsTextureBindingSnapshotV1 {
+    // 0 selects TEX0_1/CLAMP_1 and 1 selects their _2 counterparts. An empty
+    // selection means effective PRIM.CTXT is indeterminate.
+    std::optional<std::uint8_t> selected_context_index;
+    // Both contexts are retained even when the effective selector is not yet
+    // known. VU packets commonly program explicit _1 registers before any
+    // PRMODECONT/PRMODE write appears in the captured stream.
+    std::array<GifGsTextureContextStateV1, 2U> contexts;
+    GifGsTextureContextStateV1 context;
+
+    [[nodiscard]] bool operator==(
+        const GifGsTextureBindingSnapshotV1&) const = default;
+};
+
 struct GifGsRegisterWriteV1 {
     std::uint64_t event_index = 0U;
     std::uint64_t tag_index = 0U;
@@ -174,6 +231,7 @@ struct GifGsVertexV1 {
     GifGsColorStateV1 color;
     GifGsPrimitiveStateV1 primitive;
     GifGsRasterSnapshotV1 raster;
+    GifGsTextureBindingSnapshotV1 texture_binding;
 };
 
 struct GifGsPrimitiveV1 {
@@ -187,6 +245,7 @@ struct GifGsPrimitiveV1 {
     GifGsPrimitiveEmissionV1 emission =
         GifGsPrimitiveEmissionV1::indeterminate;
     GifGsRasterSnapshotV1 raster;
+    GifGsTextureBindingSnapshotV1 texture_binding;
 };
 
 struct GifGsDecodeLimitsV1 {
@@ -219,6 +278,8 @@ struct GifGsDecodeResultV1 {
     std::uint64_t unresolved_addressed_write_count = 0U;
     std::array<GifGsRasterContextStateV1, 2U> final_raster_contexts;
     GifGsRasterSnapshotV1 final_raster;
+    std::array<GifGsTextureContextStateV1, 2U> final_texture_contexts;
+    GifGsTextureBindingSnapshotV1 final_texture_binding;
 };
 
 class GifGsDecodeError final : public std::runtime_error {

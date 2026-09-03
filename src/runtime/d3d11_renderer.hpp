@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 
 namespace openrc::runtime {
@@ -26,6 +27,18 @@ struct D3d11MobyTextureSourceV1 {
     std::span<const RacLevelMobyTextureV1> textures;
 };
 
+struct D3d11TerrainTextureSourceV1 {
+    // Terrain is the prefix of the merged source-space geometry.
+    std::uint64_t triangle_count = 0U;
+    std::span<const SceneMaterialBatchV1> material_batches;
+    std::span<const RacLevelMobyTextureV1> textures;
+};
+
+struct D3d11SourceTextureSourcesV1 {
+    D3d11TerrainTextureSourceV1 terrain;
+    std::optional<D3d11MobyTextureSourceV1> moby;
+};
+
 class D3d11Renderer final {
 public:
     D3d11Renderer(HWND window, const SceneGeometryV1& geometry);
@@ -35,7 +48,7 @@ public:
     D3d11Renderer(HWND window,
                   const SceneGeometryV1& raster_geometry,
                   const SceneGeometry3dV1& source_geometry,
-                  D3d11MobyTextureSourceV1 moby_textures);
+                  D3d11SourceTextureSourcesV1 textures);
     ~D3d11Renderer();
 
     D3d11Renderer(const D3d11Renderer&) = delete;

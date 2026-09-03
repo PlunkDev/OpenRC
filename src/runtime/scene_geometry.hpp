@@ -4,6 +4,7 @@
 #include "openrc/scene_block_geometry.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <vector>
@@ -58,6 +59,29 @@ struct SceneGeometry3dV1 {
     std::uint64_t skipped_non_triangle_count = 0U;
 };
 
+// One contiguous triangle run emitted by the RAC1 SceneBlock terrain path.
+// texture_index is the table-local tfrag index written in TEX0_1's low word;
+// an empty value keeps an unresolved material on the wireframe fallback.
+struct SceneMaterialBatchV1 {
+    std::uint64_t first_triangle = 0U;
+    std::uint64_t index_count = 0U;
+    std::optional<std::uint32_t> texture_index;
+
+    [[nodiscard]] bool operator==(const SceneMaterialBatchV1&) const = default;
+};
+
+struct SceneGeometry3dMaterialV1 {
+    SceneGeometry3dV1 geometry;
+    std::vector<SceneMaterialBatchV1> material_batches;
+    std::uint64_t vertices_with_stq = 0U;
+    std::uint64_t vertices_without_stq = 0U;
+    std::uint64_t textured_triangle_count = 0U;
+    std::uint64_t unresolved_material_triangle_count = 0U;
+    // Real RAC1 tfrag packets program only explicit context-one registers and
+    // omit PRMODECONT/PRMODE. This counter makes that bounded fallback visible.
+    std::uint64_t single_programmed_context_triangle_count = 0U;
+};
+
 class SceneGeometryError final : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
@@ -78,6 +102,16 @@ build_scene_geometry_v1(const GifGsDecodeResultV1& decoded);
 // recovered source vertices. The source list must remain one-to-one and in the
 // same order as decoded.vertices; no relationship is guessed from coordinates.
 [[nodiscard]] SceneGeometry3dV1 build_scene_geometry_3d_v1(
+    const SceneBlockSourceGeometryV1& source,
+    const GifGsDecodeResultV1& decoded);
+
+// Builds source-space terrain geometry plus contiguous tfrag material runs.
+// STQ is converted to logical UV as S/Q,T/Q. If CTXT is unresolved, a texture
+// is accepted only when exactly one of the two snapshotted GS contexts has a
+// fully-known, table-index-shaped TEX0 value. Missing STQ, disabled texture
+// mapping, and fixed-coordinate UV packets stay unresolved rather than guessed.
+[[nodiscard]] SceneGeometry3dMaterialV1
+build_scene_geometry_3d_material_v1(
     const SceneBlockSourceGeometryV1& source,
     const GifGsDecodeResultV1& decoded);
 

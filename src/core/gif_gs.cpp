@@ -56,6 +56,32 @@ extract_field(const DvpVuWordV1 word,
     return (word.bits >> shift) & value_mask;
 }
 
+[[nodiscard]] std::optional<std::uint32_t>
+extract_field64(const DvpVuWordV1 low,
+                const DvpVuWordV1 high,
+                const std::uint32_t shift,
+                const std::uint32_t width) noexcept {
+    if (width == 0U || width > 32U || shift >= 64U ||
+        width > 64U - shift) {
+        return std::nullopt;
+    }
+    if (shift >= 32U) {
+        return extract_field(high, shift - 32U, width);
+    }
+    if (shift + width <= 32U) {
+        return extract_field(low, shift, width);
+    }
+
+    const auto low_width = 32U - shift;
+    const auto high_width = width - low_width;
+    const auto low_value = extract_field(low, shift, low_width);
+    const auto high_value = extract_field(high, 0U, high_width);
+    if (!low_value.has_value() || !high_value.has_value()) {
+        return std::nullopt;
+    }
+    return *low_value | (*high_value << low_width);
+}
+
 [[nodiscard]] std::optional<float>
 extract_float(const DvpVuWordV1 word) noexcept {
     if (!fully_known(word)) {
@@ -174,9 +200,19 @@ public:
         case GifGsRegisterDescriptorV1::nop:
             break;
         case GifGsRegisterDescriptorV1::tex0_1:
+            result_.final_texture_contexts[0U].tex0 = decode_tex0(payload);
+            break;
         case GifGsRegisterDescriptorV1::tex0_2:
+            result_.final_texture_contexts[1U].tex0 = decode_tex0(payload);
+            break;
         case GifGsRegisterDescriptorV1::clamp_1:
+            result_.final_texture_contexts[0U].clamp =
+                decode_clamp(payload);
+            break;
         case GifGsRegisterDescriptorV1::clamp_2:
+            result_.final_texture_contexts[1U].clamp =
+                decode_clamp(payload);
+            break;
         case GifGsRegisterDescriptorV1::reserved:
             ++result_.unsupported_register_write_count;
             break;
@@ -185,6 +221,7 @@ public:
 
     [[nodiscard]] GifGsDecodeResultV1 finish() && {
         result_.final_raster = raster_snapshot();
+        result_.final_texture_binding = texture_binding_snapshot();
         return std::move(result_);
     }
 
@@ -344,6 +381,7 @@ private:
             {},
             {},
             {},
+            {},
         });
         result_.final_fog = fog;
     }
@@ -374,6 +412,7 @@ private:
             result_.final_fog,
             adc,
             kick,
+            {},
             {},
             {},
             {},
@@ -413,6 +452,7 @@ private:
             primitive_attributes_selected_.reset();
             raw_prmode_.reset();
             invalidate_raster_contexts();
+            invalidate_texture_contexts();
             refresh_primitive_attributes();
             return;
         }
@@ -448,6 +488,16 @@ private:
                                 GifGsRegisterDescriptorV1::address_data,
                                 *dispatched,
                                 *dispatched == 0x0dU);
+            break;
+        case 0x06U:
+        case 0x07U:
+            result_.final_texture_contexts[*dispatched - 0x06U].tex0 =
+                decode_tex0(payload);
+            break;
+        case 0x08U:
+        case 0x09U:
+            result_.final_texture_contexts[*dispatched - 0x08U].clamp =
+                decode_clamp(payload);
             break;
         case 0x0aU:
             result_.final_fog = extract_u8(payload.lanes[1U], 24U);
@@ -508,10 +558,88 @@ private:
         };
     }
 
+    [[nodiscard]] static GifGsTex0StateV1
+    decode_tex0(const DvpVuVectorV1& payload) noexcept {
+        const auto u8 = [](const std::optional<std::uint32_t> value)
+            -> std::optional<std::uint8_t> {
+            return value.has_value()
+                       ? std::optional<std::uint8_t>{
+                             static_cast<std::uint8_t>(*value)}
+                       : std::nullopt;
+        };
+        const auto u16 = [](const std::optional<std::uint32_t> value)
+            -> std::optional<std::uint16_t> {
+            return value.has_value()
+                       ? std::optional<std::uint16_t>{
+                             static_cast<std::uint16_t>(*value)}
+                       : std::nullopt;
+        };
+        const auto bit = [](const std::optional<std::uint32_t> value)
+            -> std::optional<bool> {
+            return value.has_value() ? std::optional<bool>{*value != 0U}
+                                     : std::nullopt;
+        };
+        const auto low = payload.lanes[0U];
+        const auto high = payload.lanes[1U];
+        return GifGsTex0StateV1{
+            low,
+            high,
+            u16(extract_field64(low, high, 0U, 14U)),
+            u8(extract_field64(low, high, 14U, 6U)),
+            u8(extract_field64(low, high, 20U, 6U)),
+            u8(extract_field64(low, high, 26U, 4U)),
+            u8(extract_field64(low, high, 30U, 4U)),
+            bit(extract_field64(low, high, 34U, 1U)),
+            u8(extract_field64(low, high, 35U, 2U)),
+            u16(extract_field64(low, high, 37U, 14U)),
+            u8(extract_field64(low, high, 51U, 4U)),
+            bit(extract_field64(low, high, 55U, 1U)),
+            u8(extract_field64(low, high, 56U, 5U)),
+            u8(extract_field64(low, high, 61U, 3U)),
+        };
+    }
+
+    [[nodiscard]] static GifGsClampStateV1
+    decode_clamp(const DvpVuVectorV1& payload) noexcept {
+        const auto u8 = [](const std::optional<std::uint32_t> value)
+            -> std::optional<std::uint8_t> {
+            return value.has_value()
+                       ? std::optional<std::uint8_t>{
+                             static_cast<std::uint8_t>(*value)}
+                       : std::nullopt;
+        };
+        const auto u16 = [](const std::optional<std::uint32_t> value)
+            -> std::optional<std::uint16_t> {
+            return value.has_value()
+                       ? std::optional<std::uint16_t>{
+                             static_cast<std::uint16_t>(*value)}
+                       : std::nullopt;
+        };
+        const auto low = payload.lanes[0U];
+        const auto high = payload.lanes[1U];
+        return GifGsClampStateV1{
+            low,
+            high,
+            u8(extract_field64(low, high, 0U, 2U)),
+            u8(extract_field64(low, high, 2U, 2U)),
+            u16(extract_field64(low, high, 4U, 10U)),
+            u16(extract_field64(low, high, 14U, 10U)),
+            u16(extract_field64(low, high, 24U, 10U)),
+            u16(extract_field64(low, high, 34U, 10U)),
+        };
+    }
+
     void invalidate_raster_contexts() noexcept {
         for (auto& context : result_.final_raster_contexts) {
             context.xy_offset = GifGsXyOffsetStateV1{};
             context.scissor = GifGsScissorStateV1{};
+        }
+    }
+
+    void invalidate_texture_contexts() noexcept {
+        for (auto& context : result_.final_texture_contexts) {
+            context.tex0 = GifGsTex0StateV1{};
+            context.clamp = GifGsClampStateV1{};
         }
     }
 
@@ -539,6 +667,18 @@ private:
         if (snapshot.selected_context_index.has_value()) {
             snapshot.context = result_.final_raster_contexts[
                 *snapshot.selected_context_index];
+        }
+        return snapshot;
+    }
+
+    [[nodiscard]] GifGsTextureBindingSnapshotV1
+    texture_binding_snapshot() const {
+        GifGsTextureBindingSnapshotV1 snapshot;
+        snapshot.selected_context_index = effective_raster_context_index();
+        snapshot.contexts = result_.final_texture_contexts;
+        if (snapshot.selected_context_index.has_value()) {
+            snapshot.context =
+                snapshot.contexts[*snapshot.selected_context_index];
         }
         return snapshot;
     }
@@ -573,6 +713,7 @@ private:
             {},
             {},
             {},
+            {},
         });
         result_.final_fog = fog;
     }
@@ -600,6 +741,7 @@ private:
             {},
             {},
             {},
+            {},
         });
     }
 
@@ -611,6 +753,7 @@ private:
         vertex.color = result_.final_color;
         vertex.primitive = result_.final_primitive;
         vertex.raster = raster_snapshot();
+        vertex.texture_binding = texture_binding_snapshot();
         result_.vertices.push_back(std::move(vertex));
         const auto vertex_index =
             static_cast<std::uint64_t>(result_.vertices.size() - 1U);
@@ -634,6 +777,7 @@ private:
         primitive.topology = result_.final_primitive.topology;
         primitive.state = result_.final_primitive;
         primitive.raster = vertex.raster;
+        primitive.texture_binding = vertex.texture_binding;
         bool complete = false;
 
         switch (primitive.topology) {

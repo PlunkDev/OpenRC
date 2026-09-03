@@ -102,6 +102,14 @@ addressed(const std::uint64_t data, const std::uint8_t address) {
                          0U});
 }
 
+[[nodiscard]] openrc::DvpVuVectorV1
+packed_register64(const std::uint64_t data) {
+    return known_vector({static_cast<std::uint32_t>(data),
+                         static_cast<std::uint32_t>(data >> 32U),
+                         0U,
+                         0U});
+}
+
 struct TagSpec {
     bool pre = false;
     std::uint16_t prim = 0U;
@@ -384,10 +392,153 @@ void test_nop_unsupported_and_unresolved_address() {
     const auto result =
         openrc::decode_dvp_vu_xgkick_gs_v1(event, kLimits);
     expect(result.register_writes.size() == 4U &&
-               result.unsupported_register_write_count == 1U &&
+               result.unsupported_register_write_count == 0U &&
                result.unresolved_addressed_write_count == 1U &&
                !result.final_primitive.known,
            "NOP/unsupported/unresolved accounting mismatch");
+}
+
+void test_texture_context_registers_and_snapshots() {
+    const auto tex0 = [](const std::uint16_t tbp0,
+                         const std::uint8_t tbw,
+                         const std::uint8_t psm,
+                         const std::uint8_t tw,
+                         const std::uint8_t th,
+                         const bool tcc,
+                         const std::uint8_t tfx,
+                         const std::uint16_t cbp,
+                         const std::uint8_t cpsm,
+                         const bool csm,
+                         const std::uint8_t csa,
+                         const std::uint8_t cld) {
+        return static_cast<std::uint64_t>(tbp0 & 0x3fffU) |
+               (static_cast<std::uint64_t>(tbw & 0x3fU) << 14U) |
+               (static_cast<std::uint64_t>(psm & 0x3fU) << 20U) |
+               (static_cast<std::uint64_t>(tw & 0x0fU) << 26U) |
+               (static_cast<std::uint64_t>(th & 0x0fU) << 30U) |
+               (static_cast<std::uint64_t>(tcc) << 34U) |
+               (static_cast<std::uint64_t>(tfx & 0x03U) << 35U) |
+               (static_cast<std::uint64_t>(cbp & 0x3fffU) << 37U) |
+               (static_cast<std::uint64_t>(cpsm & 0x0fU) << 51U) |
+               (static_cast<std::uint64_t>(csm) << 55U) |
+               (static_cast<std::uint64_t>(csa & 0x1fU) << 56U) |
+               (static_cast<std::uint64_t>(cld & 0x07U) << 61U);
+    };
+    const auto clamp = [](const std::uint8_t wms,
+                          const std::uint8_t wmt,
+                          const std::uint16_t minu,
+                          const std::uint16_t maxu,
+                          const std::uint16_t minv,
+                          const std::uint16_t maxv) {
+        return static_cast<std::uint64_t>(wms & 0x03U) |
+               (static_cast<std::uint64_t>(wmt & 0x03U) << 2U) |
+               (static_cast<std::uint64_t>(minu & 0x03ffU) << 4U) |
+               (static_cast<std::uint64_t>(maxu & 0x03ffU) << 14U) |
+               (static_cast<std::uint64_t>(minv & 0x03ffU) << 24U) |
+               (static_cast<std::uint64_t>(maxv & 0x03ffU) << 34U);
+    };
+
+    const auto tex0_1 =
+        tex0(0x0123U, 7U, 0x13U, 6U, 5U, true, 2U, 0x0456U,
+             0x0aU, true, 0x11U, 5U);
+    const auto clamp_1 = clamp(1U, 2U, 3U, 127U, 4U, 255U);
+    const auto tex0_2 =
+        tex0(0x0321U, 9U, 0x14U, 8U, 7U, false, 1U, 0x0654U,
+             0x02U, false, 0x0cU, 3U);
+    const auto clamp_2 = clamp(3U, 0U, 11U, 511U, 12U, 777U);
+
+    const auto first = make_event({TagSpec{
+        false,
+        0U,
+        {0x06U, 0x08U, 0x0eU, 0x0eU},
+        {
+            packed_register64(tex0_1),
+            packed_register64(clamp_1),
+            addressed(tex0_2, 0x07U),
+            addressed(clamp_2, 0x09U),
+        },
+    }});
+    const auto second = make_event({TagSpec{
+        false,
+        0U,
+        {0x0eU, 0x0eU, 0x05U, 0x0eU, 0x05U},
+        {
+            addressed(1U, 0x1aU),
+            addressed((1U << 9U), 0x00U),
+            packed_xyz(1U, 2U, 3U),
+            addressed(0U, 0x00U),
+            packed_xyz(4U, 5U, 6U),
+        },
+    }});
+    const std::array events{first, second};
+    const auto result = openrc::decode_dvp_vu_xgkick_gs_stream_v1(
+        std::span<const openrc::DvpVuXgkickEventV1>{events}, kLimits);
+
+    expect(result.vertices.size() == 2U && result.primitives.size() == 2U &&
+               result.unsupported_register_write_count == 0U,
+           "typed texture register stream counts mismatch");
+    const auto& context1 = result.final_texture_contexts[0U];
+    const auto& context2 = result.final_texture_contexts[1U];
+    expect(context1.tex0.has_value() && context1.clamp.has_value() &&
+               context2.tex0.has_value() && context2.clamp.has_value(),
+           "both texture contexts were not retained");
+    expect(context1.tex0->texture_base_pointer == 0x0123U &&
+               context1.tex0->texture_buffer_width == 7U &&
+               context1.tex0->pixel_storage_mode == 0x13U &&
+               context1.tex0->width_exponent == 6U &&
+               context1.tex0->height_exponent == 5U &&
+               context1.tex0->color_component_control == true &&
+               context1.tex0->texture_function == 2U &&
+               context1.tex0->clut_base_pointer == 0x0456U &&
+               context1.tex0->clut_pixel_storage_mode == 0x0aU &&
+               context1.tex0->clut_storage_mode == true &&
+               context1.tex0->clut_start_address == 0x11U &&
+               context1.tex0->clut_load_control == 5U,
+           "TEX0_1 field layout mismatch");
+    expect(context1.clamp->horizontal_mode == 1U &&
+               context1.clamp->vertical_mode == 2U &&
+               context1.clamp->minimum_u == 3U &&
+               context1.clamp->maximum_u == 127U &&
+               context1.clamp->minimum_v == 4U &&
+               context1.clamp->maximum_v == 255U,
+           "CLAMP_1 field layout mismatch");
+    expect(context2.tex0->height_exponent == 7U &&
+               context2.tex0->clut_base_pointer == 0x0654U &&
+               context2.clamp->maximum_v == 777U,
+           "A+D texture context-two field layout mismatch");
+
+    expect(result.vertices[0U].texture_binding.selected_context_index == 1U &&
+               result.vertices[0U].texture_binding.context == context2 &&
+               result.vertices[1U].texture_binding.selected_context_index == 0U &&
+               result.vertices[1U].texture_binding.context == context1,
+           "effective texture context selection mismatch");
+    expect(result.vertices[0U].texture_binding.contexts[0U] == context1 &&
+               result.vertices[0U].texture_binding.contexts[1U] == context2 &&
+               result.vertices[0U].texture_binding ==
+                   result.primitives[0U].texture_binding &&
+               result.final_texture_binding ==
+                   result.vertices[1U].texture_binding,
+           "texture snapshots lost context state or changed retroactively");
+
+    auto partial_tex0 = packed_register64(tex0_1);
+    partial_tex0.lanes[1U].known_mask &= ~1U;
+    const auto unresolved = make_event({TagSpec{
+        true,
+        0U,
+        {0x06U, 0x05U},
+        {partial_tex0, packed_xyz(7U, 8U, 9U)},
+    }});
+    const auto unresolved_result =
+        openrc::decode_dvp_vu_xgkick_gs_v1(unresolved, kLimits);
+    const auto& unresolved_binding =
+        unresolved_result.vertices[0U].texture_binding;
+    expect(!unresolved_binding.selected_context_index.has_value() &&
+               unresolved_binding.contexts[0U].tex0.has_value() &&
+               !unresolved_binding.contexts[0U].tex0->height_exponent.has_value() &&
+               unresolved_binding.contexts[0U].tex0->width_exponent == 6U &&
+               unresolved_binding.contexts[0U].tex0->raw_high.known_mask ==
+                   partial_tex0.lanes[1U].known_mask,
+           "unresolved context or partial TEX0 bits were discarded");
 }
 
 void test_xgkick_stream_state_and_aggregate_limits() {
@@ -804,6 +955,7 @@ int main() {
         test_adc_strip_continuation();
         test_addressed_registers();
         test_nop_unsupported_and_unresolved_address();
+        test_texture_context_registers_and_snapshots();
         test_xgkick_stream_state_and_aggregate_limits();
         test_zero_loop_and_special_register_semantics();
         test_raster_context_state_across_xgkick_events();

@@ -231,11 +231,17 @@ RacLevelMobyAssetsV1 load_rac_level_moby_assets_v1(
       decode_wad_bytes(encoded_assets, limits.max_decoded_wad_bytes);
   const auto core = parse_rac_level_core_index_v1(
       index_bytes, encoded_assets, decoded_assets.bytes, limits.level_core);
-  const auto texture_table_bytes = index_bytes.subspan(
+  const auto tfrag_texture_table_bytes = index_bytes.subspan(
+      static_cast<std::size_t>(core.tfrag_texture_table_range.offset),
+      static_cast<std::size_t>(core.tfrag_texture_table_range.size));
+  auto tfrag_textures = decode_rac_level_moby_texture_bank_v1(
+      tfrag_texture_table_bytes, decoded_assets.bytes, raw_gs_ram,
+      core.header.textures_base_offset, limits.textures);
+  const auto moby_texture_table_bytes = index_bytes.subspan(
       static_cast<std::size_t>(core.moby_texture_table_range.offset),
       static_cast<std::size_t>(core.moby_texture_table_range.size));
   auto textures = decode_rac_level_moby_texture_bank_v1(
-      texture_table_bytes, decoded_assets.bytes, raw_gs_ram,
+      moby_texture_table_bytes, decoded_assets.bytes, raw_gs_ram,
       core.header.textures_base_offset, limits.textures);
 
   const auto &gameplay_ref = level_assets->primary_wads.front();
@@ -260,6 +266,7 @@ RacLevelMobyAssetsV1 load_rac_level_moby_assets_v1(
 
   RacLevelMobyAssetsV1 result;
   result.level_id = level_id;
+  result.tfrag_textures = std::move(tfrag_textures);
   result.textures = std::move(textures);
   if (core.moby_classes.size() > limits.max_models ||
       core.moby_classes.size() > result.models.max_size()) {

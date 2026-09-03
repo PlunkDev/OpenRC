@@ -183,6 +183,7 @@ void test_valid_level_core() {
     expect(
         result.header.moby_classes.count == 4U &&
             result.header.moby_classes.offset == kMobyTableOffset &&
+            result.header.tfrag_textures.count == 1U &&
             result.header.moby_textures.count == 4U &&
             result.header.assets_encoded_size == kEncodedBytes &&
             result.header.assets_decoded_size == kDecodedBytes,
@@ -190,6 +191,8 @@ void test_valid_level_core() {
     expect(
         result.moby_class_table_range ==
                 openrc::RacLevelCoreRangeV1{0xe0U, 0x80U} &&
+            result.tfrag_texture_table_range ==
+                openrc::RacLevelCoreRangeV1{0x1b0U, 0x10U} &&
             result.moby_texture_table_range ==
                 openrc::RacLevelCoreRangeV1{0x1c0U, 0x40U} &&
             result.ratchet_sequence_table_range ==

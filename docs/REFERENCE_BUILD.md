@@ -441,7 +441,11 @@ The GIF/GS decoder consumes all complete XGKICK events as one ordered stream.
 It carries attributes and pending primitive assembly between events, applies
 PRIM resets even for repeated values, ignores PRE and other tag fields for
 `NLOOP=0`, dispatches A+D on address bits 0..6, and snapshots the selected
-XYOFFSET/SCISSOR context on vertices and primitives. The CLI can rasterize the
+XYOFFSET/SCISSOR context on vertices and primitives. It now also decodes and
+retains raw/typed TEX0 and CLAMP for both contexts. Both context copies remain
+in each vertex and primitive snapshot when PRMODE has not yet selected one,
+which is required by the observed tfrag packets that explicitly program only
+the `_1` registers. The CLI can rasterize the
 emitted known-XY primitives into an auto-fit wireframe TGA. The same decoded
 result now feeds the first native D3D11 viewer: the tested level-0, record-0,
 entry-16 invocation uploads 80 known vertices and draws 62 wireframe triangles
@@ -670,7 +674,11 @@ source records, 102,855 transfer vertices, 104,957 reconstructed triangles,
 and 8,477 resolved cross-packet duplicate transfers.
 
 Primary-extent-0 subrange 3 is the raw GS RAM image paired with the decoded
-subrange-10 core. Across all 19 levels, the 3,896 Moby texture records decode
+subrange-10 core. The tfrag and Moby tables use the same validated 0x10-byte
+record and separate table-local index domains. Every tfrag bank on all 19
+levels decodes under the same bounds, with 42–155 entries per level. Veldin's
+78 tfrag textures contain 878,592 base pixels and 3,514,368 RGBA bytes.
+Across all 19 levels, the separate 3,896 Moby texture records decode
 to 42,187,520 linear PSMT8 base pixels and 168,750,080 RGBA bytes. Every
 `textures_base_offset + data_offset + width * height` envelope and every
 `palette_block * 0x100 + 0x400` CLUT envelope is in range. The decoder swaps
@@ -697,6 +705,20 @@ through their contiguous material batches, samples the decoded RGBA base images
 with perspective-correct UVs, rejects only alpha-zero texels, and uses a D24
 depth buffer. Explicitly untextured batches retain a wireframe fallback rather
 than receiving a guessed material.
+
+The entry-16 tfrag stream supplies complete STQ on the recovered source
+vertices. The runtime converts it to logical `S/Q,T/Q`, groups emitted
+triangles by their snapshotted texture state, and treats the fully-known
+table-index-shaped TEX0 low word as the tfrag table index. PRMODECONT/PRMODE is
+not emitted by these captured packets, so a documented RAC1 fallback accepts
+the material only when exactly one GS context was programmed; two programmed
+but unselected contexts remain unresolved. The same adapter requires TME and
+perspective STQ; missing STQ, disabled texture mapping, and FST/UV packets stay
+on the wireframe path until their coordinate convention is implemented.
+Veldin's 78-image tfrag bank and
+these bounded material runs now use the same D3D11 sampling, alpha rejection,
+and depth path as static Mobys. Unresolved materials stay on the wireframe
+fallback.
 
 The CLI keeps those reported bounds in world units. The current recovered
 SceneBlock source batch deliberately preserves the signed integer inputs to

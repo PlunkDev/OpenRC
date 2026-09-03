@@ -197,6 +197,8 @@ void print_usage() {
         << "  openrc-cli level-core <disc.iso> <level-id>      Link RAC1 model classes, assets, and placements\n"
         << "  openrc-cli level-moby-scene <disc.iso> <level-id>\n"
         << "                                                    Build static high-LOD Moby scene geometry\n"
+        << "  openrc-cli level-tfrag-texture <disc.iso> <level-id> <texture> [output.tga]\n"
+        << "                                                    Inspect/export a decoded terrain texture\n"
         << "  openrc-cli level-moby-texture <disc.iso> <level-id> <texture> [output.tga]\n"
         << "                                                    Decode/export one level Moby texture\n"
         << "  openrc-cli companion-wads <disc.iso> <level-id>  Inspect the terminal common WAD index\n"
@@ -3894,6 +3896,77 @@ int run(const std::vector<std::filesystem::path>& arguments) {
             }
 
             return execution.ready_state ? 0 : kOperationError;
+        } catch (const std::exception& error) {
+            std::cerr << "error: " << error.what() << '\n';
+            return kOperationError;
+        }
+    }
+
+    if (command == "level-tfrag-texture") {
+        if (arguments.size() != 4U && arguments.size() != 5U) {
+            std::cerr
+                << "error: level-tfrag-texture expects an ISO path, level ID, "
+                   "texture index, and optional output TGA\n";
+            return kUsageError;
+        }
+        const auto level_value = parse_decimal_argument(arguments[2]);
+        if (!level_value || *level_value >= openrc::kDiscTocLevelCount) {
+            std::cerr << "error: level ID must be a decimal number from 0 to "
+                      << (openrc::kDiscTocLevelCount - 1U) << '\n';
+            return kUsageError;
+        }
+        const auto texture_value = parse_decimal_argument(arguments[3]);
+        if (!texture_value) {
+            std::cerr << "error: texture index must be a decimal number\n";
+            return kUsageError;
+        }
+
+        try {
+            const auto level_id = static_cast<std::uint32_t>(*level_value);
+            const auto assets = openrc::load_rac_level_moby_assets_v1(
+                arguments[1], level_id, make_cli_moby_asset_limits());
+            if (*texture_value >= assets.tfrag_textures.textures.size()) {
+                throw std::runtime_error(
+                    "The texture index exceeds this level's tfrag texture bank");
+            }
+            const auto& texture = assets.tfrag_textures.textures[
+                static_cast<std::size_t>(*texture_value)];
+            std::cout
+                << "OpenRC RAC1 level tfrag texture report\n"
+                << "Image:                  "
+                << openrc::path_to_utf8(arguments[1]) << '\n'
+                << "Level ID:               " << level_id << '\n'
+                << "Texture index/count:    " << texture.global_index << '/'
+                << assets.tfrag_textures.textures.size() << '\n'
+                << "Dimensions:             " << texture.entry.width << 'x'
+                << texture.entry.height << '\n'
+                << "Type/mipmap/trailing:   " << texture.entry.type << '/'
+                << texture.entry.mipmap_block << '/'
+                << texture.entry.trailing_block << '\n'
+                << "Pixel range:            "
+                << hexadecimal(texture.entry.pixel_range.offset, 8) << " + "
+                << texture.entry.pixel_range.size << " bytes\n"
+                << "Palette range:          "
+                << hexadecimal(texture.entry.palette_range.offset, 8) << " + "
+                << texture.entry.palette_range.size << " bytes\n"
+                << "Bank pixels/RGBA bytes: "
+                << assets.tfrag_textures.total_pixel_count << '/'
+                << assets.tfrag_textures.total_rgba_bytes << '\n';
+
+            if (arguments.size() == 5U) {
+                constexpr auto kMaximumTgaBytes =
+                    kMaximumCliTwoFipPixels * 4U +
+                    openrc::kRacLevelMobyTextureTgaHeaderBytesV1;
+                const auto tga =
+                    openrc::encode_rac_level_moby_texture_tga_v1(
+                        texture, kMaximumTgaBytes);
+                write_new_binary_file(arguments[4], tga.bytes);
+                std::cout
+                    << "TGA output:             "
+                    << openrc::path_to_utf8(arguments[4]) << '\n'
+                    << "TGA bytes:              " << tga.bytes.size() << '\n';
+            }
+            return 0;
         } catch (const std::exception& error) {
             std::cerr << "error: " << error.what() << '\n';
             return kOperationError;

@@ -44,6 +44,122 @@ constexpr std::uint32_t kFallbackColor =
            (static_cast<std::uint32_t>(rgba[3U]) << 24U);
 }
 
+[[nodiscard]] std::optional<std::array<float, 2U>> logical_stq(
+    const GifGsVertexV1& vertex) noexcept {
+    if (!vertex.texture.s || !vertex.texture.t || !vertex.texture.q ||
+        !std::isfinite(*vertex.texture.s) ||
+        !std::isfinite(*vertex.texture.t) ||
+        !std::isfinite(*vertex.texture.q) || *vertex.texture.q == 0.0F) {
+        return std::nullopt;
+    }
+    const auto u = *vertex.texture.s / *vertex.texture.q;
+    const auto v = *vertex.texture.t / *vertex.texture.q;
+    if (!std::isfinite(u) || !std::isfinite(v)) {
+        return std::nullopt;
+    }
+    return std::array<float, 2U>{u, v};
+}
+
+struct ResolvedSceneTextureV1 {
+    std::optional<std::uint32_t> texture_index;
+    bool used_single_programmed_context = false;
+};
+
+[[nodiscard]] bool uses_perspective_stq(
+    const GifGsPrimitiveV1& primitive) noexcept {
+    const auto& state = primitive.state;
+    if (!state.known) {
+        return false;
+    }
+    if (state.attributes_known) {
+        return state.texture_mapping && !state.fixed_texture_coordinates;
+    }
+
+    // Captured RAC1 tfrag packets omit PRMODECONT/PRMODE and carry their
+    // attributes directly in PRIM. Accept that corpus-specific shape only
+    // while the selector is genuinely absent; a known incomplete PRMODE path
+    // stays unresolved.
+    if (state.primitive_attributes_selected.has_value()) {
+        return false;
+    }
+    constexpr std::uint16_t kTextureMapping = 1U << 4U;
+    constexpr std::uint16_t kFixedTextureCoordinates = 1U << 8U;
+    return (state.raw & kTextureMapping) != 0U &&
+           (state.raw & kFixedTextureCoordinates) == 0U;
+}
+
+[[nodiscard]] ResolvedSceneTextureV1 resolve_scene_texture(
+    const GifGsPrimitiveV1& primitive) noexcept {
+    const auto& binding = primitive.texture_binding;
+    const GifGsTextureContextStateV1* context = nullptr;
+    bool used_single_programmed_context = false;
+    if (binding.selected_context_index.has_value()) {
+        const auto index = *binding.selected_context_index;
+        if (index >= binding.contexts.size()) {
+            return {};
+        }
+        context = &binding.contexts[index];
+    } else {
+        const auto first_programmed = binding.contexts[0U].tex0.has_value();
+        const auto second_programmed = binding.contexts[1U].tex0.has_value();
+        if (first_programmed == second_programmed) {
+            return {};
+        }
+        context = &binding.contexts[first_programmed ? 0U : 1U];
+        used_single_programmed_context = true;
+    }
+    if (context == nullptr || !context->tex0.has_value()) {
+        return {};
+    }
+
+    const auto& tex0 = *context->tex0;
+    constexpr auto kFullyKnown = std::numeric_limits<std::uint32_t>::max();
+    constexpr auto kTextureIndexMask = 0x00003fffU;
+    if (tex0.raw_low.known_mask != kFullyKnown ||
+        tex0.raw_high.known_mask != kFullyKnown || tex0.raw_high.bits != 0U ||
+        (tex0.raw_low.bits & ~kTextureIndexMask) != 0U ||
+        !tex0.texture_base_pointer.has_value()) {
+        return {};
+    }
+    return ResolvedSceneTextureV1{
+        static_cast<std::uint32_t>(*tex0.texture_base_pointer),
+        used_single_programmed_context,
+    };
+}
+
+void append_scene_material_batch(
+    std::vector<SceneMaterialBatchV1>& batches,
+    const std::uint64_t first_triangle,
+    const std::optional<std::uint32_t> texture_index) {
+    if (!batches.empty()) {
+        auto& previous = batches.back();
+        const auto previous_triangles = previous.index_count / 3U;
+        if (previous.first_triangle >
+            std::numeric_limits<std::uint64_t>::max() - previous_triangles ||
+            previous.first_triangle + previous_triangles != first_triangle) {
+            throw SceneGeometryError(
+                "Scene material batches are not contiguous");
+        }
+        if (previous.texture_index == texture_index) {
+            if (previous.index_count >
+                std::numeric_limits<std::uint64_t>::max() - 3U) {
+                throw SceneGeometryError(
+                    "A scene material batch index count overflows");
+            }
+            previous.index_count += 3U;
+            return;
+        }
+    } else if (first_triangle != 0U) {
+        throw SceneGeometryError(
+            "The first scene material batch does not start at triangle zero");
+    }
+    if (batches.size() >= batches.max_size()) {
+        throw SceneGeometryError(
+            "The scene material batch count exceeds its host container");
+    }
+    batches.push_back(SceneMaterialBatchV1{first_triangle, 3U, texture_index});
+}
+
 [[nodiscard]] std::uint64_t checked_counter_add(
     const std::uint64_t left,
     const std::uint64_t right,
@@ -327,11 +443,15 @@ SceneGeometry3dV1 build_scene_geometry_3d_v1(
         }
 
         const auto& recovered = source.vertices[source_offset];
+        const auto texture_coordinate =
+            logical_stq(decoded.vertices[source_offset]);
         const SceneVertex3dV1 vertex{
             static_cast<float>(recovered.x),
             static_cast<float>(recovered.y),
             static_cast<float>(recovered.z),
             pack_color(recovered.rgba),
+            texture_coordinate ? (*texture_coordinate)[0U] : 0.0F,
+            texture_coordinate ? (*texture_coordinate)[1U] : 0.0F,
         };
         const auto runtime_index =
             static_cast<std::uint32_t>(result.vertices.size());
@@ -376,6 +496,77 @@ SceneGeometry3dV1 build_scene_geometry_3d_v1(
     if (result.triangle_indices.empty() || !has_bounds) {
         throw SceneGeometryError(
             "The decoded GS stream contains no emitted source-space triangle geometry");
+    }
+    return result;
+}
+
+SceneGeometry3dMaterialV1 build_scene_geometry_3d_material_v1(
+    const SceneBlockSourceGeometryV1& source,
+    const GifGsDecodeResultV1& decoded) {
+    SceneGeometry3dMaterialV1 result;
+    result.geometry = build_scene_geometry_3d_v1(source, decoded);
+
+    std::vector<bool> referenced_vertices(decoded.vertices.size(), false);
+    std::uint64_t triangle_index = 0U;
+    for (const auto& primitive : decoded.primitives) {
+        if (primitive.emission != GifGsPrimitiveEmissionV1::emitted ||
+            !is_triangle_topology(primitive.topology) ||
+            primitive.vertex_count != 3U) {
+            continue;
+        }
+        bool has_complete_stq = true;
+        for (const auto source_index : primitive.vertex_indices) {
+            if (source_index >= referenced_vertices.size()) {
+                throw SceneGeometryError(
+                    "A scene material primitive references a missing vertex");
+            }
+            referenced_vertices[static_cast<std::size_t>(source_index)] = true;
+            has_complete_stq =
+                has_complete_stq &&
+                logical_stq(decoded.vertices[
+                    static_cast<std::size_t>(source_index)]).has_value();
+        }
+
+        const auto resolved =
+            has_complete_stq && uses_perspective_stq(primitive)
+                ? resolve_scene_texture(primitive)
+                : ResolvedSceneTextureV1{};
+        append_scene_material_batch(
+            result.material_batches, triangle_index, resolved.texture_index);
+        if (resolved.texture_index.has_value()) {
+            ++result.textured_triangle_count;
+        } else {
+            ++result.unresolved_material_triangle_count;
+        }
+        if (resolved.used_single_programmed_context) {
+            ++result.single_programmed_context_triangle_count;
+        }
+        ++triangle_index;
+    }
+
+    for (std::size_t index = 0U; index < referenced_vertices.size(); ++index) {
+        if (!referenced_vertices[index]) {
+            continue;
+        }
+        if (logical_stq(decoded.vertices[index]).has_value()) {
+            ++result.vertices_with_stq;
+        } else {
+            ++result.vertices_without_stq;
+        }
+    }
+    if (triangle_index != result.geometry.emitted_triangle_count ||
+        result.textured_triangle_count +
+                result.unresolved_material_triangle_count !=
+            triangle_index ||
+        result.material_batches.empty()) {
+        throw SceneGeometryError(
+            "Scene material coverage does not match source geometry");
+    }
+    const auto& final_batch = result.material_batches.back();
+    if (final_batch.first_triangle + final_batch.index_count / 3U !=
+        triangle_index) {
+        throw SceneGeometryError(
+            "Scene material batches do not cover the source geometry");
     }
     return result;
 }

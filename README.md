@@ -48,9 +48,9 @@ Stage 1 is in progress. The repository currently provides:
   explicitly skipping animated classes until bind transforms are recovered,
   while retaining per-class material slots, per-vertex UVs, and contiguous
   resolved material batches;
-- a bounded RAC1 level Moby texture-bank decoder for the raw GS RAM and decoded
-  level core, including linear PSMT8 pixels, GS CLUT permutation, PS2 alpha
-  expansion, RGBA output, and single-texture TGA export;
+- bounded RAC1 level tfrag and Moby texture-bank decoding from raw GS RAM and
+  the decoded level core, including linear PSMT8 pixels, GS CLUT permutation,
+  PS2 alpha expansion, RGBA output, and single-texture TGA export;
 - a bounded `2FIP` indexed-texture parser with PS2 CLUT normalization,
   RGBA expansion, and lossless TGA export;
 - a neutral seven-region boundary-table parser for decoded level payloads;
@@ -107,11 +107,11 @@ Stage 1 is in progress. The repository currently provides:
   against its prepared boot ELF before exposing reusable decoded level data;
 - a native Windows D3D11 level-viewer window that independently executes and
   merges every supported SceneBlock record in the selected level, defaults to
-  an auto-fit recovered-level 3D orbit view, adds static high-LOD Moby
-  placements with their decoded base textures and material UVs, uses a depth
-  buffer plus an explicit wireframe fallback for untextured batches, retains
-  the aggregate decoded GS projection for comparison, and falls back from
-  hardware rendering to WARP;
+  an auto-fit recovered-level 3D orbit view, renders recovered tfrag terrain
+  and static high-LOD Moby placements with their decoded base textures and
+  material UVs, uses a depth buffer plus an explicit wireframe fallback for
+  unresolved batches, retains the aggregate decoded GS projection for
+  comparison, and falls back from hardware rendering to WARP;
 - recognition of the PAL (`SCES-50916`) reference executable and detection of
   the NTSC-U/C (`SCUS-97199`) release;
 - a native Windows launcher with disc inspection, asynchronous Prepare,
@@ -120,7 +120,7 @@ Stage 1 is in progress. The repository currently provides:
 - application directories following the `PlunkDev/OpenRC` convention;
 - synthetic ISO, ELF, SHA-256, disc, WAD, bundle, 2FIP, boundary-table,
   MapArtV1, PS2 save-bundle, PS ADPCM, VAGp, SBlk/audio/WAV, decoded-WAD
-  inventory/probes, RAC gameplay/level-core/Moby texture/class/packet/LOD
+  inventory/probes, RAC gameplay/level-core/tfrag and Moby texture/class/packet/LOD
   geometry, static Moby scene transforms and material-slot mapping,
   scene-animation/subtitle, EE/R5900 boundaries, scene-block, scene-block
   VIF/VU execution and phase grouping, DVP VU microprogram decoding/execution,
@@ -204,6 +204,7 @@ build/Debug/openrc-cli.exe scene-blocks local/ratchet-and-clank.iso 0
 build/Debug/openrc-cli.exe scene-block-vu-run local/ratchet-and-clank.iso path/to/prepared/files/SCES_509.16 0 0 16 scene-block.tga
 build/Debug/openrc-cli.exe level-core local/ratchet-and-clank.iso 0
 build/Debug/openrc-cli.exe level-moby-scene local/ratchet-and-clank.iso 0
+build/Debug/openrc-cli.exe level-tfrag-texture local/ratchet-and-clank.iso 0 40 veldin-tfrag-040.tga
 build/Debug/openrc-cli.exe level-moby-texture local/ratchet-and-clank.iso 0 0 veldin-moby-000.tga
 build/Debug/openrc-cli.exe companion-wads local/ratchet-and-clank.iso 0
 build/Debug/openrc-cli.exe wad-bundle local/ratchet-and-clank.iso 14365 162
@@ -221,11 +222,11 @@ PAL v2.00 reference image; they are not assumed for other revisions.
 The `twofip` command accepts either a direct 2FIP global slot or a WadV1 slot
 whose decoded payload is 2FIP. The optional output is created only when the
 target path does not already exist.
-`level-moby-texture` selects one global entry from a level's Moby texture table,
-validates the complete bank against decoded core data and raw GS RAM, and can
-create one normalized RGBA TGA without overwriting an existing file. A model's
-packet texture number is first resolved through that model class's 16 local
-slots; it is not treated as a global table index.
+`level-tfrag-texture` and `level-moby-texture` select one table-local entry,
+validate the complete corresponding bank against decoded core data and raw GS
+RAM, and can create one normalized RGBA TGA without overwriting an existing
+file. A Moby packet texture number is first resolved through that model class's
+16 local slots; it is not treated as a global table index.
 `map-art` accepts a level ID from 0 through 18 and can create one 384x128 TGA
 containing its three validated 2FIP layers side by side. `ps2-save` inventories
 the reference build's PS2D memory-card resources without exporting game data.
@@ -262,17 +263,24 @@ reproduce the game's live camera.
 The native D3D11 window is still a diagnostic level viewer, not a playable
 runtime. For the confirmed entry-16 path it follows the game's VU-memory
 indirection and recovers signed source XYZ for each GS vertex, while using only
-the already-decoded emitted triangle topology. On reference Veldin, 460 records
+the already-decoded emitted triangle topology. It also snapshots both GS
+texture contexts, decodes TEX0/CLAMP writes, converts complete STQ to logical
+`S/Q,T/Q`, and accepts the corpus-verified table-index TEX0 convention. When
+PRMODE does not identify a context, the bounded RAC1 policy accepts a material
+only if exactly one context was programmed. On reference Veldin, 460 records
 produce 325 decoded GS streams; 263 normally completed records yield exact
 source geometry, merging to 22,428 vertices and 18,660 triangles. Another 135
 records emit no XGKICK in this pass and 62 stop on still-indeterminate runtime
 state, so this is an honest supported-record aggregate rather than a claim that
 every gameplay render pass is reconstructed. The original record-0 proof still
 contains 80 submitted vertices, 73 unique descriptors, and 71 unique source
-positions. An isolated debug orbit can inspect the merged 3D mesh, while `Tab`
-retains the aggregate GS-output comparison. The DVP VU layer still does not
-emulate bit-exact VU floating point or live PATH1 arbitration, and the geometry
-is not yet classified as terrain or collision.
+positions. The runtime decodes Veldin's 78-entry tfrag bank (878,592 indexed
+pixels) and submits contiguous recovered material batches through the D3D11
+texture path; any unresolved material remains a wireframe instead of receiving
+a guessed image. An isolated debug orbit can inspect the merged 3D mesh, while
+`Tab` retains the aggregate GS-output comparison. The DVP VU layer still does
+not emulate bit-exact VU floating point or live PATH1 arbitration, and this is
+not yet a classified collision or playable scene representation.
 
 For full-level entry-16 views, the runtime additionally loads the independently
 indexed gameplay and level-core Moby assets. It carries the 512-entry vertex
@@ -285,10 +293,10 @@ non-animated classes: 20,370 compacted vertices and 13,130 triangles beside
 the existing 22,428/18,660 recovered SceneBlock batch. They are now submitted
 through contiguous material batches with perspective-correct
 UV interpolation, decoded RGBA base textures, alpha-zero rejection, and depth
-testing. Explicitly untextured batches and the still-unclassified SceneBlock
-terrain remain diagnostic wireframes. Metal/bangle meshes and 153 animated
-placements still wait for their respective decoders and bind transforms. Ten
-Veldin placements reference external/zero model ownership and remain skipped.
+testing. Explicitly untextured or unresolved terrain batches remain diagnostic
+wireframes. Metal/bangle meshes and 153 animated placements still wait for
+their respective decoders and bind transforms. Ten Veldin placements reference
+external/zero model ownership and remain skipped.
 
 `dvp-vu` accepts comma-separated decimal VU pair addresses and ELF overlay
 section indices, with at most 128 values in either list. The example selects

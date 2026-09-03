@@ -451,6 +451,7 @@ RacLevelCoreIndexV1 parse_rac_level_core_index_v1(
     }
 
     result.moby_class_table_range = header.moby_classes.byte_range;
+    result.tfrag_texture_table_range = header.tfrag_textures.byte_range;
     result.moby_texture_table_range = header.moby_textures.byte_range;
 
     if (header.assets_encoded_size != encoded_asset_bytes.size() ||

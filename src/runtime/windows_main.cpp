@@ -25,6 +25,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -47,6 +48,7 @@ struct RuntimeArguments {
     std::uint64_t record_index = 0U;
     std::uint16_t entrypoint = 16U;
     bool all_records = false;
+    bool smoke_test = false;
     bool show_help = false;
 };
 
@@ -61,6 +63,9 @@ struct WindowState {
 struct LoadedSceneGeometry {
     openrc::runtime::SceneGeometryV1 raster;
     std::optional<openrc::runtime::SceneGeometry3dV1> source;
+    std::optional<openrc::RacLevelMobyTextureBankV1> tfrag_texture_bank;
+    std::vector<openrc::runtime::SceneMaterialBatchV1>
+        terrain_material_batches;
     std::optional<openrc::RacLevelMobyTextureBankV1> moby_texture_bank;
     std::vector<openrc::runtime::MobySceneMaterialBatchV1>
         moby_material_batches;
@@ -72,6 +77,11 @@ struct LoadedSceneGeometry {
     std::uint64_t no_event_record_count = 0U;
     std::uint64_t incomplete_stream_record_count = 0U;
     std::uint64_t unavailable_source_record_count = 0U;
+    std::uint64_t terrain_textured_triangle_count = 0U;
+    std::uint64_t terrain_unresolved_material_triangle_count = 0U;
+    std::uint64_t terrain_single_context_triangle_count = 0U;
+    std::uint64_t terrain_vertices_with_stq = 0U;
+    std::uint64_t terrain_vertices_without_stq = 0U;
     std::uint64_t moby_model_count = 0U;
     std::uint64_t moby_rendered_model_count = 0U;
     std::uint64_t moby_placement_count = 0U;
@@ -90,6 +100,47 @@ void add_aggregate_size(
         throw std::runtime_error(message);
     }
     total += addition;
+}
+
+void append_terrain_material_batches(
+    std::vector<openrc::runtime::SceneMaterialBatchV1>& destination,
+    const std::span<const openrc::runtime::SceneMaterialBatchV1> source,
+    const std::uint64_t triangle_offset) {
+    std::uint64_t expected_local_triangle = 0U;
+    for (const auto& batch : source) {
+        if (batch.first_triangle != expected_local_triangle ||
+            batch.index_count == 0U || batch.index_count % 3U != 0U) {
+            throw std::runtime_error(
+                "A terrain material batch is not contiguous");
+        }
+        const auto triangle_count = batch.index_count / 3U;
+        if (triangle_offset >
+                std::numeric_limits<std::uint64_t>::max() -
+                    batch.first_triangle ||
+            expected_local_triangle >
+                std::numeric_limits<std::uint64_t>::max() - triangle_count) {
+            throw std::runtime_error(
+                "A terrain material batch range overflows");
+        }
+        const auto first_triangle = triangle_offset + batch.first_triangle;
+        if (!destination.empty() &&
+            destination.back().texture_index == batch.texture_index &&
+            destination.back().first_triangle +
+                    destination.back().index_count / 3U ==
+                first_triangle) {
+            if (destination.back().index_count >
+                std::numeric_limits<std::uint64_t>::max() -
+                    batch.index_count) {
+                throw std::runtime_error(
+                    "A merged terrain material batch overflows");
+            }
+            destination.back().index_count += batch.index_count;
+        } else {
+            destination.push_back(openrc::runtime::SceneMaterialBatchV1{
+                first_triangle, batch.index_count, batch.texture_index});
+        }
+        expected_local_triangle += triangle_count;
+    }
 }
 
 void validate_source_geometry_result(
@@ -191,6 +242,10 @@ parse_unsigned_decimal(const std::wstring_view text) noexcept {
         const std::wstring_view name(raw_arguments[index]);
         if (name == L"--help" || name == L"-h" || name == L"/?") {
             result.show_help = true;
+            continue;
+        }
+        if (name == L"--smoke-test") {
+            result.smoke_test = true;
             continue;
         }
         if (index + 1 >= argument_count) {
@@ -477,10 +532,44 @@ load_scene_geometry(const RuntimeArguments& arguments) {
             if (execution.source_geometry_status ==
                     openrc::SceneBlockRuntimeSourceGeometryStatusV1::recovered &&
                 execution.source_geometry) {
-                auto source_geometry =
-                    openrc::runtime::build_scene_geometry_3d_v1(
+                auto source_material =
+                    openrc::runtime::build_scene_geometry_3d_material_v1(
                         *execution.source_geometry,
                         *execution.gs);
+                auto& source_geometry = source_material.geometry;
+                if (source_index_count % 3U != 0U) {
+                    throw std::runtime_error(
+                        "The aggregate terrain geometry is not a triangle list");
+                }
+                append_terrain_material_batches(
+                    result.terrain_material_batches,
+                    source_material.material_batches,
+                    source_index_count / 3U);
+                add_aggregate_size(
+                    result.terrain_textured_triangle_count,
+                    source_material.textured_triangle_count,
+                    kMaximumAggregateTriangleIndices / 3U,
+                    "The textured terrain triangle count exceeds its limit");
+                add_aggregate_size(
+                    result.terrain_unresolved_material_triangle_count,
+                    source_material.unresolved_material_triangle_count,
+                    kMaximumAggregateTriangleIndices / 3U,
+                    "The unresolved terrain material count exceeds its limit");
+                add_aggregate_size(
+                    result.terrain_single_context_triangle_count,
+                    source_material.single_programmed_context_triangle_count,
+                    kMaximumAggregateTriangleIndices / 3U,
+                    "The terrain context-policy count exceeds its limit");
+                add_aggregate_size(
+                    result.terrain_vertices_with_stq,
+                    source_material.vertices_with_stq,
+                    kMaximumAggregateVertices,
+                    "The terrain STQ vertex count exceeds its limit");
+                add_aggregate_size(
+                    result.terrain_vertices_without_stq,
+                    source_material.vertices_without_stq,
+                    kMaximumAggregateVertices,
+                    "The missing terrain STQ count exceeds its limit");
                 add_aggregate_size(
                     source_vertex_count,
                     source_geometry.vertices.size(),
@@ -491,7 +580,7 @@ load_scene_geometry(const RuntimeArguments& arguments) {
                     source_geometry.triangle_indices.size(),
                     kMaximumAggregateTriangleIndices,
                     "The full-level source geometry exceeds its index limit");
-                source_batches.push_back(std::move(source_geometry));
+                source_batches.push_back(std::move(source_material.geometry));
                 ++result.source_record_count;
             } else if (execution.source_geometry_status ==
                        openrc::SceneBlockRuntimeSourceGeometryStatusV1::
@@ -566,9 +655,22 @@ load_scene_geometry(const RuntimeArguments& arguments) {
     result.decoded_record_count = 1U;
     result.raster_record_count = 1U;
     if (execution.source_geometry) {
-        result.source = openrc::runtime::build_scene_geometry_3d_v1(
+        auto source_material =
+            openrc::runtime::build_scene_geometry_3d_material_v1(
             *execution.source_geometry,
             *execution.gs);
+        result.terrain_material_batches =
+            std::move(source_material.material_batches);
+        result.terrain_textured_triangle_count =
+            source_material.textured_triangle_count;
+        result.terrain_unresolved_material_triangle_count =
+            source_material.unresolved_material_triangle_count;
+        result.terrain_single_context_triangle_count =
+            source_material.single_programmed_context_triangle_count;
+        result.terrain_vertices_with_stq = source_material.vertices_with_stq;
+        result.terrain_vertices_without_stq =
+            source_material.vertices_without_stq;
+        result.source = std::move(source_material.geometry);
         result.source_record_count = 1U;
     }
     return result;
@@ -577,8 +679,7 @@ load_scene_geometry(const RuntimeArguments& arguments) {
 void attach_static_moby_geometry(
     const RuntimeArguments& arguments,
     LoadedSceneGeometry& geometry) {
-    if (!arguments.all_records ||
-        arguments.entrypoint !=
+    if (arguments.entrypoint !=
             openrc::kSceneBlockSourceGeometryEntrypointV1 ||
         !geometry.source) {
         return;
@@ -588,6 +689,33 @@ void attach_static_moby_geometry(
         arguments.disc_image,
         arguments.level_id,
         make_moby_asset_limits());
+    if (geometry.terrain_material_batches.empty() ||
+        assets.tfrag_textures.textures.empty()) {
+        throw std::runtime_error(
+            "The terrain source geometry has no decoded texture materials");
+    }
+    const auto terrain_triangle_count =
+        geometry.source->triangle_indices.size() / 3U;
+    const auto& final_terrain_batch = geometry.terrain_material_batches.back();
+    if (geometry.source->triangle_indices.size() % 3U != 0U ||
+        final_terrain_batch.first_triangle +
+                final_terrain_batch.index_count / 3U !=
+            terrain_triangle_count) {
+        throw std::runtime_error(
+            "The terrain texture materials do not cover source geometry");
+    }
+    for (const auto& batch : geometry.terrain_material_batches) {
+        if (batch.texture_index &&
+            *batch.texture_index >= assets.tfrag_textures.textures.size()) {
+            throw std::runtime_error(
+                "A terrain material references a missing tfrag texture");
+        }
+    }
+    geometry.tfrag_texture_bank = std::move(assets.tfrag_textures);
+
+    if (!arguments.all_records) {
+        return;
+    }
     constexpr openrc::runtime::MobySceneGeometryLimitsV1 moby_limits{
         4096U,
         65'536U,
@@ -620,8 +748,7 @@ void attach_static_moby_geometry(
         throw std::runtime_error(
             "The terrain source geometry is not a triangle list");
     }
-    geometry.moby_first_triangle =
-        geometry.source->triangle_indices.size() / 3U;
+    geometry.moby_first_triangle = terrain_triangle_count;
     geometry.moby_material_batches = std::move(moby.material_batches);
     geometry.moby_texture_bank = std::move(assets.textures);
     std::array<openrc::runtime::SceneGeometry3dV1, 2U> batches{
@@ -845,7 +972,9 @@ LRESULT CALLBACK window_procedure(
             std::to_wstring(non_drawing_record_count) + L", triangles " +
             std::to_wstring(source_triangle_count) + L" source + " +
             std::to_wstring(geometry.moby_triangle_count) +
-            L" static-Moby, placements " +
+            L" static-Moby, terrain-textured " +
+            std::to_wstring(geometry.terrain_textured_triangle_count) + L"/" +
+            std::to_wstring(source_triangle_count) + L", placements " +
             std::to_wstring(geometry.moby_rendered_placement_count) + L"/" +
             std::to_wstring(geometry.moby_placement_count) + L", " +
             std::to_wstring(geometry.raster.emitted_triangle_count) + L" GS";
@@ -854,7 +983,12 @@ LRESULT CALLBACK window_procedure(
         std::to_wstring(arguments.level_id) + L", record " +
         std::to_wstring(arguments.record_index) + L", entry " +
         std::to_wstring(arguments.entrypoint) + L" - " +
-        std::to_wstring(geometry.raster.emitted_triangle_count) + L" triangles";
+        std::to_wstring(geometry.raster.emitted_triangle_count) +
+        L" triangles, terrain-textured " +
+        std::to_wstring(geometry.terrain_textured_triangle_count) + L"/" +
+        std::to_wstring(geometry.source
+                            ? geometry.source->emitted_triangle_count
+                            : 0U);
 }
 
 [[nodiscard]] HWND create_runtime_window(
@@ -907,6 +1041,8 @@ constexpr wchar_t kUsageText[] =
     L"  --level <0..18>\n"
     L"  --record <index|all>\n"
     L"  --entry-pair <6,8,10,14,16,20>\n\n"
+    L"Developer verification:\n"
+    L"  --smoke-test - render one hidden frame and exit\n\n"
     L"Using --record all independently executes and merges every supported "
     L"record in the selected level.\n\n"
     L"Recovered 3D debug view (entry 16):\n"
@@ -922,8 +1058,10 @@ int WINAPI wWinMain(
     HINSTANCE,
     PWSTR,
     const int show_command) {
+    bool suppress_error_ui = false;
     try {
         const auto arguments = parse_arguments();
+        suppress_error_ui = arguments.smoke_test;
         if (arguments.show_help) {
             MessageBoxW(
                 nullptr,
@@ -943,20 +1081,34 @@ int WINAPI wWinMain(
             state.base_title);
         try {
             if (geometry.source) {
-                if (geometry.moby_texture_bank &&
-                    geometry.moby_first_triangle) {
-                    const openrc::runtime::D3d11MobyTextureSourceV1
-                        moby_textures{
-                            *geometry.moby_first_triangle,
-                            geometry.moby_material_batches,
-                            geometry.moby_texture_bank->textures,
-                        };
+                if (geometry.tfrag_texture_bank &&
+                    !geometry.terrain_material_batches.empty()) {
+                    const auto terrain_triangle_count =
+                        geometry.moby_first_triangle.value_or(
+                            geometry.source->emitted_triangle_count);
+                    openrc::runtime::D3d11SourceTextureSourcesV1 textures{
+                        {
+                            terrain_triangle_count,
+                            geometry.terrain_material_batches,
+                            geometry.tfrag_texture_bank->textures,
+                        },
+                        std::nullopt,
+                    };
+                    if (geometry.moby_texture_bank &&
+                        geometry.moby_first_triangle) {
+                        textures.moby =
+                            openrc::runtime::D3d11MobyTextureSourceV1{
+                                *geometry.moby_first_triangle,
+                                geometry.moby_material_batches,
+                                geometry.moby_texture_bank->textures,
+                            };
+                    }
                     state.renderer =
                         std::make_unique<openrc::runtime::D3d11Renderer>(
                             window,
                             geometry.raster,
                             *geometry.source,
-                            moby_textures);
+                            textures);
                 } else {
                     state.renderer =
                         std::make_unique<openrc::runtime::D3d11Renderer>(
@@ -971,6 +1123,12 @@ int WINAPI wWinMain(
         } catch (...) {
             DestroyWindow(window);
             throw;
+        }
+
+        if (arguments.smoke_test) {
+            state.renderer->render();
+            DestroyWindow(window);
+            return 0;
         }
 
         ShowWindow(window, show_command == 0 ? SW_SHOWNORMAL : show_command);
@@ -993,6 +1151,10 @@ int WINAPI wWinMain(
         }
         return static_cast<int>(message.wParam);
     } catch (const std::exception& error) {
+        if (suppress_error_ui) {
+            OutputDebugStringW(utf8_to_wide(error.what()).c_str());
+            return 1;
+        }
         MessageBoxW(
             nullptr,
             utf8_to_wide(error.what()).c_str(),

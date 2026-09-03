@@ -54,7 +54,21 @@ void expect_geometry_error(Callback&& callback, const std::string& message) {
     primitive.vertex_indices = {a, b, c};
     primitive.vertex_count = 3U;
     primitive.emission = openrc::GifGsPrimitiveEmissionV1::emitted;
+    primitive.state.known = true;
+    primitive.state.raw = 1U << 4U;
     return primitive;
+}
+
+void set_table_texture(
+    openrc::GifGsPrimitiveV1& primitive,
+    const std::size_t context_index,
+    const std::uint32_t texture_index) {
+    openrc::GifGsTex0StateV1 tex0;
+    tex0.raw_low = {texture_index, 0xffffffffU};
+    tex0.raw_high = {0U, 0xffffffffU};
+    tex0.texture_base_pointer =
+        static_cast<std::uint16_t>(texture_index);
+    primitive.texture_binding.contexts[context_index].tex0 = tex0;
 }
 
 [[nodiscard]] openrc::SceneBlockSourceVertexV1 make_source_vertex(
@@ -281,6 +295,82 @@ void test_source_geometry_uses_gs_topology_without_screen_coordinates() {
            "source-space emitted triangle count is incorrect");
 }
 
+void test_source_materials_use_stq_and_bounded_context_policy() {
+    openrc::GifGsDecodeResultV1 decoded;
+    decoded.vertices.resize(9U);
+    for (std::size_t index = 0U; index < decoded.vertices.size(); ++index) {
+        decoded.vertices[index].texture.s =
+            static_cast<float>(index + 1U);
+        decoded.vertices[index].texture.t =
+            static_cast<float>((index + 1U) * 2U);
+        decoded.vertices[index].texture.q = 2.0F;
+    }
+    decoded.vertices[8U].texture.q = 0.0F;
+
+    auto first = make_triangle(0U, 1U, 2U);
+    set_table_texture(first, 0U, 12U);
+    auto second = make_triangle(2U, 1U, 3U);
+    set_table_texture(second, 0U, 12U);
+    auto selected_second_context = make_triangle(3U, 4U, 5U);
+    set_table_texture(selected_second_context, 0U, 99U);
+    set_table_texture(selected_second_context, 1U, 7U);
+    selected_second_context.texture_binding.selected_context_index = 1U;
+    selected_second_context.texture_binding.context =
+        selected_second_context.texture_binding.contexts[1U];
+    auto ambiguous = make_triangle(5U, 4U, 0U);
+    set_table_texture(ambiguous, 0U, 2U);
+    set_table_texture(ambiguous, 1U, 3U);
+    auto missing_stq = make_triangle(6U, 7U, 8U);
+    set_table_texture(missing_stq, 0U, 9U);
+    auto fixed_coordinates = make_triangle(0U, 1U, 2U);
+    set_table_texture(fixed_coordinates, 0U, 10U);
+    fixed_coordinates.state.raw |= 1U << 8U;
+    auto texture_mapping_disabled = make_triangle(0U, 1U, 2U);
+    set_table_texture(texture_mapping_disabled, 0U, 11U);
+    texture_mapping_disabled.state.raw &= ~(1U << 4U);
+    decoded.primitives = {first,
+                          second,
+                          selected_second_context,
+                          ambiguous,
+                          missing_stq,
+                          fixed_coordinates,
+                          texture_mapping_disabled};
+
+    openrc::SceneBlockSourceGeometryV1 source;
+    for (std::size_t index = 0U; index < decoded.vertices.size(); ++index) {
+        source.vertices.push_back(make_source_vertex(
+            index,
+            static_cast<std::int32_t>(index),
+            static_cast<std::int32_t>(index * 2U),
+            static_cast<std::int32_t>(index * 3U),
+            {1U, 2U, 3U, 4U}));
+    }
+
+    const auto result =
+        openrc::runtime::build_scene_geometry_3d_material_v1(source, decoded);
+    expect(result.geometry.vertices.size() == 9U &&
+               result.geometry.emitted_triangle_count == 7U,
+           "material geometry lost source vertices or triangles");
+    expect(result.geometry.vertices[0U].u == 0.5F &&
+               result.geometry.vertices[0U].v == 1.0F &&
+               result.geometry.vertices[8U].u == 0.0F &&
+               result.geometry.vertices[8U].v == 0.0F,
+           "STQ was not converted to bounded logical UV");
+    expect(result.material_batches ==
+               std::vector<openrc::runtime::SceneMaterialBatchV1>{
+                   {0U, 6U, 12U},
+                   {2U, 3U, 7U},
+                   {3U, 12U, std::nullopt},
+               },
+           "terrain material runs were not coalesced exactly");
+    expect(result.vertices_with_stq == 8U &&
+               result.vertices_without_stq == 1U &&
+               result.textured_triangle_count == 3U &&
+               result.unresolved_material_triangle_count == 4U &&
+               result.single_programmed_context_triangle_count == 2U,
+           "terrain UV/material diagnostics mismatch");
+}
+
 void test_source_geometry_requires_one_to_one_gs_provenance() {
     openrc::GifGsDecodeResultV1 decoded;
     decoded.vertices.resize(3U);
@@ -466,6 +556,7 @@ int main() {
         test_only_emitted_triangles_are_submitted();
         test_malformed_emitted_geometry_is_rejected();
         test_source_geometry_uses_gs_topology_without_screen_coordinates();
+        test_source_materials_use_stq_and_bounded_context_policy();
         test_source_geometry_requires_one_to_one_gs_provenance();
         test_raster_geometries_merge_indices_bounds_and_counters();
         test_source_geometries_merge_indices_bounds_and_counters();

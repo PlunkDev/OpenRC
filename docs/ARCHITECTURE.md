@@ -25,7 +25,7 @@ openrc_core
 ├── strict bounded SceneAnimationBankV1 camera/actor/frame/root parsing
 ├── strict RacGameplayBankV1 directory plus RAC1 Moby IDs/static placements
 ├── RacLevelCoreIndexV1 ownership/linking for local and shared Moby model cores
-├── bounded per-level gameplay/model loading for local and shared Moby assets
+├── bounded per-level tfrag texture and local/shared Moby asset loading
 ├── bounded RacMobyClassV1 headers, packet ownership, and fixed asset ranges
 ├── regular Moby VIF/vertex-cache/strip/packet-local triangle recovery
 ├── regular high/low LOD assembly with cross-packet cache/material state
@@ -35,7 +35,7 @@ openrc_core
 ├── conservative SceneBlock VIF execution with VU1 memory/write provenance
 ├── neutral SceneBlock VIF/VU phases with inherited state and exact qword runs
 ├── exact SceneBlock task preamble/record execution with dual-bank frame input
-├── stateful XGKICK GIF/GS decoding and primitive/raster-state assembly
+├── stateful XGKICK GIF/GS primitive, raster, and texture-context snapshots
 ├── entry-16 source XYZ recovery with VIF/VU provenance and GS-color validation
 ├── profile-bound reusable ISO/ELF/SceneBlock runtime loading and execution
 ├── CompanionTerminalWadIndexV1 validation of the shared terminal WAD bank
@@ -76,9 +76,9 @@ openrc-runtime
 ├── named ISO/ELF/level/record/entry process contract
 ├── exact ISO-to-prepared-ELF SHA-256 binding before scene access
 ├── emitted GS-triangle conversion with raster-context coordinates
-├── recovered-level 3D wireframe with bounded debug orbit controls
+├── recovered-level 3D tfrag material batches with bounded debug orbit controls
 ├── explicit world-to-SceneBlock ×1024 Moby unit conversion and bounded merge
-├── static-Moby UV/material batches and decoded base-texture sampling
+├── tfrag STQ/TEX0 and static-Moby UV/material base-texture sampling
 ├── D24 depth ordering and explicit untextured wireframe fallback
 ├── Tab comparison against the decoded GS 2D output
 └── native D3D11 submission, auto-fit resize, and WARP fallback
@@ -165,9 +165,14 @@ separately. The viewer can orbit the merged source mesh, but that orbit is
 isolated PC-side diagnostic state: it never rewrites the VU frame transform or
 claims to reproduce the original camera. Static Moby batches now retain their
 decoded material UVs and sample their normalized base textures with D3D depth
-ordering; untextured batches remain explicit wireframe fallbacks. Terrain
-classification/textures, metal and animated model paths, the live game camera,
-and gameplay remain outside this layer.
+ordering. The GIF/GS layer also retains both TEX0 and CLAMP contexts on every
+vertex/primitive snapshot, even when PRMODE leaves the effective context
+unresolved. The RAC1 SceneBlock adapter converts complete STQ to `S/Q,T/Q` and
+accepts a table-index material only from the selected context or the sole
+programmed context. Those tfrag batches use the same D3D texture path;
+unresolved batches remain explicit wireframe fallbacks. Collision semantics,
+metal and animated model paths, the live game camera, and gameplay remain
+outside this layer.
 
 The current CFG is deliberately context-insensitive and folds each decoded
 delay pair into its transfer block. It rejects an instruction-run start,
@@ -236,8 +241,8 @@ assembler executes packets in table order, carrying the 512-entry vertex cache
 and current texture separately for high and low LOD; duplicate vertices retain
 their transfer-local UV and exact source provenance. The level asset loader
 links local/shared ownership back to gameplay placements. It also slices raw
-GS RAM from primary-extent-0 subrange 3 and decodes every 0x10-byte Moby
-texture record against the shared-texture block in decompressed subrange 10.
+GS RAM from primary-extent-0 subrange 3 and decodes every 0x10-byte tfrag and
+Moby texture record against the shared-texture block in decompressed subrange 10.
 Base pixels remain linear PSMT8 indices; the decoder swaps GS CLUT address bits
 3/4, expands PS2 alpha, and owns both indexed and RGBA output. Each model keeps
 its 16 local material slots, and the static scene builder retains UVs while
@@ -248,7 +253,7 @@ explicit: CLI diagnostics retain world units, while the current source viewer
 converts Moby output to 1,024 raw SceneBlock ITOF0 units per world unit before
 the bounded merge. Model loading and preparation also have aggregate workspace
 caps rather than multiplying per-model limits by the class count.
-Metal and bangle geometry, D3D11 texture sampling, skeletal bind/animation,
+Metal and bangle geometry, mip/filter material state, skeletal bind/animation,
 and the original visibility policy remain separate rather than being guessed.
 MapArtV1 composes three palette-compatible images without assigning gameplay
 meaning to the remaining opaque regions. The PS2D parser likewise retains

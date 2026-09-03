@@ -116,6 +116,7 @@ struct RacLevelCoreIndexV1 {
     RacLevelCoreRangeV1 rac1_header_trailer_range;
     RacLevelCoreHeaderV1 header;
     RacLevelCoreRangeV1 moby_class_table_range;
+    RacLevelCoreRangeV1 tfrag_texture_table_range;
     RacLevelCoreRangeV1 moby_texture_table_range;
     RacLevelCoreRangeV1 ratchet_sequence_table_range;
     RacLevelCoreRangeV1 gadget_table_range;

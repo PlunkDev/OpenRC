@@ -48,6 +48,10 @@ struct RacLevelMobyAssetLimitsV1 {
 struct RacLevelMobyAssetsV1 {
   std::uint32_t level_id = 0U;
   RacGameplayBankV1 gameplay;
+  // Tfrag and Moby tables share the same RAC1 0x10-byte TextureEntry format,
+  // decoded-core pixel store, and raw GS-RAM palette store. They remain
+  // separate banks so their table-local indices cannot be confused.
+  RacLevelMobyTextureBankV1 tfrag_textures;
   RacLevelMobyTextureBankV1 textures;
   std::vector<RacLevelMobyModelV1> models;
   std::uint64_t local_model_count = 0U;
