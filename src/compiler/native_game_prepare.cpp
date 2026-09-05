@@ -17,6 +17,8 @@
 #include "openrc/rac_destructible_scene_compile.hpp"
 #include "openrc/rac_level_foundation_compile.hpp"
 #include "openrc/rac_level_moby_assets.hpp"
+#include "openrc/rac_moby_actor_scene_compile.hpp"
+#include "openrc/rac_moby_animation_compile.hpp"
 #include "openrc/rac_ratchet_animation_compile.hpp"
 #include "openrc/runtime_level_content.hpp"
 #include "openrc/scene_block_geometry.hpp"
@@ -61,9 +63,9 @@ constexpr std::uint64_t kMaximumElfBytes = 64U * 1024U * 1024U;
 constexpr std::uint64_t kMaximumCollisionPayloadBytes = 32U * 1024U * 1024U;
 constexpr std::uint64_t kMaximumRenderScenePayloadBytes =
     UINT64_C(512) * 1024U * 1024U;
-constexpr std::uint64_t kMaximumPlayerActorPayloadBytes =
+constexpr std::uint64_t kMaximumActorPayloadBytes =
     UINT64_C(256) * 1024U * 1024U;
-constexpr std::uint64_t kMaximumPlayerAnimationPayloadBytes =
+constexpr std::uint64_t kMaximumActorAnimationPayloadBytes =
     UINT64_C(64) * 1024U * 1024U;
 constexpr std::uint64_t kMaximumEntityScenePayloadBytes = 64U * 1024U * 1024U;
 constexpr std::uint64_t kMaximumGameplayScenePayloadBytes =
@@ -96,6 +98,20 @@ constexpr std::string_view kBoltItemKey = "openrc.currency/bolts";
 constexpr std::uint32_t kBoltCrateSourceClassId = 500U;
 constexpr std::string_view kBoltCrateArchetypeKey =
     "openrc.breakable/bolt-crate";
+constexpr std::uint32_t kVeldinLevelId = 0U;
+constexpr std::uint32_t kVeldinMoby749SourceClassId = 749U;
+constexpr std::string_view kVeldinMoby749RigKey =
+    "actors/rac1/moby/0749/rig";
+constexpr std::string_view kVeldinMoby749HighModelKey =
+    "actors/rac1/moby/0749/high";
+constexpr std::string_view kVeldinMoby749SourceSequenceKeyPrefix =
+    "actors/rac1/moby/0749/source-sequence/";
+constexpr std::string_view kVeldinMoby749ArchetypeKey = "rac1/moby/0749";
+constexpr std::uint32_t kVeldinMoby749AnimationSourceUpdatesPerSecond = 50U;
+constexpr std::array<std::uint16_t, 8U> kVeldinMoby749FrameCounts{
+    1U, 6U, 13U, 15U, 15U, 21U, 25U, 23U};
+constexpr std::uint32_t kVeldinMoby749PlacementBegin = 143U;
+constexpr std::uint32_t kVeldinMoby749PlacementCount = 16U;
 
 constexpr RacMobyModelGeometryLimitsV1 kMobyModelGeometryLimits{
     {kMaximumDecodedWadBytes, 4096U, 4096U, 4096U, 1'000'000U, 4096U,
@@ -236,33 +252,17 @@ make_single_actor_library_limits() {
       kMaximumTwoFipPixels * 4U};
 }
 
-[[nodiscard]] constexpr ActorLibraryIoLimitsV1
-make_player_actor_io_limits() {
-  return ActorLibraryIoLimitsV1{kMaximumPlayerActorPayloadBytes,
-                                make_single_actor_library_limits()};
+[[nodiscard]] constexpr ActorLibraryIoLimitsV1 make_actor_io_limits() {
+  auto limits = game::make_runtime_level_content_limits_v1().actor_library;
+  limits.max_encoded_bytes = kMaximumActorPayloadBytes;
+  return limits;
 }
 
 [[nodiscard]] constexpr ActorAnimationIoLimitsV1
-make_player_animation_io_limits() {
-  return ActorAnimationIoLimitsV1{
-      kMaximumPlayerAnimationPayloadBytes,
-      ActorAnimationLimitsV1{
-          kRacLevelCoreRatchetSequenceCountV1,
-          255U,
-          static_cast<std::uint64_t>(
-              kRacLevelCoreRatchetSequenceCountV1) *
-              255U,
-          255U,
-          static_cast<std::uint64_t>(
-              kRacLevelCoreRatchetSequenceCountV1) *
-              255U * 255U,
-          128U,
-          65'536U,
-          kPlayerAnimationSourceUpdatesPerSecond,
-          1'000'000.0F,
-          1.0e-8,
-      },
-  };
+make_actor_animation_io_limits() {
+  auto limits = game::make_runtime_level_content_limits_v1().actor_animation;
+  limits.max_encoded_bytes = kMaximumActorAnimationPayloadBytes;
+  return limits;
 }
 
 [[nodiscard]] constexpr RacRatchetAnimationCompileLimitsV1
@@ -272,7 +272,18 @@ make_player_animation_compile_limits() {
                                  kMaximumDecodedWadBytes, 255U, 255U},
       RacRatchetPoseLimitsV1{255U, kMaximumDecodedWadBytes, 65'535U,
                              65'535U, 1.0e-8},
-      make_player_animation_io_limits().bank,
+      make_actor_animation_io_limits().bank,
+  };
+}
+
+[[nodiscard]] constexpr RacMobyAnimationCompileLimitsV1
+make_moby_animation_compile_limits() {
+  return RacMobyAnimationCompileLimitsV1{
+      RacRatchetSequenceLimitsV1{kMaximumDecodedWadBytes,
+                                 kMaximumDecodedWadBytes, 255U, 255U},
+      RacRatchetPoseLimitsV1{255U, kMaximumDecodedWadBytes, 65'535U,
+                             65'535U, 1.0e-8},
+      make_actor_animation_io_limits().bank,
   };
 }
 
@@ -298,7 +309,7 @@ make_player_animation_profiles(const RacLevelCoreIndexV1 &level_core) {
 make_native_entity_scene_io_limits() {
   return EntitySceneIoLimitsV1{
       kMaximumEntityScenePayloadBytes,
-      EntitySceneLimitsV1{65'536U, 65'536U, 65'536U, 16U, 1U, 256U, 256U,
+      EntitySceneLimitsV1{65'536U, 65'536U, 65'536U, 65'536U, 1U, 256U, 256U,
                           UINT64_C(16) * 1024U * 1024U}};
 }
 
@@ -563,6 +574,63 @@ compile_player_bind_pose(const RacLevelMobyModelV1 &player) {
   request.texture_bank = std::move(assets.textures);
   return compile_rac_actor_library_v1(request,
                                       make_single_actor_library_limits());
+}
+
+[[nodiscard]] const RacLevelMobyModelV1 &
+require_unique_moby_model(const RacLevelMobyAssetsV1 &assets,
+                          std::uint32_t class_id,
+                          std::string_view semantic_description);
+
+struct CompiledMobyActorV1 {
+  ActorLibraryV1 library;
+  ActorAnimationBankV1 animations;
+};
+
+[[nodiscard]] CompiledMobyActorV1 compile_moby_actor(
+    const RacLevelMobyAssetsV1 &assets, const std::uint32_t class_id,
+    const std::string_view rig_key, const std::string_view model_key,
+    const std::string_view sequence_key_prefix,
+    const std::uint32_t source_updates_per_second,
+    const std::string_view semantic_description) {
+  const auto &source =
+      require_unique_moby_model(assets, class_id, semantic_description);
+  auto bind_pose = compile_rac_moby_bind_pose_geometry_v1(
+      source.source_bytes, source.source_class, RacMobyLodV1::high,
+      make_single_moby_bind_pose_limits());
+  const auto animation_rig = bind_pose.bind_rig;
+
+  RacActorLibraryCompileRequestV1 actor_request;
+  actor_request.rig_semantic_key = rig_key;
+  actor_request.model_semantic_key = model_key;
+  actor_request.bind_pose = std::move(bind_pose);
+  actor_request.texture_slots = source.texture_slots;
+  actor_request.used_texture_slot_count = source.used_texture_slot_count;
+  actor_request.texture_bank = assets.textures;
+  auto library = compile_rac_actor_library_v1(
+      actor_request, make_single_actor_library_limits());
+
+  const auto profiles = make_rac_moby_complete_animation_profiles_v1(
+      source.source_class, {}, sequence_key_prefix,
+      ActorAnimationWrapModeV1::clamp);
+  auto animations = compile_rac_moby_animation_bank_v1(
+      source.source_bytes, source.source_class, animation_rig,
+      std::string(rig_key), profiles, source_updates_per_second,
+      make_moby_animation_compile_limits());
+  return CompiledMobyActorV1{std::move(library), std::move(animations)};
+}
+
+[[nodiscard]] RacMobyActorSceneCompileLimitsV1
+make_moby_actor_scene_compile_limits() {
+  return RacMobyActorSceneCompileLimitsV1{
+      65'536U, make_single_actor_library_limits(),
+      make_native_entity_scene_io_limits().scene};
+}
+
+[[nodiscard]] RacMobyActorSceneCompileProfileV1
+make_veldin_moby_749_actor_profile() {
+  return RacMobyActorSceneCompileProfileV1{
+      kVeldinMoby749SourceClassId, std::string(kVeldinMoby749HighModelKey),
+      std::string(kVeldinMoby749ArchetypeKey), ActorAffineTransformV1{}};
 }
 
 [[nodiscard]] bool has_static_moby_class(const RacLevelMobyAssetsV1 &assets,
@@ -911,9 +979,10 @@ find_authored_record(const std::vector<Item> &items,
 }
 
 [[nodiscard]] bool
-exact_player_actor_provenance(const LevelPackageV1 &package,
-                              const std::uint64_t source_image_bytes,
-                              const PreparedContentDigestV1 &source_image_sha256) {
+exact_actor_provenance(const LevelPackageV1 &package,
+                       const std::uint32_t level_id,
+                       const std::uint64_t source_image_bytes,
+                       const PreparedContentDigestV1 &source_image_sha256) {
   const auto *const resource =
       find_unique_resource(package, kActorLibraryResourceIdV1);
   if (!exact_upsert_resource_contract(
@@ -939,21 +1008,40 @@ exact_player_actor_provenance(const LevelPackageV1 &package,
 
   try {
     const auto library =
-        decode_actor_library_v1(resource->payload, make_player_actor_io_limits());
-    if (library.rigs.size() != 1U || library.models.size() != 1U) {
+        decode_actor_library_v1(resource->payload, make_actor_io_limits());
+    const auto expected_actor_count = level_id == kVeldinLevelId ? 2U : 1U;
+    if (library.rigs.size() != expected_actor_count ||
+        library.models.size() != expected_actor_count) {
       return false;
     }
     const auto &rig = library.rigs.front();
     const auto &model = library.models.front();
-    return rig.id == 0U && rig.semantic_key == kPlayerRigKey &&
-           !rig.rig.joints.empty() && model.id == 0U &&
-           model.semantic_key == kPlayerHighModelKey &&
-           model.rig_key == kPlayerRigKey && model.meshes.size() == 1U &&
-           model.meshes.front().id == 0U &&
-           !model.meshes.front().vertices.empty() &&
-           !model.meshes.front().triangle_indices.empty() &&
-           !model.meshes.front().draw_ranges.empty() &&
-           !model.materials.empty();
+    if (rig.id != 0U || rig.semantic_key != kPlayerRigKey ||
+        rig.rig.joints.empty() || model.id != 0U ||
+        model.semantic_key != kPlayerHighModelKey ||
+        model.rig_key != kPlayerRigKey || model.meshes.size() != 1U ||
+        model.meshes.front().id != 0U ||
+        model.meshes.front().vertices.empty() ||
+        model.meshes.front().triangle_indices.empty() ||
+        model.meshes.front().draw_ranges.empty() || model.materials.empty()) {
+      return false;
+    }
+    if (level_id != kVeldinLevelId) {
+      return true;
+    }
+    const auto &moby_rig = library.rigs[1U];
+    const auto &moby_model = library.models[1U];
+    return moby_rig.id == 1U &&
+           moby_rig.semantic_key == kVeldinMoby749RigKey &&
+           moby_rig.rig.joints.size() == 53U && moby_model.id == 1U &&
+           moby_model.semantic_key == kVeldinMoby749HighModelKey &&
+           moby_model.rig_key == kVeldinMoby749RigKey &&
+           moby_model.meshes.size() == 1U &&
+           moby_model.meshes.front().id == 0U &&
+           !moby_model.meshes.front().vertices.empty() &&
+           !moby_model.meshes.front().triangle_indices.empty() &&
+           !moby_model.meshes.front().draw_ranges.empty() &&
+           !moby_model.materials.empty();
   } catch (const ActorLibraryIoError &) {
     return false;
   } catch (const ActorLibraryError &) {
@@ -961,7 +1049,7 @@ exact_player_actor_provenance(const LevelPackageV1 &package,
   }
 }
 
-[[nodiscard]] bool exact_player_animation_provenance(
+[[nodiscard]] bool exact_actor_animation_provenance(
     const LevelPackageV1 &package, const std::uint64_t source_image_bytes,
     const PreparedContentDigestV1 &source_image_sha256) {
   const auto *const animation_resource =
@@ -992,13 +1080,21 @@ exact_player_actor_provenance(const LevelPackageV1 &package,
 
   try {
     const auto library = decode_actor_library_v1(
-        actor_resource->payload, make_player_actor_io_limits());
+        actor_resource->payload, make_actor_io_limits());
     const auto animations = decode_actor_animation_bank_v1(
-        animation_resource->payload, make_player_animation_io_limits());
-    if (library.rigs.size() != 1U ||
-        package.level_id >= kPlayerAnimationClipCountsByLevel.size() ||
-        animations.clips.size() !=
-            kPlayerAnimationClipCountsByLevel[package.level_id]) {
+        animation_resource->payload, make_actor_animation_io_limits());
+    if (package.level_id >= kPlayerAnimationClipCountsByLevel.size()) {
+      return false;
+    }
+    const auto player_clip_count =
+        static_cast<std::size_t>(
+            kPlayerAnimationClipCountsByLevel[package.level_id]);
+    const auto moby_clip_count =
+        package.level_id == kVeldinLevelId
+            ? kVeldinMoby749FrameCounts.size()
+            : 0U;
+    if (library.rigs.size() != (moby_clip_count == 0U ? 1U : 2U) ||
+        animations.clips.size() != player_clip_count + moby_clip_count) {
       return false;
     }
     const auto &rig = library.rigs.front();
@@ -1008,7 +1104,7 @@ exact_player_actor_provenance(const LevelPackageV1 &package,
                                    kPlayerRunAnimationKey};
     std::array<bool, kRacLevelCoreRatchetSequenceCountV1> seen_slots{};
     std::optional<std::uint32_t> previous_unclassified_slot;
-    for (std::size_t index = 0U; index < animations.clips.size(); ++index) {
+    for (std::size_t index = 0U; index < player_clip_count; ++index) {
       const auto &clip = animations.clips[index];
       const auto prefix_bytes = kPlayerSourceSequenceKeyPrefix.size();
       if (clip.semantic_key.size() != prefix_bytes + 3U ||
@@ -1053,6 +1149,39 @@ exact_player_actor_provenance(const LevelPackageV1 &package,
       for (const auto &frame : clip.frames) {
         if (frame.joint_poses.size() != rig.rig.joints.size()) {
           return false;
+        }
+      }
+    }
+    if (moby_clip_count != 0U) {
+      const auto &moby_rig = library.rigs[1U];
+      const auto moby_rig_digest =
+          actor_rig_content_sha256_v1(moby_rig.rig);
+      for (std::size_t slot = 0U; slot < moby_clip_count; ++slot) {
+        const auto clip_index = player_clip_count + slot;
+        const auto &clip = animations.clips[clip_index];
+        const auto prefix_bytes =
+            kVeldinMoby749SourceSequenceKeyPrefix.size();
+        if (clip.semantic_key.size() != prefix_bytes + 3U ||
+            clip.semantic_key.compare(
+                0U, prefix_bytes,
+                kVeldinMoby749SourceSequenceKeyPrefix) != 0 ||
+            clip.semantic_key[prefix_bytes] != '0' ||
+            clip.semantic_key[prefix_bytes + 1U] != '0' ||
+            clip.semantic_key[prefix_bytes + 2U] !=
+                static_cast<char>('0' + slot) ||
+            clip.id != clip_index ||
+            clip.rig_key != kVeldinMoby749RigKey ||
+            clip.rig_content_sha256 != moby_rig_digest ||
+            clip.source_updates_per_second !=
+                kVeldinMoby749AnimationSourceUpdatesPerSecond ||
+            clip.wrap_mode != ActorAnimationWrapModeV1::clamp ||
+            clip.frames.size() != kVeldinMoby749FrameCounts[slot]) {
+          return false;
+        }
+        for (const auto &frame : clip.frames) {
+          if (frame.joint_poses.size() != moby_rig.rig.joints.size()) {
+            return false;
+          }
         }
       }
     }
@@ -1110,28 +1239,52 @@ exact_player_actor_provenance(const LevelPackageV1 &package,
     const auto scene = decode_entity_scene_v1(
         entity_resource->payload, make_native_entity_scene_io_limits());
     const auto player = make_player_entity_scene(level_id);
+    const auto expected_moby_actor_count =
+        level_id == kVeldinLevelId ? kVeldinMoby749PlacementCount : 0U;
     if (scene.level_id != level_id || scene.definitions.empty() ||
         scene.definitions.front() != player.definitions.front() ||
-        scene.actor_bindings != player.actor_bindings ||
+        scene.actor_bindings.size() != 1U + expected_moby_actor_count ||
+        scene.actor_bindings.front() != player.actor_bindings.front() ||
         scene.player_bindings != player.player_bindings ||
         scene.transforms.size() + 1U != scene.definitions.size() ||
-        scene.render_bindings.size() != scene.transforms.size()) {
+        scene.render_bindings.size() + expected_moby_actor_count !=
+            scene.transforms.size()) {
       return false;
     }
+    std::uint32_t found_moby_actor_count = 0U;
     for (std::size_t index = 1U; index < scene.definitions.size(); ++index) {
       const auto &definition = scene.definitions[index];
-      const auto &transform = scene.transforms[index - 1U];
-      const auto &render = scene.render_bindings[index - 1U];
+      const auto *const transform =
+          find_authored_record(scene.transforms, definition.authored_id);
+      const auto *const render =
+          find_authored_record(scene.render_bindings, definition.authored_id);
+      const auto *const actor =
+          find_authored_record(scene.actor_bindings, definition.authored_id);
       if (definition.authored_id == 0U ||
-          (definition.archetype_key != kBoltArchetypeKey &&
-           definition.archetype_key != kBoltCrateArchetypeKey) ||
           definition.flags != kEntityDefinitionInitiallyEnabledV1 ||
-          transform.authored_id != definition.authored_id ||
-          render.authored_id != definition.authored_id) {
+          transform == nullptr) {
+        return false;
+      }
+      if (definition.archetype_key == kVeldinMoby749ArchetypeKey) {
+        if (level_id != kVeldinLevelId || render != nullptr ||
+            actor == nullptr ||
+            actor->model_key != kVeldinMoby749HighModelKey ||
+            definition.authored_id < kVeldinMoby749PlacementBegin ||
+            definition.authored_id >=
+                kVeldinMoby749PlacementBegin +
+                    kVeldinMoby749PlacementCount) {
+          return false;
+        }
+        ++found_moby_actor_count;
+      } else if ((definition.archetype_key == kBoltArchetypeKey ||
+                  definition.archetype_key == kBoltCrateArchetypeKey) &&
+                 render != nullptr && actor == nullptr) {
+        continue;
+      } else {
         return false;
       }
     }
-    return true;
+    return found_moby_actor_count == expected_moby_actor_count;
   } catch (const EntitySceneIoError &) {
     return false;
   } catch (const EntitySceneError &) {
@@ -1407,9 +1560,9 @@ exact_render_provenance(const LevelPackageV1 &package,
          exact_render_provenance(
              package, source_image_bytes, source_image_sha256,
              boot_executable_bytes, boot_executable_sha256) &&
-         exact_player_actor_provenance(package, source_image_bytes,
-                                       source_image_sha256) &&
-         exact_player_animation_provenance(
+         exact_actor_provenance(package, level_id, source_image_bytes,
+                                source_image_sha256) &&
+         exact_actor_animation_provenance(
              package, source_image_bytes, source_image_sha256) &&
          exact_entity_provenance(package, level_id) &&
          exact_gameplay_provenance(package, level_id) &&
@@ -1776,9 +1929,8 @@ prepare_native_game_v1(const NativeGamePreparationRequestV1 &request,
   const auto render_profile =
       runtime::make_level_scene_render_compile_profile_v1();
   const auto render_io_limits = make_render_scene_io_limits();
-  const auto player_actor_io_limits = make_player_actor_io_limits();
-  const auto player_animation_io_limits =
-      make_player_animation_io_limits();
+  const auto actor_io_limits = make_actor_io_limits();
+  const auto actor_animation_io_limits = make_actor_animation_io_limits();
   const auto entity_scene_io_limits = make_native_entity_scene_io_limits();
   const auto gameplay_scene_io_limits = make_native_gameplay_scene_io_limits();
   const auto destructible_scene_io_limits =
@@ -1853,6 +2005,18 @@ prepare_native_game_v1(const NativeGamePreparationRequestV1 &request,
       if (has_static_moby_class(assets, kBoltSourceClassId)) {
         bolt_actor = compile_bolt_actor_library(assets);
       }
+      std::optional<CompiledMobyActorV1> veldin_moby_749;
+      if (level_id == kVeldinLevelId) {
+        if (!has_static_moby_class(assets, kVeldinMoby749SourceClassId)) {
+          fail("Veldin is missing the required source class 749 placements");
+        }
+        veldin_moby_749 = compile_moby_actor(
+            assets, kVeldinMoby749SourceClassId, kVeldinMoby749RigKey,
+            kVeldinMoby749HighModelKey,
+            kVeldinMoby749SourceSequenceKeyPrefix,
+            kVeldinMoby749AnimationSourceUpdatesPerSecond,
+            "Veldin Moby class 749");
+      }
       const auto has_bolt_crates =
           has_static_moby_class(assets, kBoltCrateSourceClassId);
 
@@ -1919,29 +2083,63 @@ prepare_native_game_v1(const NativeGamePreparationRequestV1 &request,
             std::move(destructible_scene),
             destructible_scene_io_limits.scene);
       }
+      if (veldin_moby_749) {
+        auto compiled = compile_rac_moby_actor_scene_v1(
+            entity_scene, veldin_moby_749->library,
+            assets.gameplay.static_mobies,
+            make_veldin_moby_749_actor_profile(),
+            make_moby_actor_scene_compile_limits());
+        if (compiled.authored_ids.size() !=
+                kVeldinMoby749PlacementCount ||
+            compiled.authored_ids.front() !=
+                kVeldinMoby749PlacementBegin ||
+            compiled.authored_ids.back() !=
+                kVeldinMoby749PlacementBegin +
+                    kVeldinMoby749PlacementCount - 1U) {
+          fail("Veldin class 749 placements disagree with the exact source "
+               "profile");
+        }
+        entity_scene = std::move(compiled.entity_scene);
+      }
 
-      stage = "compiling and attaching the neutral player actor";
+      stage = "compiling and attaching neutral actors";
       report_progress(control,
                       NativeGamePreparationPhaseV1::compiling_player_actor,
                       level_id, level_id);
       const auto &player_model = require_unique_player_model(assets);
       auto player_bind_pose = compile_player_bind_pose(player_model);
       const auto animation_bind_rig = player_bind_pose.bind_rig;
-      const auto player_actor = compile_player_actor_library(
+      auto player_actor = compile_player_actor_library(
           assets, player_model, std::move(player_bind_pose));
+      std::vector<ActorLibraryV1> actor_libraries;
+      actor_libraries.reserve(veldin_moby_749 ? 2U : 1U);
+      actor_libraries.push_back(std::move(player_actor));
+      if (veldin_moby_749) {
+        actor_libraries.push_back(std::move(veldin_moby_749->library));
+      }
+      const auto actor_library = compose_actor_libraries_v1(
+          actor_libraries, actor_io_limits.library);
       package = attach_actor_library_to_level_package_v1(
-          std::move(package), player_actor, actor_sources,
-          player_actor_io_limits, package_limits);
+          std::move(package), actor_library, actor_sources,
+          actor_io_limits, package_limits);
 
-      stage = "compiling and attaching the neutral player animations";
+      stage = "compiling and attaching neutral actor animations";
       report_progress(control,
                       NativeGamePreparationPhaseV1::compiling_player_animation,
                       level_id, level_id);
-      const auto player_animation = compile_player_animation_bank(
+      auto player_animation = compile_player_animation_bank(
           assets, player_model, animation_bind_rig);
+      std::vector<ActorAnimationBankV1> animation_banks;
+      animation_banks.reserve(veldin_moby_749 ? 2U : 1U);
+      animation_banks.push_back(std::move(player_animation));
+      if (veldin_moby_749) {
+        animation_banks.push_back(std::move(veldin_moby_749->animations));
+      }
+      const auto actor_animations = compose_actor_animation_banks_v1(
+          animation_banks, actor_animation_io_limits.bank);
       package = attach_actor_animation_bank_to_level_package_v1(
-          std::move(package), player_animation, actor_sources,
-          player_animation_io_limits, package_limits);
+          std::move(package), actor_animations, actor_sources,
+          actor_animation_io_limits, package_limits);
 
       stage = "attaching and encoding the render scene";
       report_progress(control,

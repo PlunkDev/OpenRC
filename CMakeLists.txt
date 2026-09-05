@@ -80,6 +80,7 @@ add_library(openrc_core STATIC
     src/core/rac_level_core.cpp
     src/core/rac_level_moby_assets.cpp
     src/core/rac_level_moby_texture.cpp
+    src/core/rac_moby_actor_scene_compile.cpp
     src/core/rac_moby_animation_compile.cpp
     src/core/rac_moby_class.cpp
     src/core/rac_moby_bind_pose.cpp
@@ -999,6 +1000,34 @@ if(OPENRC_BUILD_TESTS)
     endif()
 
     add_executable(
+        openrc-rac-moby-actor-scene-compile-tests
+        tests/rac_moby_actor_scene_compile_tests.cpp
+    )
+    target_link_libraries(
+        openrc-rac-moby-actor-scene-compile-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-rac-moby-actor-scene-compile-tests
+        PRIVATE
+        cxx_std_20
+    )
+    if(MSVC)
+        target_compile_options(
+            openrc-rac-moby-actor-scene-compile-tests
+            PRIVATE
+            /W4 /permissive- /utf-8
+        )
+    else()
+        target_compile_options(
+            openrc-rac-moby-actor-scene-compile-tests
+            PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+    endif()
+
+    add_executable(
         openrc-rac-moby-animation-compile-tests
         tests/rac_moby_animation_compile_tests.cpp
     )
@@ -1869,6 +1898,7 @@ if(OPENRC_BUILD_TESTS)
     add_test(NAME actor-animation-player COMMAND openrc-actor-animation-player-tests)
     add_test(NAME level-actor-animation-compile COMMAND openrc-level-actor-animation-compile-tests)
     add_test(NAME runtime-actor-animation COMMAND openrc-runtime-actor-animation-tests)
+    add_test(NAME rac-moby-actor-scene-compile COMMAND openrc-rac-moby-actor-scene-compile-tests)
     add_test(NAME rac-moby-animation-compile COMMAND openrc-rac-moby-animation-compile-tests)
     add_test(NAME rac-ratchet-animation-compile COMMAND openrc-rac-ratchet-animation-compile-tests)
     add_test(NAME runtime-player-animation COMMAND openrc-runtime-player-animation-tests)

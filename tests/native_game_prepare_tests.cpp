@@ -47,6 +47,17 @@ constexpr std::string_view kCrateArchetypeKey = "openrc.breakable/bolt-crate";
 constexpr std::string_view kBoltItemKey = "openrc.currency/bolts";
 constexpr std::string_view kPlayerSourceSequenceKeyPrefix =
     "actors/ratchet/source-sequence/";
+constexpr std::string_view kVeldinMoby749RigKey =
+    "actors/rac1/moby/0749/rig";
+constexpr std::string_view kVeldinMoby749ModelKey =
+    "actors/rac1/moby/0749/high";
+constexpr std::string_view kVeldinMoby749SequencePrefix =
+    "actors/rac1/moby/0749/source-sequence/";
+constexpr std::string_view kVeldinMoby749ArchetypeKey = "rac1/moby/0749";
+constexpr std::array<std::uint16_t, 8U> kVeldinMoby749FrameCounts{
+    1U, 6U, 13U, 15U, 15U, 21U, 25U, 23U};
+constexpr std::uint32_t kVeldinMoby749PlacementBegin = 143U;
+constexpr std::uint32_t kVeldinMoby749PlacementCount = 16U;
 constexpr std::array<std::uint16_t, openrc::kDiscTocLevelCount>
     kPlayerAnimationClipCountsByLevel{
         134U, 88U, 86U, 79U, 84U, 100U, 89U, 98U, 108U, 79U,
@@ -242,7 +253,8 @@ make_bootstrap(const std::uint32_t level_id) {
   return result;
 }
 
-[[nodiscard]] openrc::ActorLibraryV1 make_actor_library() {
+[[nodiscard]] openrc::ActorLibraryV1
+make_actor_library(const std::uint32_t level_id) {
   openrc::ActorRigAssetV1 rig;
   rig.id = 0U;
   rig.semantic_key = std::string(kPlayerRigKey);
@@ -272,13 +284,39 @@ make_bootstrap(const std::uint32_t level_id) {
   openrc::ActorLibraryV1 result;
   result.rigs.push_back(std::move(rig));
   result.models.push_back(std::move(model));
+  if (level_id == 0U) {
+    openrc::ActorRigAssetV1 moby_rig;
+    moby_rig.id = 1U;
+    moby_rig.semantic_key = std::string(kVeldinMoby749RigKey);
+    moby_rig.rig.joints.push_back(openrc::ActorRigJointV1{});
+    for (std::size_t index = 1U; index < 53U; ++index) {
+      auto joint = openrc::ActorRigJointV1{};
+      joint.parent_index = 0;
+      moby_rig.rig.joints.push_back(joint);
+    }
+
+    openrc::ActorSkinnedVertexV1 moby_vertex = actor_vertex(0.0F, 0.0F);
+    openrc::ActorSkinnedMeshV1 moby_mesh;
+    moby_mesh.id = 0U;
+    moby_mesh.vertices = {moby_vertex, moby_vertex, moby_vertex};
+    moby_mesh.triangle_indices = {0U, 1U, 2U};
+    moby_mesh.draw_ranges = {{0U, 0U, 3U}};
+    openrc::ActorModelV1 moby_model;
+    moby_model.id = 1U;
+    moby_model.semantic_key = std::string(kVeldinMoby749ModelKey);
+    moby_model.rig_key = std::string(kVeldinMoby749RigKey);
+    moby_model.materials.push_back(openrc::RenderSceneMaterialV1{});
+    moby_model.meshes.push_back(std::move(moby_mesh));
+    result.rigs.push_back(std::move(moby_rig));
+    result.models.push_back(std::move(moby_model));
+  }
   return result;
 }
 
 [[nodiscard]] openrc::ActorAnimationBankV1
 make_actor_animations(const ProfileMutation mutation,
                       const std::uint32_t level_id) {
-  const auto library = make_actor_library();
+  const auto library = make_actor_library(level_id);
   const auto rig_digest =
       openrc::actor_rig_content_sha256_v1(library.rigs.front().rig);
   const std::array<std::string_view, 3U> keys{
@@ -321,6 +359,29 @@ make_actor_animations(const ProfileMutation mutation,
     clip.frames.push_back(openrc::ActorAnimationFrameV1{
         0.25F, {openrc::ActorJointPoseV1{}}});
     result.clips.push_back(std::move(clip));
+  }
+  if (level_id == 0U) {
+    const auto moby_rig_digest =
+        openrc::actor_rig_content_sha256_v1(library.rigs[1U].rig);
+    for (std::size_t source_slot = 0U;
+         source_slot < kVeldinMoby749FrameCounts.size(); ++source_slot) {
+      std::string key(kVeldinMoby749SequencePrefix);
+      key.push_back('0');
+      key.push_back('0');
+      key.push_back(static_cast<char>('0' + source_slot));
+      openrc::ActorAnimationClipV1 clip;
+      clip.id = static_cast<std::uint32_t>(result.clips.size());
+      clip.semantic_key = std::move(key);
+      clip.rig_key = std::string(kVeldinMoby749RigKey);
+      clip.rig_content_sha256 = moby_rig_digest;
+      clip.source_updates_per_second = 50U;
+      clip.wrap_mode = openrc::ActorAnimationWrapModeV1::clamp;
+      clip.frames.assign(
+          kVeldinMoby749FrameCounts[source_slot],
+          openrc::ActorAnimationFrameV1{
+              0.25F, std::vector<openrc::ActorJointPoseV1>(53U)});
+      result.clips.push_back(std::move(clip));
+    }
   }
 
   if (mutation == ProfileMutation::animation_wrong_key) {
@@ -433,6 +494,22 @@ make_entity_scene(const std::uint32_t level_id,
       {1U, mutation == ProfileMutation::missing_render_instance ? 99U : 1U},
       {2U, 2U},
   };
+  if (level_id == 0U) {
+    for (std::uint32_t offset = 0U;
+         offset < kVeldinMoby749PlacementCount; ++offset) {
+      const auto authored_id = kVeldinMoby749PlacementBegin + offset;
+      result.definitions.push_back(
+          {authored_id, std::string(kVeldinMoby749ArchetypeKey),
+           openrc::kEntityDefinitionInitiallyEnabledV1,
+           openrc::kEntitySceneNoAuthoringGroupIdV1});
+      openrc::game::WorldTransformV1 transform;
+      transform.position = {static_cast<float>(offset), 10.0F, 20.0F};
+      result.transforms.push_back({authored_id, transform});
+      result.actor_bindings.push_back(
+          {authored_id, std::string(kVeldinMoby749ModelKey),
+           openrc::ActorAffineTransformV1{}});
+    }
+  }
   return result;
 }
 
@@ -507,7 +584,7 @@ make_level_package(const std::uint32_t level_id,
   auto actor = make_resource(
       openrc::kActorLibraryResourceIdV1, openrc::kActorLibraryResourceTypeIdV1,
       openrc::kActorLibraryResourceSchemaVersionV1,
-      openrc::encode_actor_library_v1(make_actor_library(),
+      openrc::encode_actor_library_v1(make_actor_library(level_id),
                                       kRuntimeLimits.actor_library),
       {source_provenance(openrc::LevelPackageProvenanceKindV1::iso_range,
                          "rac1/disc-image", kSourceImageBytes,
