@@ -74,11 +74,22 @@ named by a semantic key.
 
 The current native-game compiler emits one Ratchet rig and one textured
 high-LOD model in every supported level package, using semantic keys
-`actors/ratchet/rig` and `actors/ratchet/high`. The renderer resolves that model
-through EntitySceneV1 and CPU-skins the bind pose at the deterministic player
-transform.
+`actors/ratchet/rig` and `actors/ratchet/high`. Veldin additionally composes one
+class-749 source actor as `actors/rac1/moby/0749/rig` and
+`actors/rac1/moby/0749/high`: 53 joints, one shared textured model, eight source
+animation sequences, and 16 authored entity instances. Source class IDs and
+sequence slots remain only as opaque provenance in semantic keys; runtime code
+does not parse them or dispatch behavior from them.
+
+The renderer resolves Ratchet and non-player actors through EntitySceneV1.
+Each world actor owns independent pose, transform, enabled, dirty, and submitted
+state while immutable mesh indices, materials, textures, and samplers are shared
+per model. The animation bank classifies the executable-proven class-749
+state-0 entry sequence under the neutral `/initial/` key segment as a temporary
+presentation fallback; missing classifications retain bind pose rather than
+selecting a guessed clip.
 
 This proves the reusable actor boundary; it does not complete character
-presentation. Animation decoding/playback, state selection and blending,
-attachments, metal/bangle passes, effects, and fidelity to the original camera
-remain open work.
+behavior. Per-tick enemy state selection, AI, damage, collision, attachments,
+metal/bangle passes, effects, and fidelity to the original camera remain open
+work.

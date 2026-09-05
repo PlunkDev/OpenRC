@@ -1,6 +1,8 @@
 param(
     [ValidateSet('Debug', 'Release', 'RelWithDebInfo')]
-    [string]$Configuration = 'RelWithDebInfo'
+    [string]$Configuration = 'RelWithDebInfo',
+    [ValidateRange(1, 64)]
+    [int]$ParallelJobs = [Math]::Min(6, [Environment]::ProcessorCount)
 )
 
 $ErrorActionPreference = 'Stop'
@@ -81,7 +83,7 @@ function Assert-PortableExecutable {
     '-DOPENRC_BUILD_RUNTIME=ON'
 if ($LASTEXITCODE -ne 0) { throw 'CMake configuration failed.' }
 
-& $cmake --build $buildRoot --parallel
+& $cmake --build $buildRoot --parallel $ParallelJobs
 if ($LASTEXITCODE -ne 0) { throw 'OpenRC build failed.' }
 
 Assert-PortableExecutable -Path $portableAudit

@@ -9,6 +9,8 @@
 #include "openrc/actor_pose.hpp"
 #include "openrc/render_scene.hpp"
 #include "openrc/runtime_level_content.hpp"
+#include "openrc/runtime_player_actor.hpp"
+#include "openrc/runtime_world_actor.hpp"
 #include "openrc/third_person_camera.hpp"
 
 #include <d3d11.h>
@@ -79,6 +81,11 @@ constexpr std::uint32_t kGameplayProxyIndexCount =
     12U * kGameplayProxyRingSegments + 3U;
 constexpr std::uint32_t kMaximumD3d11TextureDimension = 16'384U;
 constexpr std::size_t kMaximumD3d11TextureMipCount = 15U;
+constexpr std::uint32_t kMaximumD3d11WorldActorInstances = 65'536U;
+constexpr std::uint64_t kMaximumD3d11WorldActorVertices = 3'000'000U;
+constexpr std::uint64_t kMaximumD3d11WorldActorTriangleIndices = 9'000'000U;
+constexpr std::uint64_t kMaximumD3d11WorldActorDraws = 3'000'000U;
+constexpr std::uint64_t kMaximumD3d11WorldActorPoseJoints = 1'000'000U;
 
 struct Vec3 {
     float x = 0.0F;
@@ -164,6 +171,62 @@ make_gpu_material(const RenderSceneMaterialV1& material) {
                 "The gameplay actor translation exceeds the renderer numeric domain");
         }
         result.values[row * 4U + 3U] = static_cast<float>(translation);
+    }
+    return result;
+}
+
+[[nodiscard]] ActorAffineTransformV1 actor_transform_from_world(
+    const game::WorldTransformV1& transform) {
+    const auto finite = [](const float value) {
+        return std::isfinite(value);
+    };
+    if (!std::ranges::all_of(transform.position, finite) ||
+        !std::ranges::all_of(transform.rotation, finite) ||
+        !std::ranges::all_of(transform.scale, finite) ||
+        std::ranges::any_of(transform.scale, [](const float value) {
+            return value == 0.0F;
+        })) {
+        throw std::invalid_argument(
+            "The D3D11 world actor has an invalid entity transform");
+    }
+    const auto x = static_cast<double>(transform.rotation[0U]);
+    const auto y = static_cast<double>(transform.rotation[1U]);
+    const auto z = static_cast<double>(transform.rotation[2U]);
+    const auto w = static_cast<double>(transform.rotation[3U]);
+    const auto quaternion_length =
+        std::hypot(std::hypot(x, y), std::hypot(z, w));
+    if (!std::isfinite(quaternion_length) ||
+        std::abs(quaternion_length - 1.0) >
+            kEntitySceneQuaternionUnitToleranceV1) {
+        throw std::invalid_argument(
+            "The D3D11 world actor has a non-unit entity rotation");
+    }
+    const auto sx = static_cast<double>(transform.scale[0U]);
+    const auto sy = static_cast<double>(transform.scale[1U]);
+    const auto sz = static_cast<double>(transform.scale[2U]);
+    const std::array<double, 12U> values{
+        (1.0 - 2.0 * (y * y + z * z)) * sx,
+        2.0 * (x * y - z * w) * sy,
+        2.0 * (x * z + y * w) * sz,
+        transform.position[0U],
+        2.0 * (x * y + z * w) * sx,
+        (1.0 - 2.0 * (x * x + z * z)) * sy,
+        2.0 * (y * z - x * w) * sz,
+        transform.position[1U],
+        2.0 * (x * z - y * w) * sx,
+        2.0 * (y * z + x * w) * sy,
+        (1.0 - 2.0 * (x * x + y * y)) * sz,
+        transform.position[2U],
+    };
+    ActorAffineTransformV1 result;
+    for (std::size_t index = 0U; index < values.size(); ++index) {
+        if (!std::isfinite(values[index]) ||
+            std::abs(values[index]) > std::numeric_limits<float>::max()) {
+            throw std::invalid_argument(
+                "The D3D11 world actor entity transform overflows float");
+        }
+        const auto value = static_cast<float>(values[index]);
+        result.values[index] = value == 0.0F ? 0.0F : value;
     }
     return result;
 }
@@ -479,38 +542,69 @@ void require_success(const HRESULT result, const char* const operation) {
 } // namespace
 
 struct D3d11Renderer::Implementation {
+    struct WorldActorModelGpu {
+        std::uint32_t actor_model_index = 0U;
+        std::uint32_t actor_rig_index = 0U;
+        std::vector<ActorSkinnedMeshV1> meshes;
+        std::vector<std::uint32_t> triangle_indices;
+        std::vector<std::uint32_t> reversed_triangle_indices;
+        std::vector<RenderSceneD3dDrawV1> draws;
+        std::vector<RenderSceneD3dMaterialV1> materials;
+        std::vector<RenderSceneTextureV1> textures;
+        std::vector<ComPtr<ID3D11ShaderResourceView>> texture_views;
+        std::vector<ComPtr<ID3D11SamplerState>> material_samplers;
+        ComPtr<ID3D11Buffer> index_buffer;
+        ComPtr<ID3D11Buffer> reversed_index_buffer;
+        std::size_t vertex_count = 0U;
+    };
+
+    struct WorldActorInstanceGpu {
+        std::uint32_t authored_id = 0U;
+        std::size_t model_gpu_index = 0U;
+        ActorPosePaletteV1 pose_palette;
+        ActorAffineTransformV1 model_to_entity;
+        ActorAffineTransformV1 entity_to_world;
+        std::vector<RenderSceneD3dVertexV1> vertices;
+        std::vector<ProjectedVertex> projected_vertices;
+        ComPtr<ID3D11Buffer> vertex_buffer;
+        bool reverses_orientation = false;
+        bool enabled = false;
+        bool vertices_dirty = true;
+        bool submitted = false;
+    };
+
     explicit Implementation(HWND native_window,
                              const RenderSceneV1& scene)
-        : Implementation(native_window, scene, nullptr, nullptr, nullptr) {}
+        : Implementation(native_window, scene, nullptr, nullptr, {}) {}
 
     Implementation(HWND native_window,
                    const RenderSceneV1& scene,
-                   const ActorRigV1& player_rig,
-                   const ActorModelV1& player_model,
-                   const ActorAffineTransformV1& model_to_entity)
+                   const ActorLibraryV1& actor_library,
+                   const game::RuntimePlayerActorResolutionV1& player_actor,
+                   const std::span<
+                       const game::RuntimeWorldActorResolutionV1> world_actors)
         : Implementation(native_window,
                          scene,
-                         &player_rig,
-                         &player_model,
-                         &model_to_entity) {}
+                         &actor_library,
+                         &player_actor,
+                         world_actors) {}
 
     Implementation(HWND native_window,
                    const RenderSceneV1& scene,
-                   const ActorRigV1* const player_rig,
-                   const ActorModelV1* const player_model,
-                   const ActorAffineTransformV1* const model_to_entity)
+                   const ActorLibraryV1* const actor_library,
+                   const game::RuntimePlayerActorResolutionV1* const
+                       player_actor,
+                   const std::span<
+                       const game::RuntimeWorldActorResolutionV1> world_actors)
         : window(native_window) {
         if (window == nullptr) {
             throw std::invalid_argument(
                 "The D3D11 renderer requires a valid window handle");
         }
-        const auto actor_inputs =
-            static_cast<unsigned>(player_rig != nullptr) +
-            static_cast<unsigned>(player_model != nullptr) +
-            static_cast<unsigned>(model_to_entity != nullptr);
-        if (actor_inputs != 0U && actor_inputs != 3U) {
+        if ((actor_library == nullptr) != (player_actor == nullptr) ||
+            (actor_library == nullptr && !world_actors.empty())) {
             throw std::invalid_argument(
-                "The D3D11 gameplay actor requires a complete rig, model, and entity transform");
+                "The D3D11 actor path requires a complete library and player resolution");
         }
 
         auto flattened = build_render_scene_d3d_data_v1(scene);
@@ -519,9 +613,23 @@ struct D3d11Renderer::Implementation {
         render_scene_materials = std::move(flattened.materials);
         render_scene_instance_enabled.assign(scene.instances.size(), true);
         render_scene_instance_submitted.assign(scene.instances.size(), false);
-        if (player_rig != nullptr) {
+        const ActorModelV1* player_model = nullptr;
+        if (actor_library != nullptr) {
+            if (player_actor->actor_rig_index >= actor_library->rigs.size() ||
+                player_actor->actor_model_index >=
+                    actor_library->models.size()) {
+                throw std::invalid_argument(
+                    "The D3D11 player actor resolution exceeds its library");
+            }
+            const auto& player_rig =
+                actor_library->rigs[player_actor->actor_rig_index];
+            player_model =
+                &actor_library->models[player_actor->actor_model_index];
             initialize_gameplay_actor(
-                *player_rig, *player_model, *model_to_entity);
+                player_rig.rig,
+                *player_model,
+                player_actor->model_to_entity);
+            initialize_world_actors(*actor_library, world_actors);
         }
 
         create_device_and_swap_chain();
@@ -532,10 +640,12 @@ struct D3d11Renderer::Implementation {
         if (has_gameplay_actor) {
             create_gameplay_actor_buffers();
         }
+        create_world_actor_buffers();
         create_render_scene_resources(scene);
         if (has_gameplay_actor) {
             create_gameplay_actor_resources(*player_model);
         }
+        create_world_actor_resources();
         create_render_target();
 
         RECT client_rectangle{};
@@ -743,6 +853,240 @@ struct D3d11Renderer::Implementation {
                 mesh.vertices.size());
         }
         has_gameplay_actor = true;
+    }
+
+    [[nodiscard]] std::size_t initialize_world_actor_model(
+        const ActorLibraryV1& library,
+        const game::RuntimeWorldActorResolutionV1& actor,
+        std::vector<std::optional<std::size_t>>& model_gpu_indices) {
+        if (actor.actor_model_index >= library.models.size() ||
+            actor.actor_rig_index >= library.rigs.size() ||
+            model_gpu_indices.size() != library.models.size()) {
+            throw std::invalid_argument(
+                "A D3D11 world actor resolution exceeds its actor library");
+        }
+        const auto existing = model_gpu_indices[actor.actor_model_index];
+        if (existing) {
+            if (*existing >= world_actor_models.size() ||
+                world_actor_models[*existing].actor_rig_index !=
+                    actor.actor_rig_index) {
+                throw std::invalid_argument(
+                    "One D3D11 world actor model resolved to multiple rigs");
+            }
+            return *existing;
+        }
+        const auto& model = library.models[actor.actor_model_index];
+        const auto& rig = library.rigs[actor.actor_rig_index];
+        if (model.id != actor.actor_model_index ||
+            rig.id != actor.actor_rig_index ||
+            model.rig_key != rig.semantic_key || model.meshes.empty() ||
+            model.materials.empty()) {
+            throw std::invalid_argument(
+                "A D3D11 world actor has an inconsistent model/rig binding");
+        }
+        if (model.textures.size() >
+                std::numeric_limits<std::uint32_t>::max() ||
+            model.materials.size() >
+                std::numeric_limits<std::uint32_t>::max() ||
+            model.meshes.size() > std::numeric_limits<std::uint32_t>::max()) {
+            throw std::runtime_error(
+                "A D3D11 world actor model exceeds the renderer ID domain");
+        }
+        for (std::size_t index = 0U; index < model.textures.size(); ++index) {
+            preflight_gameplay_actor_texture(
+                model.textures[index], static_cast<std::uint32_t>(index));
+        }
+        for (std::size_t index = 0U; index < model.materials.size(); ++index) {
+            const auto& material = model.materials[index];
+            if (material.id != static_cast<std::uint32_t>(index) ||
+                !valid_actor_address_mode(material.address_u) ||
+                !valid_actor_address_mode(material.address_v) ||
+                !valid_actor_filter(material.min_filter) ||
+                !valid_actor_filter(material.mag_filter) ||
+                !valid_actor_mipmap_filter(material.mipmap_filter) ||
+                !valid_actor_alpha_mode(material.alpha_mode) ||
+                (material.alpha_mode == RenderSceneAlphaModeV1::opaque &&
+                 material.alpha_cutoff_rgba8 != 0U) ||
+                (material.alpha_mode == RenderSceneAlphaModeV1::mask &&
+                 material.alpha_cutoff_rgba8 == 0U)) {
+                throw std::invalid_argument(
+                    "A D3D11 world actor has an invalid material policy");
+            }
+            if (material.base_color_texture_id) {
+                const auto texture_id = *material.base_color_texture_id;
+                if (texture_id >= model.textures.size() ||
+                    (material.mipmap_filter !=
+                         RenderSceneMipmapFilterV1::none &&
+                     model.textures[texture_id].mips.size() < 2U)) {
+                    throw std::invalid_argument(
+                        "A D3D11 world actor material references unavailable texture data");
+                }
+            }
+        }
+
+        std::uint64_t vertex_count = 0U;
+        std::uint64_t index_count = 0U;
+        std::uint64_t draw_count = 0U;
+        for (std::size_t mesh_index = 0U;
+             mesh_index < model.meshes.size(); ++mesh_index) {
+            const auto& mesh = model.meshes[mesh_index];
+            if (mesh.id != mesh_index || mesh.vertices.empty() ||
+                mesh.triangle_indices.empty() || mesh.draw_ranges.empty() ||
+                (mesh.triangle_indices.size() % 3U) != 0U ||
+                mesh.vertices.size() >
+                    game::kRuntimePlayerActorMaximumVerticesV1 -
+                        vertex_count ||
+                mesh.triangle_indices.size() >
+                    game::kRuntimePlayerActorMaximumTriangleIndicesV1 -
+                        index_count ||
+                mesh.draw_ranges.size() >
+                    game::kRuntimePlayerActorMaximumDrawRangesV1 -
+                        draw_count) {
+                throw std::invalid_argument(
+                    "A D3D11 world actor has an invalid mesh envelope");
+            }
+            vertex_count += mesh.vertices.size();
+            index_count += mesh.triangle_indices.size();
+            draw_count += mesh.draw_ranges.size();
+            for (const auto index : mesh.triangle_indices) {
+                if (index >= mesh.vertices.size()) {
+                    throw std::invalid_argument(
+                        "A D3D11 world actor contains an invalid mesh index");
+                }
+            }
+            std::uint64_t expected_first_index = 0U;
+            for (const auto& draw : mesh.draw_ranges) {
+                if (draw.material_id >= model.materials.size() ||
+                    draw.first_index != expected_first_index ||
+                    draw.index_count == 0U ||
+                    (draw.index_count % 3U) != 0U ||
+                    draw.index_count >
+                        mesh.triangle_indices.size() - expected_first_index) {
+                    throw std::invalid_argument(
+                        "A D3D11 world actor draw partition is invalid");
+                }
+                expected_first_index += draw.index_count;
+            }
+            if (expected_first_index != mesh.triangle_indices.size()) {
+                throw std::invalid_argument(
+                    "A D3D11 world actor draw partition is incomplete");
+            }
+        }
+        if (vertex_count == 0U || index_count == 0U || draw_count == 0U ||
+            vertex_count > std::numeric_limits<std::size_t>::max() ||
+            index_count > std::numeric_limits<UINT>::max()) {
+            throw std::invalid_argument(
+                "A D3D11 world actor has an invalid draw envelope");
+        }
+
+        WorldActorModelGpu gpu;
+        gpu.actor_model_index = actor.actor_model_index;
+        gpu.actor_rig_index = actor.actor_rig_index;
+        gpu.vertex_count = static_cast<std::size_t>(vertex_count);
+        gpu.meshes = model.meshes;
+        gpu.textures = model.textures;
+        gpu.materials.reserve(model.materials.size());
+        for (const auto& material : model.materials) {
+            gpu.materials.push_back(make_gpu_material(material));
+        }
+        gpu.triangle_indices.reserve(static_cast<std::size_t>(index_count));
+        gpu.reversed_triangle_indices.reserve(
+            static_cast<std::size_t>(index_count));
+        gpu.draws.reserve(static_cast<std::size_t>(draw_count));
+        std::uint32_t vertex_base = 0U;
+        for (const auto& mesh : model.meshes) {
+            const auto index_base = static_cast<std::uint32_t>(
+                gpu.triangle_indices.size());
+            for (std::size_t first = 0U;
+                 first < mesh.triangle_indices.size(); first += 3U) {
+                const auto a = vertex_base + mesh.triangle_indices[first];
+                const auto b = vertex_base + mesh.triangle_indices[first + 1U];
+                const auto c = vertex_base + mesh.triangle_indices[first + 2U];
+                gpu.triangle_indices.insert(
+                    gpu.triangle_indices.end(), {a, b, c});
+                gpu.reversed_triangle_indices.insert(
+                    gpu.reversed_triangle_indices.end(), {a, c, b});
+            }
+            for (const auto& draw : mesh.draw_ranges) {
+                gpu.draws.push_back(RenderSceneD3dDrawV1{
+                    draw.material_id,
+                    index_base + static_cast<std::uint32_t>(draw.first_index),
+                    static_cast<std::uint32_t>(draw.index_count),
+                });
+            }
+            vertex_base += static_cast<std::uint32_t>(mesh.vertices.size());
+        }
+        world_actor_models.push_back(std::move(gpu));
+        const auto gpu_index = world_actor_models.size() - 1U;
+        model_gpu_indices[actor.actor_model_index] = gpu_index;
+        return gpu_index;
+    }
+
+    void initialize_world_actors(
+        const ActorLibraryV1& library,
+        const std::span<const game::RuntimeWorldActorResolutionV1> actors) {
+        if (actors.size() > kMaximumD3d11WorldActorInstances) {
+            throw std::runtime_error(
+                "The D3D11 world actor instance count exceeds its explicit limit");
+        }
+        std::uint64_t aggregate_vertices = 0U;
+        std::uint64_t aggregate_indices = 0U;
+        std::uint64_t aggregate_draws = 0U;
+        std::uint64_t aggregate_pose_joints = 0U;
+        std::optional<std::uint32_t> previous_authored_id;
+        std::vector<std::optional<std::size_t>> model_gpu_indices(
+            library.models.size());
+        world_actor_instances.reserve(actors.size());
+        for (const auto& actor : actors) {
+            if (previous_authored_id &&
+                actor.authored_id <= *previous_authored_id) {
+                throw std::invalid_argument(
+                    "D3D11 world actors are not in canonical authored-ID order");
+            }
+            previous_authored_id = actor.authored_id;
+            const auto model_gpu_index =
+                initialize_world_actor_model(
+                    library, actor, model_gpu_indices);
+            const auto& model_gpu = world_actor_models[model_gpu_index];
+            const auto& rig = library.rigs[model_gpu.actor_rig_index].rig;
+            if (model_gpu.vertex_count >
+                    kMaximumD3d11WorldActorVertices - aggregate_vertices ||
+                model_gpu.triangle_indices.size() >
+                    kMaximumD3d11WorldActorTriangleIndices -
+                        aggregate_indices ||
+                model_gpu.draws.size() >
+                    kMaximumD3d11WorldActorDraws - aggregate_draws) {
+                throw std::runtime_error(
+                    "The D3D11 world actor scene exceeds its aggregate geometry limits");
+            }
+            if (rig.joints.size() >
+                kMaximumD3d11WorldActorPoseJoints -
+                    aggregate_pose_joints) {
+                throw std::runtime_error(
+                    "The D3D11 world actor scene exceeds its aggregate pose-palette limit");
+            }
+            aggregate_vertices += model_gpu.vertex_count;
+            aggregate_indices += model_gpu.triangle_indices.size();
+            aggregate_draws += model_gpu.draws.size();
+            aggregate_pose_joints += rig.joints.size();
+
+            WorldActorInstanceGpu instance;
+            instance.authored_id = actor.authored_id;
+            instance.model_gpu_index = model_gpu_index;
+            instance.pose_palette = build_actor_bind_pose_palette_v1(
+                rig, game::kRuntimePlayerActorPoseLimitsV1);
+            instance.model_to_entity = actor.model_to_entity;
+            instance.entity_to_world =
+                actor_transform_from_world(actor.entity_to_world);
+            const auto model_to_world = compose_actor_transform(
+                instance.entity_to_world, instance.model_to_entity);
+            instance.reverses_orientation =
+                checked_actor_reverses_orientation(model_to_world);
+            instance.vertices.resize(model_gpu.vertex_count);
+            instance.projected_vertices.resize(model_gpu.vertex_count);
+            instance.enabled = actor.initially_enabled;
+            world_actor_instances.push_back(std::move(instance));
+        }
     }
 
     void create_device_and_swap_chain() {
@@ -976,6 +1320,59 @@ struct D3d11Renderer::Implementation {
             "ID3D11Device::CreateBuffer(gameplay actor indices)");
     }
 
+    void create_world_actor_buffers() {
+        for (auto& model : world_actor_models) {
+            if (model.triangle_indices.empty() ||
+                model.triangle_indices.size() !=
+                    model.reversed_triangle_indices.size()) {
+                throw std::logic_error(
+                    "A D3D11 world actor model has incomplete index staging");
+            }
+            const auto create_indices =
+                [this](const std::vector<std::uint32_t>& indices,
+                       ComPtr<ID3D11Buffer>& output,
+                       const char* const operation) {
+                    D3D11_BUFFER_DESC description{};
+                    description.ByteWidth = checked_buffer_size(
+                        indices.size(), sizeof(std::uint32_t), operation);
+                    description.Usage = D3D11_USAGE_IMMUTABLE;
+                    description.BindFlags = D3D11_BIND_INDEX_BUFFER;
+                    D3D11_SUBRESOURCE_DATA data{};
+                    data.pSysMem = indices.data();
+                    require_success(
+                        device->CreateBuffer(
+                            &description, &data, output.GetAddressOf()),
+                        operation);
+                };
+            create_indices(
+                model.triangle_indices,
+                model.index_buffer,
+                "ID3D11Device::CreateBuffer(world actor indices)");
+            create_indices(
+                model.reversed_triangle_indices,
+                model.reversed_index_buffer,
+                "ID3D11Device::CreateBuffer(reversed world actor indices)");
+        }
+        for (auto& instance : world_actor_instances) {
+            if (instance.projected_vertices.empty()) {
+                throw std::logic_error(
+                    "A D3D11 world actor has no vertex staging data");
+            }
+            D3D11_BUFFER_DESC description{};
+            description.ByteWidth = checked_buffer_size(
+                instance.projected_vertices.size(), sizeof(ProjectedVertex),
+                "World actor vertex buffer");
+            description.Usage = D3D11_USAGE_DYNAMIC;
+            description.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+            description.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+            require_success(
+                device->CreateBuffer(
+                    &description, nullptr,
+                    instance.vertex_buffer.GetAddressOf()),
+                "ID3D11Device::CreateBuffer(world actor vertices)");
+        }
+    }
+
     void create_gameplay_proxy_buffers() {
         static_assert(kGameplayProxyVertexCount > 0U);
         static_assert(kGameplayProxyIndexCount > 0U);
@@ -1115,6 +1512,61 @@ struct D3d11Renderer::Implementation {
         }
     }
 
+    void rebuild_world_actor_vertices(WorldActorInstanceGpu& instance) {
+        if (instance.model_gpu_index >= world_actor_models.size()) {
+            throw std::logic_error(
+                "A D3D11 world actor lost its model allocation");
+        }
+        const auto& model = world_actor_models[instance.model_gpu_index];
+        if (instance.vertices.size() != model.vertex_count ||
+            instance.projected_vertices.size() != model.vertex_count) {
+            throw std::logic_error(
+                "A D3D11 world actor has inconsistent vertex storage");
+        }
+        const auto model_to_world = compose_actor_transform(
+            instance.entity_to_world, instance.model_to_entity);
+        const auto reverses_orientation =
+            checked_actor_reverses_orientation(model_to_world);
+        if (reverses_orientation != instance.reverses_orientation) {
+            instance.reverses_orientation = reverses_orientation;
+        }
+
+        std::size_t output_offset = 0U;
+        for (const auto& mesh : model.meshes) {
+            const auto posed = pose_actor_mesh_positions_v1(
+                mesh,
+                instance.pose_palette,
+                model_to_world,
+                game::kRuntimePlayerActorPoseLimitsV1);
+            if (posed.size() != mesh.vertices.size() ||
+                posed.size() > instance.vertices.size() - output_offset) {
+                throw std::logic_error(
+                    "A D3D11 world actor pose exceeded its vertex storage");
+            }
+            for (std::size_t index = 0U; index < posed.size(); ++index) {
+                const auto& position = posed[index];
+                const auto& source = mesh.vertices[index];
+                instance.vertices[output_offset] = RenderSceneD3dVertexV1{
+                    position.x,
+                    position.y,
+                    position.z,
+                    source.u,
+                    source.v,
+                    source.rgba8,
+                };
+                instance.projected_vertices[output_offset].rgba =
+                    source.rgba8;
+                instance.projected_vertices[output_offset].u = source.u;
+                instance.projected_vertices[output_offset].v = source.v;
+                ++output_offset;
+            }
+        }
+        if (output_offset != instance.vertices.size()) {
+            throw std::logic_error(
+                "A D3D11 world actor pose did not fill its vertex storage");
+        }
+    }
+
     void rebuild_gameplay_proxy_vertices() {
         if (!gameplay_presentation ||
             gameplay_proxy_vertices.size() != kGameplayProxyVertexCount) {
@@ -1250,6 +1702,108 @@ struct D3d11Renderer::Implementation {
         gameplay_actor_pose_palette = pose;
         gameplay_actor_vertices_dirty = true;
         projected_vertices_dirty = true;
+    }
+
+    [[nodiscard]] WorldActorInstanceGpu&
+    require_world_actor(const std::uint32_t authored_id) {
+        const auto found = std::lower_bound(
+            world_actor_instances.begin(),
+            world_actor_instances.end(),
+            authored_id,
+            [](const WorldActorInstanceGpu& actor, const std::uint32_t id) {
+                return actor.authored_id < id;
+            });
+        if (found == world_actor_instances.end() ||
+            found->authored_id != authored_id) {
+            throw std::out_of_range(
+                "The D3D11 world actor authored ID is unavailable");
+        }
+        return *found;
+    }
+
+    [[nodiscard]] const WorldActorInstanceGpu&
+    require_world_actor(const std::uint32_t authored_id) const {
+        const auto found = std::lower_bound(
+            world_actor_instances.begin(),
+            world_actor_instances.end(),
+            authored_id,
+            [](const WorldActorInstanceGpu& actor, const std::uint32_t id) {
+                return actor.authored_id < id;
+            });
+        if (found == world_actor_instances.end() ||
+            found->authored_id != authored_id) {
+            throw std::out_of_range(
+                "The D3D11 world actor authored ID is unavailable");
+        }
+        return *found;
+    }
+
+    void set_world_actor_pose(const std::uint32_t authored_id,
+                              const ActorPosePaletteV1& pose) {
+        auto& actor = require_world_actor(authored_id);
+        const auto joint_count =
+            actor.pose_palette.global_joint_transforms.size();
+        if (pose.global_joint_transforms.size() != joint_count ||
+            pose.skin_transforms.size() != joint_count) {
+            throw std::invalid_argument(
+                "The D3D11 world actor pose joint count does not match its rig");
+        }
+        const auto require_finite = [](const auto& transforms) {
+            for (const auto& transform : transforms) {
+                for (const auto component : transform.values) {
+                    if (!std::isfinite(component)) {
+                        throw std::invalid_argument(
+                            "The D3D11 world actor pose contains a non-finite transform");
+                    }
+                }
+            }
+        };
+        require_finite(pose.global_joint_transforms);
+        require_finite(pose.skin_transforms);
+        if (actor.pose_palette == pose) {
+            return;
+        }
+        actor.pose_palette = pose;
+        actor.vertices_dirty = true;
+        projected_vertices_dirty = true;
+    }
+
+    void set_world_actor_transform(
+        const std::uint32_t authored_id,
+        const game::WorldTransformV1& transform) {
+        auto& actor = require_world_actor(authored_id);
+        const auto next = actor_transform_from_world(transform);
+        if (actor.entity_to_world == next) {
+            return;
+        }
+        const auto model_to_world = compose_actor_transform(
+            next, actor.model_to_entity);
+        const auto reverses_orientation =
+            checked_actor_reverses_orientation(model_to_world);
+        actor.entity_to_world = next;
+        actor.reverses_orientation = reverses_orientation;
+        actor.vertices_dirty = true;
+        projected_vertices_dirty = true;
+    }
+
+    void set_world_actor_enabled(const std::uint32_t authored_id,
+                                 const bool enabled) {
+        auto& actor = require_world_actor(authored_id);
+        if (actor.enabled == enabled) {
+            return;
+        }
+        actor.enabled = enabled;
+        projected_vertices_dirty = true;
+    }
+
+    [[nodiscard]] bool
+    world_actor_enabled(const std::uint32_t authored_id) const {
+        return require_world_actor(authored_id).enabled;
+    }
+
+    [[nodiscard]] bool last_frame_world_actor_submitted(
+        const std::uint32_t authored_id) const {
+        return require_world_actor(authored_id).submitted;
     }
 
     void create_neutral_texture_resources(
@@ -1408,6 +1962,18 @@ struct D3d11Renderer::Implementation {
         }
     }
 
+    void create_world_actor_resources() {
+        for (auto& model : world_actor_models) {
+            create_neutral_texture_resources(
+                model.textures, model.texture_views);
+            model.material_samplers.reserve(model.materials.size());
+            for (const auto& material : model.materials) {
+                model.material_samplers.push_back(
+                    render_scene_sampler(material));
+            }
+        }
+    }
+
     void create_render_target() {
         ComPtr<ID3D11Texture2D> back_buffer;
         require_success(
@@ -1542,6 +2108,21 @@ struct D3d11Renderer::Implementation {
                 render_scene_vertex_buffer.Get(),
                 "ID3D11DeviceContext::Map(projected RenderSceneV1 vertices)");
         }
+        for (auto& actor : world_actor_instances) {
+            if (!actor.enabled) {
+                continue;
+            }
+            if (actor.vertices_dirty) {
+                rebuild_world_actor_vertices(actor);
+                actor.vertices_dirty = false;
+            }
+            project_and_upload_vertices(
+                camera,
+                actor.vertices,
+                actor.projected_vertices,
+                actor.vertex_buffer.Get(),
+                "ID3D11DeviceContext::Map(world actor vertices)");
+        }
         if (gameplay_presentation) {
             if (has_gameplay_actor) {
                 if (gameplay_actor_vertices_dirty) {
@@ -1606,6 +2187,9 @@ struct D3d11Renderer::Implementation {
             render_scene_instance_submitted.begin(),
             render_scene_instance_submitted.end(),
             false);
+        for (auto& actor : world_actor_instances) {
+            actor.submitted = false;
+        }
         if (width == 0U || height == 0U || !render_target || !depth_view) {
             return false;
         }
@@ -1723,6 +2307,39 @@ struct D3d11Renderer::Implementation {
             render_scene_instance_submitted[draw.instance_id] = true;
         }
 
+        for (auto& actor : world_actor_instances) {
+            if (!actor.enabled) {
+                continue;
+            }
+            if (actor.model_gpu_index >= world_actor_models.size()) {
+                throw std::logic_error(
+                    "A D3D11 world actor lost its draw model");
+            }
+            auto& model = world_actor_models[actor.model_gpu_index];
+            ID3D11Buffer* const actor_vertex_buffers[] = {
+                actor.vertex_buffer.Get()};
+            context->IASetVertexBuffers(
+                0U,
+                1U,
+                actor_vertex_buffers,
+                &kProjectedStride,
+                &kOffset);
+            context->IASetIndexBuffer(
+                actor.reverses_orientation
+                    ? model.reversed_index_buffer.Get()
+                    : model.index_buffer.Get(),
+                DXGI_FORMAT_R32_UINT,
+                0U);
+            for (const auto& draw : model.draws) {
+                draw_neutral(
+                    draw,
+                    model.materials,
+                    model.texture_views,
+                    model.material_samplers);
+                actor.submitted = true;
+            }
+        }
+
         if (has_gameplay_actor) {
             ID3D11Buffer* const actor_vertex_buffers[] = {
                 gameplay_actor_vertex_buffer.Get()};
@@ -1793,6 +2410,8 @@ struct D3d11Renderer::Implementation {
     D3D_FEATURE_LEVEL feature_level = D3D_FEATURE_LEVEL_10_0;
     std::vector<RenderSceneD3dVertexV1> render_scene_vertices;
     std::vector<ProjectedVertex> render_scene_projected_vertices;
+    std::vector<WorldActorModelGpu> world_actor_models;
+    std::vector<WorldActorInstanceGpu> world_actor_instances;
     std::vector<ActorSkinnedMeshV1> gameplay_actor_meshes;
     ActorPosePaletteV1 gameplay_actor_pose_palette;
     ActorAffineTransformV1 gameplay_actor_model_to_entity;
@@ -1852,15 +2471,16 @@ D3d11Renderer::D3d11Renderer(HWND window,
 D3d11Renderer::D3d11Renderer(
     HWND window,
     const openrc::RenderSceneV1& scene,
-    const openrc::ActorRigV1& player_rig,
-    const openrc::ActorModelV1& player_model,
-    const openrc::ActorAffineTransformV1& model_to_entity)
+    const openrc::ActorLibraryV1& actor_library,
+    const openrc::game::RuntimePlayerActorResolutionV1& player_actor,
+    const std::span<const openrc::game::RuntimeWorldActorResolutionV1>
+        world_actors)
     : implementation_(std::make_unique<Implementation>(
           window,
           scene,
-          player_rig,
-          player_model,
-          model_to_entity)) {}
+          actor_library,
+          player_actor,
+          world_actors)) {}
 
 void D3d11Renderer::set_render_instance_enabled(
     const std::uint32_t instance_id,
@@ -1929,6 +2549,34 @@ void D3d11Renderer::set_gameplay_presentation(
 void D3d11Renderer::set_gameplay_actor_pose(
     const ActorPosePaletteV1& pose) {
     implementation_->set_gameplay_actor_pose(pose);
+}
+
+void D3d11Renderer::set_world_actor_pose(
+    const std::uint32_t authored_id,
+    const ActorPosePaletteV1& pose) {
+    implementation_->set_world_actor_pose(authored_id, pose);
+}
+
+void D3d11Renderer::set_world_actor_transform(
+    const std::uint32_t authored_id,
+    const game::WorldTransformV1& transform) {
+    implementation_->set_world_actor_transform(authored_id, transform);
+}
+
+void D3d11Renderer::set_world_actor_enabled(
+    const std::uint32_t authored_id,
+    const bool enabled) {
+    implementation_->set_world_actor_enabled(authored_id, enabled);
+}
+
+bool D3d11Renderer::world_actor_enabled(
+    const std::uint32_t authored_id) const {
+    return implementation_->world_actor_enabled(authored_id);
+}
+
+bool D3d11Renderer::last_frame_world_actor_submitted(
+    const std::uint32_t authored_id) const {
+    return implementation_->last_frame_world_actor_submitted(authored_id);
 }
 
 } // namespace openrc::runtime

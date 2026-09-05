@@ -10,9 +10,11 @@
 
 #include <cstdint>
 #include <memory>
+#include <span>
 
 namespace openrc {
 struct ActorAffineTransformV1;
+struct ActorLibraryV1;
 struct ActorModelV1;
 struct ActorPosePaletteV1;
 struct ActorRigV1;
@@ -21,7 +23,10 @@ struct RenderSceneV1;
 }
 
 namespace openrc::game {
+struct RuntimePlayerActorResolutionV1;
+struct RuntimeWorldActorResolutionV1;
 struct ThirdPersonCameraViewV1;
+struct WorldTransformV1;
 }
 
 namespace openrc::runtime {
@@ -31,15 +36,16 @@ public:
     // Prepared-package runtime path. It consumes only the neutral render
     // resource.
     D3d11Renderer(HWND window, const openrc::RenderSceneV1& scene);
-    // Prepared actor path. Player ownership is resolved by the runtime before
-    // entering the renderer; this overload receives only neutral rig/model
-    // data and the entity-local model transform.
+    // Prepared actor path. Player and non-player ownership are resolved by the
+    // runtime before entering the renderer; this overload receives only
+    // neutral dense asset handles and world/entity transforms.
     D3d11Renderer(
         HWND window,
         const openrc::RenderSceneV1& scene,
-        const openrc::ActorRigV1& player_rig,
-        const openrc::ActorModelV1& player_model,
-        const openrc::ActorAffineTransformV1& model_to_entity);
+        const openrc::ActorLibraryV1& actor_library,
+        const openrc::game::RuntimePlayerActorResolutionV1& player_actor,
+        std::span<const openrc::game::RuntimeWorldActorResolutionV1>
+            world_actors);
     ~D3d11Renderer();
 
     D3d11Renderer(const D3d11Renderer&) = delete;
@@ -68,6 +74,21 @@ public:
     // player remains stationary.
     void set_gameplay_actor_pose(
         const openrc::ActorPosePaletteV1& pose);
+
+    // Non-player actor instances remain addressed by the sparse authored ID
+    // carried by EntitySceneV1. Pose, transform, and visibility updates are
+    // independent so later source-backed AI can drive each instance without
+    // rebuilding the renderer or duplicating immutable model textures.
+    void set_world_actor_pose(
+        std::uint32_t authored_id,
+        const openrc::ActorPosePaletteV1& pose);
+    void set_world_actor_transform(
+        std::uint32_t authored_id,
+        const openrc::game::WorldTransformV1& transform);
+    void set_world_actor_enabled(std::uint32_t authored_id, bool enabled);
+    [[nodiscard]] bool world_actor_enabled(std::uint32_t authored_id) const;
+    [[nodiscard]] bool
+    last_frame_world_actor_submitted(std::uint32_t authored_id) const;
 
     // EntityRenderBindingV1 visibility is updated independently from static
     // scene allocation. IDs address the neutral RenderSceneV1 instance table.

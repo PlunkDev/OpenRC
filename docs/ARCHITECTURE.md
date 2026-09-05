@@ -45,6 +45,7 @@ openrc_core
 ├── actor bind-pose baking into ordinary static RenderSceneV1 instances
 ├── compiler-only RAC collectible adaptation into render/entity/gameplay resources
 ├── compiler-only RAC Bolt-Crate adaptation into render/entity/destructible resources
+├── compiler-only ordinary-Moby adaptation into shared actor/animation/entity resources
 ├── planet-agnostic eight-resource LevelPackageV1 compilation and cross-resource validation
 ├── hardened PreparedGameV2 filesystem loading and transactional publication
 ├── deterministic fixed-step/input replay boundary and planet-agnostic world/session
@@ -113,6 +114,7 @@ openrc-runtime
 ├── semantic player-slot → entity → actor-model → rig resolution
 ├── semantic idle/walk/run selection with integer PAL-50-to-runtime-60 cadence
 ├── textured Ratchet high-LOD animated CPU skinning at the player transform
+├── independent non-player pose/transform/visibility with per-model GPU sharing
 ├── authored entity/gameplay materialization and fixed-tick capsule/sphere collection
 ├── F/left-mouse primary action and neutral melee damage capsules
 ├── canonical damage/destruction/drop events and render-instance visibility
@@ -181,7 +183,12 @@ client: it is rejected as stale and replaced through the normal Prepare flow.
 The eight-resource profile now has fresh real-data verification: all 19 levels
 compile and validate, the matching cache is reused on a second preparation,
 Veldin's two package-only gameplay smokes pass, and the D3D11 smoke proves a
-mounted crate is drawn before attack and omitted after destruction.
+mounted crate is drawn before attack and omitted after destruction. The same
+neutral actor boundary now presents 16 class-749 instances from one shared
+model/rig/texture set. Their proven source state-0 entry clip is identified by
+the package's reserved `/initial/` semantic-key segment as a temporary
+presentation fallback; runtime code contains no RAC class ID or sequence-slot
+table. Per-instance behavior must replace it before this actor is exact.
 
 This boundary is intentionally reusable beyond Veldin. Numeric IDs are scoped
 to canonical tables, while cross-resource relationships use stable semantic

@@ -53,6 +53,8 @@ constexpr std::string_view kVeldinMoby749ModelKey =
     "actors/rac1/moby/0749/high";
 constexpr std::string_view kVeldinMoby749SequencePrefix =
     "actors/rac1/moby/0749/source-sequence/";
+constexpr std::string_view kVeldinMoby749InitialAnimationKey =
+    "actors/rac1/moby/0749/initial/source-sequence/001";
 constexpr std::string_view kVeldinMoby749ArchetypeKey = "rac1/moby/0749";
 constexpr std::array<std::uint16_t, 8U> kVeldinMoby749FrameCounts{
     1U, 6U, 13U, 15U, 15U, 21U, 25U, 23U};
@@ -369,6 +371,9 @@ make_actor_animations(const ProfileMutation mutation,
       key.push_back('0');
       key.push_back('0');
       key.push_back(static_cast<char>('0' + source_slot));
+      if (source_slot == 1U) {
+        key = kVeldinMoby749InitialAnimationKey;
+      }
       openrc::ActorAnimationClipV1 clip;
       clip.id = static_cast<std::uint32_t>(result.clips.size());
       clip.semantic_key = std::move(key);

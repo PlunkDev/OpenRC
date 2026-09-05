@@ -68,6 +68,7 @@
 #include <iostream>
 #include <iterator>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <sstream>
@@ -4354,9 +4355,16 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                         };
                 }
             }
+            // These results carry complete VU1 memory snapshots. Keep them on
+            // the heap so this diagnostic-only command does not reserve
+            // hundreds of KiB in run()'s stack frame for every other CLI
+            // command, including prepare-native-game.
             const auto initialized =
-                openrc::initialize_scene_block_task_execution_v1(
-                    program, preamble, frame_input, kExecutionLimits);
+                std::unique_ptr<openrc::SceneBlockTaskInitializationResultV1>(
+                    new openrc::SceneBlockTaskInitializationResultV1(
+                        openrc::initialize_scene_block_task_execution_v1(
+                            program, preamble, frame_input,
+                            kExecutionLimits)));
 
             std::cout
                 << "OpenRC real SceneBlock task execution\n"
@@ -4388,17 +4396,17 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 << hexadecimal(kTaskPreambleVirtualAddress, 8) << '\n'
                 << "Initialization:      "
                 << dvp_vu_termination_name(
-                       initialized.vu_execution.termination)
+                       initialized->vu_execution.termination)
                 << '\n'
                 << "Initialization pairs:"
-                << ' ' << initialized.vu_execution.executed_instruction_pairs
+                << ' ' << initialized->vu_execution.executed_instruction_pairs
                 << '\n';
-            if (!initialized.ready_state) {
-                if (initialized.vu_execution.stopped_instruction_address) {
+            if (!initialized->ready_state) {
+                if (initialized->vu_execution.stopped_instruction_address) {
                     std::cout
                         << "Initialization stop: "
                         << hexadecimal(
-                               *initialized.vu_execution
+                               *initialized->vu_execution
                                     .stopped_instruction_address,
                                3)
                         << '\n';
@@ -4406,31 +4414,36 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 return kOperationError;
             }
 
-            const auto execution = openrc::execute_scene_block_task_record_v1(
-                directory.entries[static_cast<std::size_t>(*record_value)],
-                entrypoint,
-                program,
-                *initialized.ready_state,
-                openrc::SceneBlockTaskExecutionLimitsV1{
-                    openrc::SceneBlockTaskBuildLimitsV1{
-                        kMaximumCliDecodedWadBytes,
-                        openrc::kSceneBlockTaskMaximumDmaReferences,
-                        kMaximumCliDecodedWadBytes,
-                        openrc::SceneBlockVifLimits{
-                            kMaximumCliDecodedWadBytes,
-                            1'000'000U,
-                            kMaximumCliDecodedWadBytes,
-                        },
-                    },
-                    1'000'000U,
-                    openrc::SceneBlockDvpVuBridgeLimitsV1{1'000'000U},
-                    kExecutionLimits,
-                });
+            const auto execution =
+                std::unique_ptr<openrc::SceneBlockTaskRecordExecutionV1>(
+                    new openrc::SceneBlockTaskRecordExecutionV1(
+                        openrc::execute_scene_block_task_record_v1(
+                            directory.entries[static_cast<std::size_t>(
+                                *record_value)],
+                            entrypoint,
+                            program,
+                            *initialized->ready_state,
+                            openrc::SceneBlockTaskExecutionLimitsV1{
+                                openrc::SceneBlockTaskBuildLimitsV1{
+                                    kMaximumCliDecodedWadBytes,
+                                    openrc::kSceneBlockTaskMaximumDmaReferences,
+                                    kMaximumCliDecodedWadBytes,
+                                    openrc::SceneBlockVifLimits{
+                                        kMaximumCliDecodedWadBytes,
+                                        1'000'000U,
+                                        kMaximumCliDecodedWadBytes,
+                                    },
+                                },
+                                1'000'000U,
+                                openrc::SceneBlockDvpVuBridgeLimitsV1{
+                                    1'000'000U},
+                                kExecutionLimits,
+                            })));
 
             std::array<std::uint64_t, openrc::kSceneBlockVuLaneCount>
                 known_vif_lanes{};
             std::array<std::uint64_t, 5U> vif_lane_sources{};
-            for (const auto& write : execution.vif_execution.writes) {
+            for (const auto& write : execution->vif_execution.writes) {
                 for (std::size_t lane = 0U; lane < write.lanes.size(); ++lane) {
                     if (write.lanes[lane].written_value.state ==
                         openrc::SceneBlockVuValueState::known) {
@@ -4445,67 +4458,67 @@ int run(const std::vector<std::filesystem::path>& arguments) {
             }
 
             std::cout
-                << "TOP/next TOPS:       " << execution.top_qword << '/'
-                << execution.next_tops_qword << '\n'
+                << "TOP/next TOPS:       " << execution->top_qword << '/'
+                << execution->next_tops_qword << '\n'
                 << "DMA references:      "
-                << execution.invocation.dma_references.size() << '\n'
+                << execution->invocation.dma_references.size() << '\n'
                 << "Referenced bytes:    "
-                << execution.invocation.total_reference_bytes << '\n'
+                << execution->invocation.total_reference_bytes << '\n'
                 << "Expanded VIF bytes:  "
-                << execution.invocation.vif_bytes.size() << '\n'
+                << execution->invocation.vif_bytes.size() << '\n'
                 << "VIF commands/writes: "
-                << execution.vif_execution.stream.commands.size() << '/'
-                << execution.vif_execution.writes.size() << '\n'
+                << execution->vif_execution.stream.commands.size() << '/'
+                << execution->vif_execution.writes.size() << '\n'
                 << "Known VIF X/Y/Z/W:   " << known_vif_lanes[0U] << '/'
                 << known_vif_lanes[1U] << '/' << known_vif_lanes[2U] << '/'
                 << known_vif_lanes[3U] << " of "
-                << execution.vif_execution.writes.size() << '\n'
+                << execution->vif_execution.writes.size() << '\n'
                 << "VIF payload/fill/V3-spill/V3-zero/V3-missing: "
                 << vif_lane_sources[0U] << '/' << vif_lane_sources[1U] << '/'
                 << vif_lane_sources[2U] << '/' << vif_lane_sources[3U] << '/'
                 << vif_lane_sources[4U] << '\n'
                 << "Final VIF CL/WL:     "
-                << execution.vif_execution.final_state.cycle_length << '/'
-                << execution.vif_execution.final_state.write_length << '\n'
+                << execution->vif_execution.final_state.cycle_length << '/'
+                << execution->vif_execution.final_state.write_length << '\n'
                 << "Termination:         "
-                << dvp_vu_termination_name(execution.vu_execution.termination)
+                << dvp_vu_termination_name(execution->vu_execution.termination)
                 << '\n'
                 << "Executed pairs:      "
-                << execution.vu_execution.executed_instruction_pairs << '\n'
+                << execution->vu_execution.executed_instruction_pairs << '\n'
                 << "Final PC:            "
-                << hexadecimal(execution.vu_execution.final_state.pc, 3)
+                << hexadecimal(execution->vu_execution.final_state.pc, 3)
                 << '\n';
-            if (execution.vu_execution.stopped_instruction_address) {
+            if (execution->vu_execution.stopped_instruction_address) {
                 std::cout
                     << "Stopped instruction:"
                     << ' '
                     << hexadecimal(
-                           *execution.vu_execution.stopped_instruction_address,
+                           *execution->vu_execution.stopped_instruction_address,
                            3)
                     << '\n';
             }
             std::cout
                 << "XGKICK events:       "
-                << execution.vu_execution.xgkick_events.size() << '\n'
+                << execution->vu_execution.xgkick_events.size() << '\n'
                 << "Warnings:            ";
-            if (execution.vu_execution.warnings.empty()) {
+            if (execution->vu_execution.warnings.empty()) {
                 std::cout << "none";
             } else {
                 for (std::size_t index = 0U;
-                     index < execution.vu_execution.warnings.size();
+                     index < execution->vu_execution.warnings.size();
                      ++index) {
                     if (index != 0U) {
                         std::cout << ',';
                     }
                     std::cout << dvp_vu_warning_name(
-                        execution.vu_execution.warnings[index]);
+                        execution->vu_execution.warnings[index]);
                 }
             }
             std::cout << '\n';
 
             std::optional<openrc::GifGsDecodeResultV1> gs_decode;
             const auto& xgkick_events =
-                execution.vu_execution.xgkick_events;
+                execution->vu_execution.xgkick_events;
             const bool complete_gs_stream =
                 !xgkick_events.empty() &&
                 std::all_of(
@@ -4529,10 +4542,10 @@ int run(const std::vector<std::filesystem::path>& arguments) {
             }
 
             for (std::size_t event_index = 0U;
-                 event_index < execution.vu_execution.xgkick_events.size();
+                 event_index < execution->vu_execution.xgkick_events.size();
                  ++event_index) {
                 const auto& event =
-                    execution.vu_execution.xgkick_events[event_index];
+                    execution->vu_execution.xgkick_events[event_index];
                 std::cout
                     << "XGKICK " << event_index
                     << " pc=" << hexadecimal(event.instruction_address, 3)
@@ -4591,7 +4604,7 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                     << "Wireframe bytes:     " << tga.size() << '\n';
             }
 
-            return execution.ready_state ? 0 : kOperationError;
+            return execution->ready_state ? 0 : kOperationError;
         } catch (const std::exception& error) {
             std::cerr << "error: " << error.what() << '\n';
             return kOperationError;

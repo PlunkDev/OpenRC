@@ -90,3 +90,11 @@ visible-to-destroyed crate evidence. Enemies, weapons,
 scripts, save persistence, menus, and reconstructed original camera behavior
 are not implemented merely because these first interactive entities are
 packaged.
+
+Veldin now also contains 16 initially enabled actor bindings for the exact
+class-749 placement ordinals/authored IDs 143 through 158. Every binding uses
+the shared neutral model key `actors/rac1/moby/0749/high` and its recovered world
+transform. EntitySceneV1 still assigns no enemy meaning or behavior: the
+temporary state-0 entry animation classification lives in ActorAnimationBankV1,
+while the original per-tick state machine, collision, damage, and AI remain
+separate recovery work.

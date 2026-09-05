@@ -130,6 +130,9 @@ both in progress. The repository currently provides:
   static actor-to-RenderScene baking with general affine joint transforms and
   inverse-transpose normal handling, plus a position-only path that preserves
   intentional singular animation scales without inventing a normal policy;
+- generic ordinary-Moby actor compilation and runtime presentation: Veldin
+  class 749 currently contributes one shared textured 53-joint model, all eight
+  source sequences, and 16 independently posed/transformed actor instances;
 - an in-progress deterministic native-game compiler path for all 19 reference
   levels, targeting exactly eight neutral resources per level—collision,
   bootstrap, render scene, actor library, actor animations, entity scene,
@@ -181,9 +184,9 @@ both in progress. The repository currently provides:
   the source ISO or boot ELF, with deterministic fixed-step movement, collision,
   jumping, fall/reset handling, a third-person camera, and Ratchet's textured
   high-LOD model CPU-skinned from neutral idle, walk, and run clips at the
-  simulated player transform, plus neutral Bolt collection and destructible
-  state, semantic inventory, static-instance visibility, and a primary melee
-  action;
+  simulated player transform, plus independently addressable world actors,
+  neutral Bolt collection and destructible state, semantic inventory,
+  static-instance visibility, and a primary melee action;
 - recognition of the PAL (`SCES-50916`) reference executable and detection of
   the NTSC-U/C (`SCUS-97199`) release;
 - a native Windows launcher with disc inspection, asynchronous one-time
@@ -266,9 +269,11 @@ keys, rig digest, joint counts, and the mounted runtime animation bank. The
 D3D11 smoke additionally proves that a real mounted
 Bolt Crate is submitted while visible, receives the neutral primary attack,
 grants its drop, and is absent from the next rendered frame. The map still lacks
-animated and specialized object families, finished attack presentation,
-enemies, menus, the original camera behavior, and several progression
-interactions, so Veldin is not yet a complete playable level.
+most animated and specialized object families, finished attack presentation,
+enemy AI/combat/damage behavior, menus, the original camera behavior, and
+several progression interactions, so Veldin is not yet a complete playable
+level. The first enemy-shaped source class is presented from package data, but
+is deliberately not called gameplay-complete yet.
 
 There is one Launcher and one runtime. The prepared installation is a
 versioned local cache made from the player's disc, not another client. The
@@ -413,9 +418,13 @@ eight-resource profile additionally maps static Moby class 500 to neutral Bolt
 Crates with one health and one Bolt drop as explicit OpenRC policy. All-level
 preparation/reuse, package-only Veldin gameplay, and D3D11 visible-to-destroyed
 crate smoke have passed. Ratchet's confirmed idle/slow/full grounded animation
-is now packaged and played; wrench and airborne animation, original pickup and
-destruction presentation, enemies, menus, and the remaining gameplay systems
-are still in progress.
+is now packaged and played. Veldin class 749 is also packaged as 16 independent
+skeletal actor instances with all source animations; its executable-proven
+state-0 entry sequence is classified in
+the neutral animation bank and sampled without hard-coded runtime dispatch on
+the RAC class or slot. Wrench and airborne animation, original pickup/destruction
+presentation, enemy behavior, menus, and the remaining gameplay systems are
+still in progress.
 
 The `wad-bundle` LBA and sector count above identify a container in the exact
 PAL v2.00 reference image; they are not assumed for other revisions.

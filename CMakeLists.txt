@@ -105,6 +105,7 @@ add_library(openrc_core STATIC
     src/core/runtime_entity_scene.cpp
     src/core/runtime_player_actor.cpp
     src/core/runtime_player_animation.cpp
+    src/core/runtime_world_actor.cpp
     src/core/runtime_render_scene.cpp
     src/core/scene_animation_bank.cpp
     src/core/scene_block_directory.cpp
@@ -1297,6 +1298,34 @@ if(OPENRC_BUILD_TESTS)
     endif()
 
     add_executable(
+        openrc-runtime-world-actor-tests
+        tests/runtime_world_actor_tests.cpp
+    )
+    target_link_libraries(
+        openrc-runtime-world-actor-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-runtime-world-actor-tests
+        PRIVATE
+        cxx_std_20
+    )
+    if(MSVC)
+        target_compile_options(
+            openrc-runtime-world-actor-tests
+            PRIVATE
+            /W4 /permissive- /utf-8
+        )
+    else()
+        target_compile_options(
+            openrc-runtime-world-actor-tests
+            PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+    endif()
+
+    add_executable(
         openrc-rac-moby-bind-pose-tests
         tests/rac_moby_bind_pose_tests.cpp
     )
@@ -1910,6 +1939,7 @@ if(OPENRC_BUILD_TESTS)
     add_test(NAME runtime-render-scene COMMAND openrc-runtime-render-scene-tests)
     add_test(NAME runtime-level-content COMMAND openrc-runtime-level-content-tests)
     add_test(NAME runtime-player-actor COMMAND openrc-runtime-player-actor-tests)
+    add_test(NAME runtime-world-actor COMMAND openrc-runtime-world-actor-tests)
     add_test(NAME rac-moby-bind-pose COMMAND openrc-rac-moby-bind-pose-tests)
     add_test(NAME render-scene-d3d-data COMMAND openrc-render-scene-d3d-data-tests)
     add_test(NAME level-scene-recovery COMMAND openrc-level-scene-recovery-tests)

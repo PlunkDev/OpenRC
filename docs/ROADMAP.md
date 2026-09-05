@@ -221,6 +221,10 @@ decoders remain compiler/diagnostic-side evidence feeding neutral packages.
 - [x] connect Win32 keyboard input and a deterministic third-person camera to
   package-only fixed-step movement in the graphical runtime
 - [x] package actor and entity data independently of RAC/PS2 source layouts
+- [x] compile Veldin class 749 as one shared 53-joint textured actor with all
+  eight source sequences and exact authored placements 143-158
+- [x] render its 16 instances with independent pose/transform/visibility state,
+  shared immutable GPU resources, and a neutral state-0 entry-pose fallback
 - [ ] reconstruct and package the original camera behavior
 - [x] switch Launcher Prepare/Play to one-time all-level PreparedGameV2
   compilation and package-only runtime launch, persisting the exact native
@@ -234,12 +238,14 @@ decoders remain compiler/diagnostic-side evidence feeding neutral packages.
 The eight-resource collectible, crate/wrench, and source-animation profile is
 verified on fresh prepared data across all 19 levels, including deterministic
 reuse, package-only Veldin gameplay, exact animation-to-rig validation, and
-visible-to-destroyed D3D11 smoke. The complete source animation banks and the
-ordinary grounded 0/3/4 subset are connected, but the broader player state
-machine is not. This does not declare Veldin finished: airborne and wrench animation, original
-pickup and destruction presentation, broader interactive entities, one
-weapon/enemy loop, original camera behavior, menus, and full scene-family
-coverage remain open.
+visible-to-destroyed D3D11 smoke. Ratchet's complete source animation banks and
+ordinary grounded 0/3/4 subset are connected, and the first 16 non-player actor
+instances now have their source model, rig, clips, placement, and proven source
+state-0 entry write. Neither the broader player state machine nor that actor's
+per-instance AI and subsequent animation selection is connected.
+This does not declare Veldin finished: airborne and wrench animation, original
+pickup and destruction presentation, one complete weapon/enemy loop, original
+camera behavior, menus, and full scene-family coverage remain open.
 
 ## Stage 4 — Game-complete runtime
 

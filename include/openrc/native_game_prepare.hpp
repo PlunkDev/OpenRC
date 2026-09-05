@@ -17,14 +17,15 @@ inline constexpr std::string_view kNativeGameBuildIdV1 = "SCES-50916-PAL-v2.00";
 inline constexpr std::string_view kNativeGameCompilerIdV1 =
     "openrc-asset-compiler";
 // The profile suffix is intentionally part of publication identity: packages
-// without the complete source-addressed Ratchet animation bank and Veldin
-// class-749 actor corpus must be rebuilt.
+// without the complete source-addressed Ratchet animation bank, Veldin
+// class-749 actor corpus, and explicit source state-0 entry classification must
+// be rebuilt.
 #ifdef OPENRC_VERSION
 inline constexpr std::string_view kNativeGameCompilerVersionV1 =
-    OPENRC_VERSION "-native-eight-resource-v3-moby749";
+    OPENRC_VERSION "-native-eight-resource-v4-moby749-initial";
 #else
 inline constexpr std::string_view kNativeGameCompilerVersionV1 =
-    "0.1.0-dev-native-eight-resource-v3-moby749";
+    "0.1.0-dev-native-eight-resource-v4-moby749-initial";
 #endif
 inline constexpr std::uint64_t kNativeGameLevelPackageMaxBytesV1 =
     UINT64_C(768) * 1024U * 1024U;

@@ -6,6 +6,7 @@
 #include "openrc/runtime_level_content.hpp"
 #include "openrc/runtime_player_actor.hpp"
 #include "openrc/runtime_player_animation.hpp"
+#include "openrc/runtime_world_actor.hpp"
 #include "openrc/third_person_camera.hpp"
 
 #ifndef NOMINMAX
@@ -22,6 +23,7 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <iostream>
 #include <limits>
 #include <memory>
 #include <numbers>
@@ -90,6 +92,7 @@ struct WindowState {
     std::vector<openrc::EntityRenderBindingV1> gameplay_render_bindings;
     std::vector<std::uint32_t> gameplay_collectible_ids;
     std::vector<std::uint32_t> gameplay_destructible_ids;
+    std::vector<std::uint32_t> gameplay_world_actor_ids;
     std::uint64_t gameplay_collected_count = 0U;
     std::uint64_t gameplay_destroyed_count = 0U;
     std::optional<GameplaySmokeTargetV1> gameplay_smoke_target;
@@ -155,7 +158,7 @@ make_runtime_player_animation_profile() {
 }
 
 [[nodiscard]] constexpr openrc::ActorAnimationPlaybackLimitsV1
-make_runtime_player_animation_playback_limits() {
+make_runtime_actor_animation_playback_limits() {
     return openrc::ActorAnimationPlaybackLimitsV1{
         8U,
         8U,
@@ -163,6 +166,53 @@ make_runtime_player_animation_playback_limits() {
         1.0e-8,
         1'000'000.0F,
     };
+}
+
+void apply_runtime_world_actor_initial_poses(
+    openrc::runtime::D3d11Renderer& renderer,
+    const openrc::game::RuntimeLevelContentV1& content,
+    const std::span<const openrc::game::RuntimeWorldActorResolutionV1>
+        actors) {
+    if (actors.empty()) {
+        return;
+    }
+    if (!content.actor_library) {
+        throw std::runtime_error(
+            "World actor presentation requires the mounted actor library");
+    }
+    const auto& library = *content.actor_library;
+    std::vector<std::optional<openrc::ActorPosePaletteV1>> model_poses(
+        library.models.size());
+    std::vector<bool> model_pose_resolved(library.models.size(), false);
+    for (const auto& actor : actors) {
+        if (actor.actor_model_index >= library.models.size() ||
+            actor.actor_rig_index >= library.rigs.size()) {
+            throw std::runtime_error(
+                "A resolved world actor exceeds the mounted actor library");
+        }
+        auto& pose = model_poses[actor.actor_model_index];
+        if (!model_pose_resolved[actor.actor_model_index]) {
+            model_pose_resolved[actor.actor_model_index] = true;
+            const auto* const clip =
+                openrc::game::find_runtime_world_actor_initial_animation_v1(
+                    content, actor);
+            if (clip == nullptr) {
+                continue;
+            }
+            const auto playback =
+                openrc::start_actor_animation_playback_v1(*clip);
+            const auto& rig = library.rigs[actor.actor_rig_index];
+            pose = openrc::sample_actor_animation_pose_v1(
+                *clip,
+                playback,
+                rig.semantic_key,
+                rig.rig,
+                make_runtime_actor_animation_playback_limits());
+        }
+        if (pose) {
+            renderer.set_world_actor_pose(actor.authored_id, *pose);
+        }
+    }
 }
 
 [[nodiscard]] bool has_complete_runtime_player_animation(
@@ -1147,6 +1197,8 @@ int WINAPI wWinMain(
             const auto player_actor =
                 openrc::game::resolve_runtime_player_actor_v1(
                     level_content, 0U);
+            const auto world_actors =
+                openrc::game::resolve_runtime_world_actors_v1(level_content);
             if (player_actor) {
                 state.gameplay_actor = true;
                 const auto& library = *level_content.actor_library;
@@ -1156,9 +1208,16 @@ int WINAPI wWinMain(
                     std::make_unique<openrc::runtime::D3d11Renderer>(
                         window,
                         level_content.render_scene,
-                        player_rig.rig,
-                        library.models[player_actor->actor_model_index],
-                        player_actor->model_to_entity);
+                        library,
+                        *player_actor,
+                        world_actors);
+                state.gameplay_world_actor_ids.reserve(world_actors.size());
+                for (const auto& actor : world_actors) {
+                    state.gameplay_world_actor_ids.push_back(
+                        actor.authored_id);
+                }
+                apply_runtime_world_actor_initial_poses(
+                    *state.renderer, level_content, world_actors);
                 const auto animation_profile =
                     make_runtime_player_animation_profile();
                 if (level_content.actor_animation_bank &&
@@ -1170,7 +1229,7 @@ int WINAPI wWinMain(
                             *level_content.actor_animation_bank,
                             player_rig,
                             animation_profile,
-                            make_runtime_player_animation_playback_limits());
+                            make_runtime_actor_animation_playback_limits());
                     state.renderer->set_gameplay_actor_pose(
                         state.gameplay_animation->palette());
                 }
@@ -1373,6 +1432,14 @@ int WINAPI wWinMain(
                     "The graphical smoke resubmitted its hidden real mounted "
                     "target after gameplay removed it");
             }
+            for (const auto authored_id : state.gameplay_world_actor_ids) {
+                if (state.renderer->world_actor_enabled(authored_id) &&
+                    !state.renderer->last_frame_world_actor_submitted(
+                        authored_id)) {
+                    throw std::runtime_error(
+                        "The graphical smoke did not submit an enabled mounted world actor");
+                }
+            }
             DestroyWindow(window);
             return 0;
         }
@@ -1430,6 +1497,8 @@ int WINAPI wWinMain(
         return static_cast<int>(message.wParam);
     } catch (const std::exception& error) {
         if (suppress_error_ui) {
+            std::cerr << "OpenRC graphical smoke failed: " << error.what()
+                      << '\n';
             OutputDebugStringW(utf8_to_wide(error.what()).c_str());
             return 1;
         }

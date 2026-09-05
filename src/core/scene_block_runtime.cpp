@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <fstream>
 #include <limits>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
@@ -437,16 +438,27 @@ SceneBlockRuntimeExecutionV1 execute_scene_block_runtime_record_v1(
   }
 
   SceneBlockRuntimeExecutionV1 result;
-  result.initialization = initialize_scene_block_task_execution_v1(
-      assets.program, assets.preamble, frame_input, limits.task.dvp);
+  // A VU execution result owns a complete 32 KiB VU1 data-memory snapshot,
+  // and this path temporarily produces several of them. Construct transient
+  // results directly on the heap so callers with their own parsing frames do
+  // not exhaust Windows' default 1 MiB thread stack.
+  const auto initialization =
+      std::unique_ptr<SceneBlockTaskInitializationResultV1>(
+          new SceneBlockTaskInitializationResultV1(
+              initialize_scene_block_task_execution_v1(
+                  assets.program, assets.preamble, frame_input,
+                  limits.task.dvp)));
+  result.initialization = std::move(*initialization);
   if (!result.initialization.ready_state) {
     return result;
   }
 
-  result.record = execute_scene_block_task_record_v1(
-      assets.directory.entries[static_cast<std::size_t>(record_index)],
-      entrypoint_address, assets.program, *result.initialization.ready_state,
-      limits.task);
+  const auto record = std::unique_ptr<SceneBlockTaskRecordExecutionV1>(
+      new SceneBlockTaskRecordExecutionV1(execute_scene_block_task_record_v1(
+          assets.directory.entries[static_cast<std::size_t>(record_index)],
+          entrypoint_address, assets.program,
+          *result.initialization.ready_state, limits.task)));
+  result.record.emplace(std::move(*record));
   const auto &events = result.record->vu_execution.xgkick_events;
   if (events.empty()) {
     result.gs_status = SceneBlockRuntimeGsStatusV1::no_events;

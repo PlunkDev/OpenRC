@@ -228,6 +228,27 @@ normal transform is serialized. Slots 3/4 use the source's strict
 holds the last grounded pose until jump/fall/landing mappings are proven. The
 wrench action likewise does not select an unverified clip.
 
+### Current non-player actor adapter policy
+
+The ordinary-Moby adapter now compiles Veldin class 749 into one shared
+53-joint textured model, all eight occupied source sequences (119 frames), and
+16 `world/entities` actor bindings at exact source ordinals 143 through 158.
+The executable's state-0 entry proves a write of source sequence 1 before its
+instance-dependent transition logic. Its neutral clip key is
+`actors/rac1/moby/0749/initial/source-sequence/001`: the `/initial/` segment is
+package data consumed generically by rig, while the tail preserves the source
+slot rather than inventing a behavior name.
+
+The runtime gives each instance independent pose, transform, enabled, dirty,
+and submitted state while sharing immutable model GPU resources. This shared
+entry classification is only a temporary presentation boundary: authored entity
+154 changes to sequence 2 within the same source state-0 handler, so exact
+first-update pose selection belongs to the pending per-instance behavior state.
+A world actor with no `/initial/` classification remains in bind pose, so independently
+authored packages and future recovered classes do not require a runtime class
+table or a guessed animation. This adapter does not yet implement class-749 AI,
+collision, health, damage response, or per-tick source state transitions.
+
 ### Current collectible adapter policy
 
 The supported RAC1 adapter is compiler-only. It interprets static Moby class 13

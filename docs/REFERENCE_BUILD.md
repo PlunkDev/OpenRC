@@ -670,7 +670,15 @@ one critical addressing difference: packed frame offsets are relative to the
 class asset. The dedicated parser normalizes them to sequence-local ranges
 before pose decoding. As a real-data compiler check, Veldin class 749 yields
 8 source-addressed clips, 119 frames, and 53 joint poses per frame from its
-133,632-byte local class asset.
+133,632-byte local class asset. Sixteen gameplay placements reference that
+class at exact source ordinals 143 through 158. Executable state-0 entry writes
+source sequence 1 before instance-dependent transitions; the compiler records
+that proven relationship under
+`actors/rac1/moby/0749/initial/source-sequence/001` while retaining the source
+slot in the key. Runtime presentation discovers the neutral classification by
+rig and never dispatches on class 749 or slot 1. This is not yet the complete
+first update: authored entity 154 changes to source sequence 2 inside that same
+state-0 handler, which requires the pending per-instance behavior state.
 
 The same index preserves Ratchet's fixed 256 sequence slots without collapsing
 zero entries or aliases. Across all 19 levels, 1,804 unique non-zero sequence
@@ -787,11 +795,13 @@ classes account for 133 rendered placements, 20,370 output vertices, 13,130
 triangles, and world-space diagnostic bounds X `[81.5255, 206.495]`, Y
 `[85.0339, 301.295]`, Z `[29.4775, 76.6971]`. Another 153 placements use
 jointed models and ten use external/zero ownership, so both groups are skipped
-rather than drawn incorrectly. Across all levels, the same bounded path builds
+rather than flattened incorrectly into the static scene. Sixteen of those
+jointed placements are now emitted separately as independent class-749 actors;
+the rest remain pending. Across all levels, the same bounded path builds
 9,122 placements into 3,214,949 vertices and 2,628,565 triangles, while 6,237
 animated and 873 external/zero placements remain pending. Metal/bangle meshes,
-skeletal bind/animation transforms, and original visibility remain separate
-work. The native Veldin viewer now submits the 133 supported static placements
+remaining skeletal bind/animation transforms, and original visibility remain
+separate work. The native Veldin viewer now submits the 133 supported static placements
 through their contiguous material batches, samples the decoded RGBA base images
 with perspective-correct UVs, rejects only alpha-zero texels, and uses a D24
 depth buffer. Explicitly untextured batches retain a wireframe fallback rather

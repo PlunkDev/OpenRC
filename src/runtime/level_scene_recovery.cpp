@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <ranges>
 #include <span>
 #include <stdexcept>
@@ -120,12 +121,17 @@ void validate_source_geometry_result(
         limits.scene_block_load);
 
     const auto load_one_record = [&](const std::uint64_t record_index) {
-        return execute_scene_block_runtime_record_v1(
-            assets,
-            record_index,
-            request.entrypoint,
-            profile.frame_input,
-            limits.scene_block_execution);
+        // SceneBlockRuntimeExecutionV1 contains multiple complete VU1 memory
+        // snapshots. Construct it in heap storage so full-level aggregation
+        // does not add another ~200 KiB value to this already deep call path.
+        return std::unique_ptr<SceneBlockRuntimeExecutionV1>(
+            new SceneBlockRuntimeExecutionV1(
+                execute_scene_block_runtime_record_v1(
+                    assets,
+                    record_index,
+                    request.entrypoint,
+                    profile.frame_input,
+                    limits.scene_block_execution)));
     };
 
     if (request.record_selection ==
@@ -154,7 +160,7 @@ void validate_source_geometry_result(
              record_index < assets.directory.entries.size();
              ++record_index) {
             const auto execution = load_one_record(record_index);
-            switch (execution.gs_status) {
+            switch (execution->gs_status) {
             case SceneBlockRuntimeGsStatusV1::not_attempted:
                 throw std::runtime_error(
                     "A full-level SceneBlock record was not executed");
@@ -167,15 +173,15 @@ void validate_source_geometry_result(
             case SceneBlockRuntimeGsStatusV1::decoded:
                 break;
             }
-            if (!execution.gs) {
+            if (!execution->gs) {
                 throw std::runtime_error(
                     "A decoded full-level GS stream is unavailable");
             }
             ++result.decoded_record_count;
-            validate_source_geometry_result(execution, request.entrypoint);
+            validate_source_geometry_result(*execution, request.entrypoint);
 
             const auto has_emitted_triangle = std::ranges::any_of(
-                execution.gs->primitives,
+                execution->gs->primitives,
                 [](const GifGsPrimitiveV1& primitive) {
                     const auto topology = primitive.topology;
                     return primitive.emission ==
@@ -192,7 +198,7 @@ void validate_source_geometry_result(
                 continue;
             }
 
-            auto raster_geometry = build_scene_geometry_v1(*execution.gs);
+            auto raster_geometry = build_scene_geometry_v1(*execution->gs);
             add_aggregate_size(
                 raster_vertex_count,
                 raster_geometry.vertices.size(),
@@ -205,13 +211,13 @@ void validate_source_geometry_result(
                 "The full-level raster geometry exceeds its index limit");
             raster_batches.push_back(std::move(raster_geometry));
             ++result.raster_record_count;
-            if (execution.source_geometry_status ==
+            if (execution->source_geometry_status ==
                     SceneBlockRuntimeSourceGeometryStatusV1::recovered &&
-                execution.source_geometry) {
+                execution->source_geometry) {
                 auto source_material =
                     build_scene_geometry_3d_material_v1(
-                        *execution.source_geometry,
-                        *execution.gs);
+                        *execution->source_geometry,
+                        *execution->gs);
                 auto& source_geometry = source_material.geometry;
                 if (source_index_count % 3U != 0U) {
                     throw std::runtime_error(
@@ -258,7 +264,7 @@ void validate_source_geometry_result(
                     "The full-level source geometry exceeds its index limit");
                 source_batches.push_back(std::move(source_material.geometry));
                 ++result.source_record_count;
-            } else if (execution.source_geometry_status ==
+            } else if (execution->source_geometry_status ==
                        SceneBlockRuntimeSourceGeometryStatusV1::
                            unavailable_layout) {
                 ++result.unavailable_source_record_count;
@@ -287,16 +293,16 @@ void validate_source_geometry_result(
 
     const auto execution = load_one_record(request.record_index);
 
-    if (!execution.initialization.ready_state) {
+    if (!execution->initialization.ready_state) {
         throw std::runtime_error(
             "The SceneBlock task did not finish its initialization entrypoint");
     }
-    if (!execution.record) {
+    if (!execution->record) {
         throw std::runtime_error("The SceneBlock record was not executed");
     }
-    if (execution.gs_status != SceneBlockRuntimeGsStatusV1::decoded ||
-        !execution.gs) {
-        switch (execution.gs_status) {
+    if (execution->gs_status != SceneBlockRuntimeGsStatusV1::decoded ||
+        !execution->gs) {
+        switch (execution->gs_status) {
         case SceneBlockRuntimeGsStatusV1::not_attempted:
             throw std::runtime_error("The GS stream was not attempted");
         case SceneBlockRuntimeGsStatusV1::no_events:
@@ -310,22 +316,22 @@ void validate_source_geometry_result(
         }
         throw std::runtime_error("The decoded GS stream is unavailable");
     }
-    validate_source_geometry_result(execution, request.entrypoint);
-    if (execution.source_geometry_status ==
+    validate_source_geometry_result(*execution, request.entrypoint);
+    if (execution->source_geometry_status ==
         SceneBlockRuntimeSourceGeometryStatusV1::unavailable_layout) {
         throw std::runtime_error(
             "The selected SceneBlock record has no recoverable source geometry: " +
-            execution.source_geometry_diagnostic.value_or(
+            execution->source_geometry_diagnostic.value_or(
                 "no diagnostic was supplied"));
     }
     LevelSceneRecoveryResultV1 result;
-    result.raster = build_scene_geometry_v1(*execution.gs);
+    result.raster = build_scene_geometry_v1(*execution->gs);
     result.total_record_count = 1U;
     result.decoded_record_count = 1U;
     result.raster_record_count = 1U;
-    if (execution.source_geometry) {
+    if (execution->source_geometry) {
         auto source_material = build_scene_geometry_3d_material_v1(
-            *execution.source_geometry, *execution.gs);
+            *execution->source_geometry, *execution->gs);
         result.terrain_material_batches =
             std::move(source_material.material_batches);
         result.terrain_textured_triangle_count =

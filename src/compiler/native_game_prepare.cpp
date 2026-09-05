@@ -106,6 +106,9 @@ constexpr std::string_view kVeldinMoby749HighModelKey =
     "actors/rac1/moby/0749/high";
 constexpr std::string_view kVeldinMoby749SourceSequenceKeyPrefix =
     "actors/rac1/moby/0749/source-sequence/";
+constexpr std::uint32_t kVeldinMoby749InitialSourceSequence = 1U;
+constexpr std::string_view kVeldinMoby749InitialAnimationKey =
+    "actors/rac1/moby/0749/initial/source-sequence/001";
 constexpr std::string_view kVeldinMoby749ArchetypeKey = "rac1/moby/0749";
 constexpr std::uint32_t kVeldinMoby749AnimationSourceUpdatesPerSecond = 50U;
 constexpr std::array<std::uint16_t, 8U> kVeldinMoby749FrameCounts{
@@ -590,6 +593,8 @@ struct CompiledMobyActorV1 {
     const RacLevelMobyAssetsV1 &assets, const std::uint32_t class_id,
     const std::string_view rig_key, const std::string_view model_key,
     const std::string_view sequence_key_prefix,
+    const std::optional<std::uint32_t> initial_source_sequence,
+    const std::string_view initial_animation_key,
     const std::uint32_t source_updates_per_second,
     const std::string_view semantic_description) {
   const auto &source =
@@ -609,9 +614,22 @@ struct CompiledMobyActorV1 {
   auto library = compile_rac_actor_library_v1(
       actor_request, make_single_actor_library_limits());
 
-  const auto profiles = make_rac_moby_complete_animation_profiles_v1(
+  auto profiles = make_rac_moby_complete_animation_profiles_v1(
       source.source_class, {}, sequence_key_prefix,
       ActorAnimationWrapModeV1::clamp);
+  if (initial_source_sequence.has_value() != !initial_animation_key.empty()) {
+    fail("A RAC1 Moby initial-animation classification is incomplete");
+  }
+  if (initial_source_sequence) {
+    const auto initial = std::ranges::find_if(
+        profiles, [initial_source_sequence](const auto &profile) {
+          return profile.source_slot == *initial_source_sequence;
+        });
+    if (initial == profiles.end()) {
+      fail("A RAC1 Moby initial-animation source sequence is unavailable");
+    }
+    initial->semantic_key = initial_animation_key;
+  }
   auto animations = compile_rac_moby_animation_bank_v1(
       source.source_bytes, source.source_class, animation_rig,
       std::string(rig_key), profiles, source_updates_per_second,
@@ -1161,14 +1179,20 @@ exact_actor_provenance(const LevelPackageV1 &package,
         const auto &clip = animations.clips[clip_index];
         const auto prefix_bytes =
             kVeldinMoby749SourceSequenceKeyPrefix.size();
-        if (clip.semantic_key.size() != prefix_bytes + 3U ||
+        const auto is_initial =
+            slot == kVeldinMoby749InitialSourceSequence;
+        const auto is_source_addressed =
+            clip.semantic_key.size() == prefix_bytes + 3U &&
             clip.semantic_key.compare(
                 0U, prefix_bytes,
-                kVeldinMoby749SourceSequenceKeyPrefix) != 0 ||
-            clip.semantic_key[prefix_bytes] != '0' ||
-            clip.semantic_key[prefix_bytes + 1U] != '0' ||
-            clip.semantic_key[prefix_bytes + 2U] !=
-                static_cast<char>('0' + slot) ||
+                kVeldinMoby749SourceSequenceKeyPrefix) == 0 &&
+            clip.semantic_key[prefix_bytes] == '0' &&
+            clip.semantic_key[prefix_bytes + 1U] == '0' &&
+            clip.semantic_key[prefix_bytes + 2U] ==
+                static_cast<char>('0' + slot);
+        if ((is_initial
+                 ? clip.semantic_key != kVeldinMoby749InitialAnimationKey
+                 : !is_source_addressed) ||
             clip.id != clip_index ||
             clip.rig_key != kVeldinMoby749RigKey ||
             clip.rig_content_sha256 != moby_rig_digest ||
@@ -1995,6 +2019,45 @@ prepare_native_game_v1(const NativeGamePreparationRequestV1 &request,
       auto assets = load_rac_level_moby_assets_v1(
           request.disc_image, level_id, source_asset_limits);
 
+      const auto has_bolt_actor =
+          has_static_moby_class(assets, kBoltSourceClassId);
+      const auto has_veldin_moby_749 = level_id == kVeldinLevelId;
+      if (has_veldin_moby_749) {
+        if (!has_static_moby_class(assets, kVeldinMoby749SourceClassId)) {
+          fail("Veldin is missing the required source class 749 placements");
+        }
+      }
+      const auto has_bolt_crates =
+          has_static_moby_class(assets, kBoltCrateSourceClassId);
+
+      auto render_scene = [&] {
+        stage = "recovering the complete level scene";
+        report_progress(control,
+                        NativeGamePreparationPhaseV1::recovering_level_scene,
+                        level_id, level_id);
+        const runtime::LevelSceneRecoveryRequestV1 recovery_request{
+            request.disc_image,
+            request.prepared_boot_executable,
+            level_id,
+            runtime::LevelSceneRecordSelectionV1::all_records,
+            0U,
+            kSceneBlockSourceGeometryEntrypointV1};
+        auto level_recovery_profile = recovery_profile;
+        if (has_bolt_crates) {
+          level_recovery_profile.excluded_moby_class_ids.push_back(
+              kBoltCrateSourceClassId);
+        }
+        const auto recovered = runtime::recover_level_scene_v1(
+            recovery_request, recovery_limits, level_recovery_profile);
+
+        stage = "compiling the neutral render scene";
+        report_progress(control,
+                        NativeGamePreparationPhaseV1::compiling_render_scene,
+                        level_id, level_id);
+        return runtime::compile_level_scene_render_v1(recovered,
+                                                       render_profile);
+      }();
+
       stage = "compiling the native level foundation";
       report_progress(control,
                       NativeGamePreparationPhaseV1::compiling_level_foundation,
@@ -2002,49 +2065,21 @@ prepare_native_game_v1(const NativeGamePreparationRequestV1 &request,
       auto package = compile_level_foundation(assets, package_limits);
 
       std::optional<ActorLibraryV1> bolt_actor;
-      if (has_static_moby_class(assets, kBoltSourceClassId)) {
+      if (has_bolt_actor) {
         bolt_actor = compile_bolt_actor_library(assets);
       }
+
       std::optional<CompiledMobyActorV1> veldin_moby_749;
-      if (level_id == kVeldinLevelId) {
-        if (!has_static_moby_class(assets, kVeldinMoby749SourceClassId)) {
-          fail("Veldin is missing the required source class 749 placements");
-        }
+      if (has_veldin_moby_749) {
         veldin_moby_749 = compile_moby_actor(
             assets, kVeldinMoby749SourceClassId, kVeldinMoby749RigKey,
             kVeldinMoby749HighModelKey,
             kVeldinMoby749SourceSequenceKeyPrefix,
+            kVeldinMoby749InitialSourceSequence,
+            kVeldinMoby749InitialAnimationKey,
             kVeldinMoby749AnimationSourceUpdatesPerSecond,
             "Veldin Moby class 749");
       }
-      const auto has_bolt_crates =
-          has_static_moby_class(assets, kBoltCrateSourceClassId);
-
-      stage = "recovering the complete level scene";
-      report_progress(control,
-                      NativeGamePreparationPhaseV1::recovering_level_scene,
-                      level_id, level_id);
-      const runtime::LevelSceneRecoveryRequestV1 recovery_request{
-          request.disc_image,
-          request.prepared_boot_executable,
-          level_id,
-          runtime::LevelSceneRecordSelectionV1::all_records,
-          0U,
-          kSceneBlockSourceGeometryEntrypointV1};
-      auto level_recovery_profile = recovery_profile;
-      if (has_bolt_crates) {
-        level_recovery_profile.excluded_moby_class_ids.push_back(
-            kBoltCrateSourceClassId);
-      }
-      const auto recovered = runtime::recover_level_scene_v1(
-          recovery_request, recovery_limits, level_recovery_profile);
-
-      stage = "compiling the neutral render scene";
-      report_progress(control,
-                      NativeGamePreparationPhaseV1::compiling_render_scene,
-                      level_id, level_id);
-      auto render_scene =
-          runtime::compile_level_scene_render_v1(recovered, render_profile);
 
       stage = "compiling neutral entities and gameplay";
       report_progress(control,
