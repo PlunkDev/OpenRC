@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -122,6 +123,16 @@ void validate_actor_library_v1(const ActorLibraryV1 &library,
 [[nodiscard]] ActorLibraryV1
 canonicalize_actor_library_v1(ActorLibraryV1 library,
                               ActorLibraryLimitsV1 limits);
+
+// Combines independently compiled neutral actor libraries into one package
+// resource. Top-level IDs are reassigned densely in input order. An identical
+// rig addressed by the same semantic key is retained once, while a different
+// rig behind an already used key and every repeated model key fail closed.
+// Each input and the aggregate result are validated under the caller's same
+// explicit limits.
+[[nodiscard]] ActorLibraryV1
+compose_actor_libraries_v1(std::span<const ActorLibraryV1> libraries,
+                           ActorLibraryLimitsV1 limits);
 
 [[nodiscard]] PreparedContentDigestV1
 actor_rig_content_sha256_v1(const ActorRigV1 &rig);

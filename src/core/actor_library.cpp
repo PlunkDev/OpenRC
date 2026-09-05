@@ -782,4 +782,50 @@ canonicalize_actor_library_v1(ActorLibraryV1 library,
   return library;
 }
 
+ActorLibraryV1
+compose_actor_libraries_v1(const std::span<const ActorLibraryV1> libraries,
+                           const ActorLibraryLimitsV1 limits) {
+  validate_limits(limits);
+  ActorLibraryV1 result;
+  std::map<std::string, std::size_t, std::less<>> rig_indices;
+  std::map<std::string, bool, std::less<>> model_keys;
+
+  for (const auto &library : libraries) {
+    validate_actor_library_v1(library, limits);
+    for (const auto &rig : library.rigs) {
+      const auto found = rig_indices.find(rig.semantic_key);
+      if (found != rig_indices.end()) {
+        if (result.rigs[found->second].content_sha256 != rig.content_sha256) {
+          fail("ActorLibraryV1 composition found different rigs behind one "
+               "semantic key");
+        }
+        continue;
+      }
+      if (result.rigs.size() >= std::numeric_limits<std::uint32_t>::max()) {
+        fail("ActorLibraryV1 composition exceeds the top-level rig ID "
+             "domain");
+      }
+      auto appended = rig;
+      appended.id = static_cast<std::uint32_t>(result.rigs.size());
+      rig_indices.emplace(appended.semantic_key, result.rigs.size());
+      result.rigs.push_back(std::move(appended));
+    }
+
+    for (const auto &model : library.models) {
+      if (!model_keys.emplace(model.semantic_key, true).second) {
+        fail("ActorLibraryV1 composition repeats a model semantic key");
+      }
+      if (result.models.size() >= std::numeric_limits<std::uint32_t>::max()) {
+        fail("ActorLibraryV1 composition exceeds the top-level model ID "
+             "domain");
+      }
+      auto appended = model;
+      appended.id = static_cast<std::uint32_t>(result.models.size());
+      result.models.push_back(std::move(appended));
+    }
+  }
+
+  return canonicalize_actor_library_v1(std::move(result), limits);
+}
+
 } // namespace openrc

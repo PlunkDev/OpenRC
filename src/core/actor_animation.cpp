@@ -339,4 +339,27 @@ canonicalize_actor_animation_bank_v1(ActorAnimationBankV1 bank,
   return bank;
 }
 
+ActorAnimationBankV1 compose_actor_animation_banks_v1(
+    const std::span<const ActorAnimationBankV1> banks,
+    const ActorAnimationLimitsV1 limits) {
+  validate_limits(limits);
+  ActorAnimationBankV1 result;
+  std::set<std::string, std::less<>> semantic_keys;
+  for (const auto &bank : banks) {
+    validate_actor_animation_bank_v1(bank, limits);
+    for (const auto &clip : bank.clips) {
+      if (!semantic_keys.insert(clip.semantic_key).second) {
+        fail("ActorAnimationBankV1 composition repeats a clip semantic key");
+      }
+      if (result.clips.size() >= std::numeric_limits<std::uint32_t>::max()) {
+        fail("ActorAnimationBankV1 composition exceeds the clip ID domain");
+      }
+      auto appended = clip;
+      appended.id = static_cast<std::uint32_t>(result.clips.size());
+      result.clips.push_back(std::move(appended));
+    }
+  }
+  return canonicalize_actor_animation_bank_v1(std::move(result), limits);
+}
+
 } // namespace openrc

@@ -446,6 +446,81 @@ void test_skin_geometry_material_and_float_validation() {
       "validator accepted non-canonical negative zero");
 }
 
+[[nodiscard]] openrc::ActorLibraryV1 single_actor_library(
+    std::string rig_key, std::string model_key, const float rig_offset,
+    const std::uint8_t texture_seed) {
+  openrc::ActorLibraryV1 result;
+  result.rigs.push_back(make_rig(0U, rig_key, rig_offset));
+  result.models.push_back(make_model(0U, std::move(model_key),
+                                     std::move(rig_key), false,
+                                     texture_seed));
+  return openrc::canonicalize_actor_library_v1(std::move(result),
+                                                kLimits.library);
+}
+
+void test_library_composition_for_multiple_runtime_actors() {
+  const auto ratchet = single_actor_library(
+      "actors/ratchet/rig", "actors/ratchet/high", 1.0F, 0x10U);
+  const auto toad = single_actor_library(
+      "actors/horny-toad/rig", "actors/horny-toad/high", 2.0F, 0x40U);
+  const std::vector sources{ratchet, toad};
+  const auto combined = openrc::compose_actor_libraries_v1(
+      std::span<const openrc::ActorLibraryV1>(sources), kLimits.library);
+  expect(combined.rigs.size() == 2U && combined.models.size() == 2U &&
+             combined.rigs[0U].id == 0U && combined.rigs[1U].id == 1U &&
+             combined.models[0U].id == 0U &&
+             combined.models[1U].id == 1U &&
+             combined.models[1U].semantic_key == "actors/horny-toad/high" &&
+             combined.models[1U].rig_key == "actors/horny-toad/rig",
+         "actor-library composition did not retain two independent actors");
+
+  auto ratchet_low = ratchet;
+  ratchet_low.models[0U].semantic_key = "actors/ratchet/low";
+  const std::vector shared_rig_sources{ratchet, ratchet_low};
+  const auto shared_rig = openrc::compose_actor_libraries_v1(
+      std::span<const openrc::ActorLibraryV1>(shared_rig_sources),
+      kLimits.library);
+  expect(shared_rig.rigs.size() == 1U && shared_rig.models.size() == 2U &&
+             shared_rig.models[1U].rig_key == shared_rig.rigs[0U].semantic_key,
+         "actor-library composition duplicated an identical shared rig");
+
+  auto conflicting_rig = ratchet;
+  conflicting_rig.rigs[0U].rig.joints[1U].local_bind_transform = affine(3.0F);
+  conflicting_rig.rigs[0U].rig.joints[1U].inverse_bind_transform =
+      affine(-3.0F);
+  conflicting_rig.rigs[0U].content_sha256 = {};
+  conflicting_rig.models[0U].content_sha256 = {};
+  conflicting_rig = openrc::canonicalize_actor_library_v1(
+      std::move(conflicting_rig), kLimits.library);
+  const std::vector conflicting_sources{ratchet, conflicting_rig};
+  expect_library_error(
+      [&] {
+        (void)openrc::compose_actor_libraries_v1(
+            std::span<const openrc::ActorLibraryV1>(conflicting_sources),
+            kLimits.library);
+      },
+      "actor-library composition accepted different rigs behind one key");
+
+  const std::vector duplicate_sources{ratchet, ratchet};
+  expect_library_error(
+      [&] {
+        (void)openrc::compose_actor_libraries_v1(
+            std::span<const openrc::ActorLibraryV1>(duplicate_sources),
+            kLimits.library);
+      },
+      "actor-library composition accepted a repeated model key");
+
+  auto one_model_limit = kLimits.library;
+  one_model_limit.max_models = 1U;
+  expect_library_error(
+      [&] {
+        (void)openrc::compose_actor_libraries_v1(
+            std::span<const openrc::ActorLibraryV1>(sources),
+            one_model_limit);
+      },
+      "actor-library composition ignored aggregate caller limits");
+}
+
 void test_explicit_limits() {
   auto too_small = kLimits;
   too_small.library.max_vertices = 5U;
@@ -472,6 +547,7 @@ int main() {
     test_bounded_envelope_and_reserved_rejection();
     test_content_addresses_keys_and_rig_validation();
     test_skin_geometry_material_and_float_validation();
+    test_library_composition_for_multiple_runtime_actors();
     test_explicit_limits();
     std::cout << "ActorLibraryV1 tests passed\n";
     return 0;

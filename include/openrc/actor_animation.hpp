@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -99,5 +100,13 @@ void validate_actor_animation_bank_v1(const ActorAnimationBankV1 &bank,
 [[nodiscard]] ActorAnimationBankV1
 canonicalize_actor_animation_bank_v1(ActorAnimationBankV1 bank,
                                      ActorAnimationLimitsV1 limits);
+
+// Combines independently compiled neutral animation banks into one package
+// resource. Clip IDs are reassigned densely in input order; semantic keys
+// remain the stable identity and therefore may not repeat. Each input and the
+// aggregate result are validated under the caller's same explicit limits.
+[[nodiscard]] ActorAnimationBankV1 compose_actor_animation_banks_v1(
+    std::span<const ActorAnimationBankV1> banks,
+    ActorAnimationLimitsV1 limits);
 
 } // namespace openrc

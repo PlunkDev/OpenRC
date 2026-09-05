@@ -449,6 +449,53 @@ void test_model_keys_counts_and_numeric_validation() {
       "validator accepted non-canonical signed zero");
 }
 
+void test_animation_bank_composition_for_multiple_runtime_actors() {
+  const auto source = openrc::canonicalize_actor_animation_bank_v1(
+      make_bank(false), kLimits.bank);
+  openrc::ActorAnimationBankV1 ratchet;
+  ratchet.clips.push_back(source.clips[0U]);
+  ratchet = openrc::canonicalize_actor_animation_bank_v1(std::move(ratchet),
+                                                          kLimits.bank);
+
+  openrc::ActorAnimationBankV1 toad;
+  auto toad_clip = source.clips[1U];
+  toad_clip.id = 0U;
+  toad_clip.semantic_key = "actors/horny-toad/idle";
+  toad_clip.rig_key = "actors/horny-toad/rig";
+  toad.clips.push_back(std::move(toad_clip));
+  toad = openrc::canonicalize_actor_animation_bank_v1(std::move(toad),
+                                                       kLimits.bank);
+
+  const std::vector sources{ratchet, toad};
+  const auto combined = openrc::compose_actor_animation_banks_v1(
+      std::span<const openrc::ActorAnimationBankV1>(sources), kLimits.bank);
+  expect(combined.clips.size() == 2U && combined.clips[0U].id == 0U &&
+             combined.clips[1U].id == 1U &&
+             combined.clips[0U].semantic_key == "actors/ratchet/idle" &&
+             combined.clips[1U].semantic_key == "actors/horny-toad/idle" &&
+             combined.clips[1U].rig_key == "actors/horny-toad/rig",
+         "animation-bank composition did not retain two actor domains");
+
+  const std::vector duplicate_sources{ratchet, ratchet};
+  expect_animation_error(
+      [&] {
+        (void)openrc::compose_actor_animation_banks_v1(
+            std::span<const openrc::ActorAnimationBankV1>(duplicate_sources),
+            kLimits.bank);
+      },
+      "animation-bank composition accepted a repeated clip key");
+
+  auto one_clip_limit = kLimits.bank;
+  one_clip_limit.max_clips = 1U;
+  expect_animation_error(
+      [&] {
+        (void)openrc::compose_actor_animation_banks_v1(
+            std::span<const openrc::ActorAnimationBankV1>(sources),
+            one_clip_limit);
+      },
+      "animation-bank composition ignored aggregate caller limits");
+}
+
 void test_explicit_limits() {
   auto too_few_clips = kLimits;
   too_few_clips.bank.max_clips = 1U;
@@ -549,6 +596,7 @@ int main() {
     test_malformed_encoded_values_are_rejected();
     test_encoder_output_with_non_idempotent_float_normalization_decodes();
     test_model_keys_counts_and_numeric_validation();
+    test_animation_bank_composition_for_multiple_runtime_actors();
     test_explicit_limits();
     std::cout << "ActorAnimationBankV1 tests passed\n";
     return 0;
