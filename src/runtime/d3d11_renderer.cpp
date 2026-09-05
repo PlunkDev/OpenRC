@@ -48,7 +48,14 @@ static_assert(sizeof(ProjectedSourceVertex) == 28U);
 struct GpuSourceMaterialBatch {
     UINT start_index = 0U;
     UINT index_count = 0U;
-    std::optional<std::uint32_t> global_texture_index;
+    std::optional<std::uint32_t> texture_index;
+};
+
+struct GpuSourceTextureRegion {
+    UINT start_index = 0U;
+    UINT index_count = 0U;
+    std::vector<GpuSourceMaterialBatch> material_batches;
+    std::vector<ComPtr<ID3D11ShaderResourceView>> texture_views;
 };
 
 constexpr float kPi = 3.14159265358979323846F;
@@ -183,9 +190,9 @@ struct D3d11Renderer::Implementation {
             }
             initialize_terrain_texture_source(
                 *source_geometry, textures->terrain);
-            if (textures->moby) {
-                initialize_moby_texture_source(
-                    *source_geometry, *textures->moby);
+            for (const auto& object : textures->objects) {
+                initialize_object_texture_source(
+                    *source_geometry, object);
             }
         }
 
@@ -197,10 +204,13 @@ struct D3d11Renderer::Implementation {
         }
         if (textures != nullptr) {
             create_texture_resources(
-                textures->terrain.textures, terrain_texture_views);
-            if (textures->moby) {
+                textures->terrain.textures,
+                texture_regions.front().texture_views);
+            for (std::size_t index = 0U;
+                 index < textures->objects.size(); ++index) {
                 create_texture_resources(
-                    textures->moby->textures, moby_texture_views);
+                    textures->objects[index].textures,
+                    texture_regions[index + 1U].texture_views);
             }
         }
         create_render_target();
@@ -300,13 +310,16 @@ struct D3d11Renderer::Implementation {
                 "The D3D11 terrain geometry exceeds the draw-index domain");
         }
 
+        GpuSourceTextureRegion region{};
+        region.start_index = 0U;
+        region.index_count = static_cast<UINT>(source.triangle_count * 3U);
         std::uint64_t expected_first_triangle = 0U;
         if (source.material_batches.size() >
-            terrain_material_batches.max_size()) {
+            region.material_batches.max_size()) {
             throw std::runtime_error(
                 "The D3D11 terrain material batches exceed the host container");
         }
-        terrain_material_batches.reserve(source.material_batches.size());
+        region.material_batches.reserve(source.material_batches.size());
         for (const auto& batch : source.material_batches) {
             if (batch.first_triangle != expected_first_triangle ||
                 batch.index_count == 0U || batch.index_count % 3U != 0U) {
@@ -326,7 +339,7 @@ struct D3d11Renderer::Implementation {
                 throw std::invalid_argument(
                     "A D3D11 terrain material references a missing texture");
             }
-            terrain_material_batches.push_back(GpuSourceMaterialBatch{
+            region.material_batches.push_back(GpuSourceMaterialBatch{
                 static_cast<UINT>(batch.first_triangle * 3U),
                 static_cast<UINT>(batch.index_count),
                 batch.texture_index});
@@ -336,90 +349,87 @@ struct D3d11Renderer::Implementation {
             throw std::invalid_argument(
                 "The D3D11 terrain materials do not cover the source prefix");
         }
-        source_terrain_index_count =
-            static_cast<UINT>(source.triangle_count * 3U);
-        has_terrain_textures = true;
+        texture_regions.push_back(std::move(region));
     }
 
-    void initialize_moby_texture_source(
+    void initialize_object_texture_source(
         const SceneGeometry3dV1& geometry,
-        const D3d11MobyTextureSourceV1& source) {
+        const D3d11ObjectTextureSourceV1& source) {
         const auto triangle_count = static_cast<std::uint64_t>(
             geometry.triangle_indices.size() / 3U);
         if (geometry.triangle_indices.size() % 3U != 0U ||
             source.first_triangle > triangle_count ||
-            source.material_batches.empty()) {
+            source.triangle_count == 0U ||
+            source.triangle_count > triangle_count - source.first_triangle ||
+            source.material_batches.empty() || source.textures.empty()) {
             throw std::invalid_argument(
-                "The D3D11 Moby texture source has an invalid envelope");
+                "A D3D11 object texture source has an invalid envelope");
         }
         if (source.first_triangle >
-            static_cast<std::uint64_t>(std::numeric_limits<UINT>::max()) / 3U) {
+                static_cast<std::uint64_t>(
+                    std::numeric_limits<UINT>::max()) /
+                    3U ||
+            source.triangle_count >
+                static_cast<std::uint64_t>(
+                    std::numeric_limits<UINT>::max()) /
+                    3U) {
             throw std::runtime_error(
-                "The D3D11 Moby prefix exceeds the draw-index domain");
+                "A D3D11 object texture region exceeds the draw-index domain");
         }
-        source_terrain_index_count =
-            static_cast<UINT>(source.first_triangle * 3U);
-        if (has_terrain_textures &&
-            source_terrain_index_count !=
-                terrain_material_batches.back().start_index +
-                    terrain_material_batches.back().index_count) {
-            throw std::invalid_argument(
-                "Terrain materials and the Moby suffix have different boundaries");
+
+        GpuSourceTextureRegion region{};
+        region.start_index = static_cast<UINT>(source.first_triangle * 3U);
+        region.index_count = static_cast<UINT>(source.triangle_count * 3U);
+        if (!texture_regions.empty()) {
+            const auto& previous = texture_regions.back();
+            const auto previous_end =
+                static_cast<std::uint64_t>(previous.start_index) +
+                previous.index_count;
+            if (region.start_index < previous_end) {
+                throw std::invalid_argument(
+                    "D3D11 texture regions overlap or are not ordered");
+            }
         }
-        const auto moby_triangle_capacity =
-            triangle_count - source.first_triangle;
 
         std::uint64_t expected_first_triangle = 0U;
-        if (source.material_batches.size() > moby_material_batches.max_size()) {
+        if (source.material_batches.size() >
+            region.material_batches.max_size()) {
             throw std::runtime_error(
-                "The D3D11 Moby material batches exceed the host container");
+                "The D3D11 object material batches exceed the host container");
         }
-        moby_material_batches.reserve(source.material_batches.size());
+        region.material_batches.reserve(source.material_batches.size());
         for (const auto& batch : source.material_batches) {
             if (batch.first_triangle != expected_first_triangle ||
                 batch.index_count == 0U || batch.index_count % 3U != 0U) {
                 throw std::invalid_argument(
-                    "The D3D11 Moby material batches are not contiguous");
+                    "The D3D11 object material batches are not contiguous");
             }
             const auto batch_triangles = batch.index_count / 3U;
-            if (batch_triangles >
-                std::numeric_limits<std::uint64_t>::max() -
-                    expected_first_triangle) {
-                throw std::runtime_error(
-                    "The D3D11 Moby material range overflows");
-            }
-            if (batch.first_triangle > moby_triangle_capacity ||
+            if (batch.first_triangle > source.triangle_count ||
                 batch_triangles >
-                    moby_triangle_capacity - batch.first_triangle) {
-                throw std::invalid_argument(
-                    "A D3D11 Moby material batch exceeds source geometry");
-            }
-            const auto global_first_triangle =
-                source.first_triangle + batch.first_triangle;
-            if (global_first_triangle >
-                    static_cast<std::uint64_t>(
-                        std::numeric_limits<UINT>::max()) /
-                        3U ||
+                    source.triangle_count - batch.first_triangle ||
                 batch.index_count > std::numeric_limits<UINT>::max()) {
                 throw std::invalid_argument(
-                    "A D3D11 Moby material batch exceeds source geometry");
+                    "A D3D11 object material batch exceeds its texture region");
             }
             if (batch.global_texture_index &&
                 *batch.global_texture_index >= source.textures.size()) {
                 throw std::invalid_argument(
-                    "A D3D11 Moby material references a missing texture");
+                    "A D3D11 object material references a missing texture");
             }
-            moby_material_batches.push_back(GpuSourceMaterialBatch{
+            const auto global_first_triangle =
+                source.first_triangle + batch.first_triangle;
+            region.material_batches.push_back(GpuSourceMaterialBatch{
                 static_cast<UINT>(global_first_triangle * 3U),
                 static_cast<UINT>(batch.index_count),
                 batch.global_texture_index});
             expected_first_triangle += batch_triangles;
         }
-        if (expected_first_triangle != moby_triangle_capacity) {
+        if (expected_first_triangle != source.triangle_count) {
             throw std::invalid_argument(
-                "The D3D11 Moby material batches do not cover the source suffix");
+                "The D3D11 object materials do not cover their texture region");
         }
-        has_moby_textures = true;
+        texture_regions.push_back(std::move(region));
     }
 
     void create_device_and_swap_chain() {
@@ -1092,7 +1102,7 @@ struct D3d11Renderer::Implementation {
                 context->DrawIndexed(index_count, start_index, 0);
             };
 
-            if (has_terrain_textures || has_moby_textures) {
+            if (!texture_regions.empty()) {
                 ID3D11SamplerState* const samplers[] = {
                     texture_sampler.Get()};
                 context->PSSetSamplers(0U, 1U, samplers);
@@ -1106,7 +1116,7 @@ struct D3d11Renderer::Implementation {
                     const std::vector<ComPtr<ID3D11ShaderResourceView>>&
                         available_texture_views) {
                 for (const auto& batch : batches) {
-                    if (!batch.global_texture_index) {
+                    if (!batch.texture_index) {
                         draw_depth_only(batch.index_count, batch.start_index);
                         draw_wireframe(batch.index_count, batch.start_index);
                         continue;
@@ -1121,7 +1131,7 @@ struct D3d11Renderer::Implementation {
                         textured_pixel_shader.Get(), nullptr, 0U);
                     ID3D11ShaderResourceView* const selected_texture_view[] = {
                         available_texture_views[
-                            *batch.global_texture_index].Get()};
+                            *batch.texture_index].Get()};
                     context->PSSetShaderResources(
                         0U, 1U, selected_texture_view);
                     context->DrawIndexed(
@@ -1129,25 +1139,28 @@ struct D3d11Renderer::Implementation {
                 }
             };
 
-            if (has_terrain_textures) {
+            UINT next_uncovered_index = 0U;
+            for (const auto& region : texture_regions) {
+                if (next_uncovered_index < region.start_index) {
+                    const auto gap_index_count =
+                        region.start_index - next_uncovered_index;
+                    draw_depth_only(
+                        gap_index_count, next_uncovered_index);
+                    draw_wireframe(
+                        gap_index_count, next_uncovered_index);
+                }
                 draw_material_batches(
-                    terrain_material_batches, terrain_texture_views);
-            } else {
-                const auto untextured_prefix = has_moby_textures
-                    ? source_terrain_index_count
-                    : source_index_count;
-                draw_depth_only(untextured_prefix, 0U);
-                draw_wireframe(untextured_prefix, 0U);
+                    region.material_batches, region.texture_views);
+                next_uncovered_index =
+                    region.start_index + region.index_count;
             }
-            if (has_moby_textures) {
-                draw_material_batches(
-                    moby_material_batches, moby_texture_views);
-            } else if (has_terrain_textures &&
-                       source_terrain_index_count < source_index_count) {
-                const auto suffix_count =
-                    source_index_count - source_terrain_index_count;
-                draw_depth_only(suffix_count, source_terrain_index_count);
-                draw_wireframe(suffix_count, source_terrain_index_count);
+            if (next_uncovered_index < source_index_count) {
+                const auto suffix_index_count =
+                    source_index_count - next_uncovered_index;
+                draw_depth_only(
+                    suffix_index_count, next_uncovered_index);
+                draw_wireframe(
+                    suffix_index_count, next_uncovered_index);
             }
             context->PSSetShaderResources(0U, 1U, no_texture);
             context->OMSetBlendState(
@@ -1177,13 +1190,11 @@ struct D3d11Renderer::Implementation {
     std::uint32_t height = 0U;
     UINT raster_index_count = 0U;
     UINT source_index_count = 0U;
-    UINT source_terrain_index_count = 0U;
     D3D_FEATURE_LEVEL feature_level = D3D_FEATURE_LEVEL_10_0;
     FitConstants fit_constants{};
     std::vector<SceneVertex3dV1> source_vertices;
     std::vector<ProjectedSourceVertex> projected_vertices;
-    std::vector<GpuSourceMaterialBatch> terrain_material_batches;
-    std::vector<GpuSourceMaterialBatch> moby_material_batches;
+    std::vector<GpuSourceTextureRegion> texture_regions;
     Vec3 orbit_target{};
     float orbit_radius = 1.0F;
     float orbit_yaw = 0.0F;
@@ -1193,8 +1204,6 @@ struct D3d11Renderer::Implementation {
     bool show_source_geometry = false;
     bool camera_initialized = false;
     bool projected_vertices_dirty = false;
-    bool has_terrain_textures = false;
-    bool has_moby_textures = false;
 
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> context;
@@ -1220,8 +1229,6 @@ struct D3d11Renderer::Implementation {
     ComPtr<ID3D11Buffer> source_vertex_buffer;
     ComPtr<ID3D11Buffer> source_index_buffer;
     ComPtr<ID3D11Buffer> fit_buffer;
-    std::vector<ComPtr<ID3D11ShaderResourceView>> terrain_texture_views;
-    std::vector<ComPtr<ID3D11ShaderResourceView>> moby_texture_views;
 };
 
 D3d11Renderer::D3d11Renderer(HWND window,

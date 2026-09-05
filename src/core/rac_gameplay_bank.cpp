@@ -10,6 +10,8 @@
 #include <span>
 #include <string>
 #include <unordered_set>
+#include <utility>
+#include <vector>
 
 namespace openrc {
 namespace {
@@ -17,6 +19,8 @@ namespace {
 constexpr std::uint32_t kDirectoryPadOffset = 0x90U;
 constexpr std::uint32_t kRacLevelSettingsBytes = 0x50U;
 constexpr std::uint32_t kMobyBlockHeaderBytes = 0x10U;
+constexpr std::uint32_t kEnvironmentInstanceBlockHeaderBytes = 0x10U;
+constexpr std::uint32_t kEnvironmentInstanceMatrixOffset = 0x10U;
 
 struct BlockDescriptionV1 {
     RacGameplayBlockKindV1 kind;
@@ -163,6 +167,130 @@ checked_table_bytes(const std::uint32_t count,
     return header_bytes + records;
 }
 
+struct ParsedClassListV1 {
+    std::uint32_t count = 0U;
+    std::vector<std::uint32_t> ids;
+    std::unordered_set<std::uint32_t> membership;
+};
+
+[[nodiscard]] ParsedClassListV1 parse_class_list(
+    const std::span<const std::byte> bytes,
+    const RacGameplayBlockV1& block,
+    const std::uint64_t limit,
+    const char* const family,
+    const char* const list_description) {
+    if (block.range.size < sizeof(std::uint32_t)) {
+        fail(std::string("RacGameplayBankV1 has a truncated ") + family +
+             "-class block");
+    }
+    const auto block_offset = static_cast<std::size_t>(block.range.offset);
+    const auto raw_count = read_le32(bytes, block_offset);
+    if (raw_count > limit ||
+        raw_count > static_cast<std::uint32_t>(
+                        std::numeric_limits<std::int32_t>::max())) {
+        fail(std::string("RacGameplayBankV1 has an invalid ") + family +
+             "-class count");
+    }
+    const auto logical_bytes = checked_table_bytes(
+        raw_count,
+        sizeof(std::uint32_t),
+        sizeof(std::uint32_t),
+        list_description);
+    validate_zero_tail(bytes, block, logical_bytes, list_description);
+
+    ParsedClassListV1 result;
+    result.count = raw_count;
+    result.ids.reserve(raw_count);
+    result.membership.reserve(raw_count);
+    for (std::uint32_t index = 0U; index < raw_count; ++index) {
+        const auto class_id = read_le32(
+            bytes,
+            block_offset + sizeof(std::uint32_t) +
+                static_cast<std::size_t>(index) * sizeof(std::uint32_t));
+        if (class_id > static_cast<std::uint32_t>(
+                           std::numeric_limits<std::int32_t>::max()) ||
+            !result.membership.insert(class_id).second) {
+            fail(std::string("RacGameplayBankV1 has an invalid ") + family +
+                 "-class ID list");
+        }
+        result.ids.push_back(class_id);
+    }
+    return result;
+}
+
+template <typename InstanceV1>
+[[nodiscard]] std::vector<InstanceV1> parse_environment_instances(
+    const std::span<const std::byte> bytes,
+    const RacGameplayBlockV1& block,
+    const std::unordered_set<std::uint32_t>& class_membership,
+    const std::uint64_t limit,
+    const std::uint32_t record_bytes,
+    const char* const family,
+    const char* const list_description) {
+    if (block.range.size < kEnvironmentInstanceBlockHeaderBytes) {
+        fail(std::string("RacGameplayBankV1 has a truncated ") + family +
+             "-instance header");
+    }
+    const auto block_offset = static_cast<std::size_t>(block.range.offset);
+    const auto raw_count = read_le32(bytes, block_offset);
+    if (raw_count > limit ||
+        raw_count > static_cast<std::uint32_t>(
+                        std::numeric_limits<std::int32_t>::max()) ||
+        read_le32(bytes, block_offset + 4U) != 0U ||
+        read_le32(bytes, block_offset + 8U) != 0U ||
+        read_le32(bytes, block_offset + 12U) != 0U) {
+        fail(std::string("RacGameplayBankV1 has an invalid ") + family +
+             "-instance header");
+    }
+    const auto logical_bytes = checked_table_bytes(
+        raw_count,
+        kEnvironmentInstanceBlockHeaderBytes,
+        record_bytes,
+        list_description);
+    if (logical_bytes > block.range.size) {
+        fail(std::string("RacGameplayBankV1 has a truncated ") +
+             list_description);
+    }
+
+    std::vector<InstanceV1> result;
+    result.reserve(raw_count);
+    for (std::uint32_t index = 0U; index < raw_count; ++index) {
+        const auto record_offset =
+            block_offset + kEnvironmentInstanceBlockHeaderBytes +
+            static_cast<std::size_t>(index) * record_bytes;
+        InstanceV1 instance;
+        if (instance.raw_words.size() * sizeof(std::uint32_t) != record_bytes) {
+            fail("RacGameplayBankV1 has an invalid internal instance schema");
+        }
+        instance.record_range = {record_offset, record_bytes};
+        for (std::size_t word = 0U; word < instance.raw_words.size(); ++word) {
+            instance.raw_words[word] =
+                read_le32(bytes, record_offset + word * sizeof(std::uint32_t));
+        }
+        instance.class_id = instance.raw_words.front();
+        if (!class_membership.contains(instance.class_id)) {
+            fail(std::string("A RacGameplayBankV1 ") + family +
+                 " instance references an absent class");
+        }
+        for (std::size_t component = 0U;
+             component < instance.matrix.size();
+             ++component) {
+            const auto matrix_offset =
+                record_offset + kEnvironmentInstanceMatrixOffset +
+                component * sizeof(std::uint32_t);
+            instance.matrix_bits[component] = read_le32(bytes, matrix_offset);
+            instance.matrix[component] = read_le_float(bytes, matrix_offset);
+            if (!std::isfinite(instance.matrix[component])) {
+                fail(std::string("A RacGameplayBankV1 ") + family +
+                     " instance has a non-finite transform matrix");
+            }
+        }
+        result.push_back(std::move(instance));
+    }
+    validate_zero_tail(bytes, block, logical_bytes, list_description);
+    return result;
+}
+
 void validate_semantic_anchors(const std::span<const std::byte> bytes,
                                RacGameplayBankV1& result,
                                const RacGameplayBankLimitsV1 limits) {
@@ -179,6 +307,56 @@ void validate_semantic_anchors(const std::span<const std::byte> bytes,
     }
     validate_zero_tail(
         bytes, level_settings, kRacLevelSettingsBytes, "level settings");
+
+    auto tie_classes = parse_class_list(
+        bytes,
+        require_block(
+            result, RacGameplayBlockKindV1::tie_classes, "tie-class block"),
+        limits.max_tie_classes,
+        "tie",
+        "the tie-class list");
+    result.tie_class_count = tie_classes.count;
+    result.tie_class_ids = std::move(tie_classes.ids);
+    result.tie_instances = parse_environment_instances<
+        RacGameplayTieInstanceV1>(
+        bytes,
+        require_block(
+            result,
+            RacGameplayBlockKindV1::tie_instances,
+            "tie-instance block"),
+        tie_classes.membership,
+        limits.max_tie_instances,
+        kRacGameplayTieRecordBytesV1,
+        "tie",
+        "the tie-instance list");
+    result.tie_instance_count =
+        static_cast<std::uint32_t>(result.tie_instances.size());
+
+    auto shrub_classes = parse_class_list(
+        bytes,
+        require_block(
+            result,
+            RacGameplayBlockKindV1::shrub_classes,
+            "shrub-class block"),
+        limits.max_shrub_classes,
+        "shrub",
+        "the shrub-class list");
+    result.shrub_class_count = shrub_classes.count;
+    result.shrub_class_ids = std::move(shrub_classes.ids);
+    result.shrub_instances = parse_environment_instances<
+        RacGameplayShrubInstanceV1>(
+        bytes,
+        require_block(
+            result,
+            RacGameplayBlockKindV1::shrub_instances,
+            "shrub-instance block"),
+        shrub_classes.membership,
+        limits.max_shrub_instances,
+        kRacGameplayShrubRecordBytesV1,
+        "shrub",
+        "the shrub-instance list");
+    result.shrub_instance_count =
+        static_cast<std::uint32_t>(result.shrub_instances.size());
 
     const auto& classes = require_block(
         result, RacGameplayBlockKindV1::moby_classes, "moby-class block");
@@ -326,7 +504,9 @@ RacGameplayBankV1
 parse_rac_gameplay_bank_v1(const std::span<const std::byte> bytes,
                            const RacGameplayBankLimitsV1 limits) {
     if (limits.max_input_bytes == 0U || limits.max_moby_classes == 0U ||
-        limits.max_static_mobies == 0U) {
+        limits.max_static_mobies == 0U || limits.max_tie_classes == 0U ||
+        limits.max_tie_instances == 0U || limits.max_shrub_classes == 0U ||
+        limits.max_shrub_instances == 0U) {
         fail("RacGameplayBankV1 caller limits must all be non-zero");
     }
     if (bytes.size() > limits.max_input_bytes) {

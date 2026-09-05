@@ -41,9 +41,17 @@ void validate_limits(const RacLevelMobyAssetLimitsV1 &limits) {
       limits.level_core.max_moby_classes == 0U ||
       limits.level_core.max_moby_textures == 0U ||
       limits.level_core.max_gadgets == 0U ||
+      limits.level_core.max_tie_classes == 0U ||
+      limits.level_core.max_shrub_classes == 0U ||
+      limits.level_core.max_tie_textures == 0U ||
+      limits.level_core.max_shrub_textures == 0U ||
       limits.gameplay.max_input_bytes == 0U ||
       limits.gameplay.max_moby_classes == 0U ||
       limits.gameplay.max_static_mobies == 0U ||
+      limits.gameplay.max_tie_classes == 0U ||
+      limits.gameplay.max_tie_instances == 0U ||
+      limits.gameplay.max_shrub_classes == 0U ||
+      limits.gameplay.max_shrub_instances == 0U ||
       limits.local_class.max_input_bytes == 0U ||
       limits.shared_class.max_input_bytes == 0U ||
       packet.max_input_bytes == 0U || packet.max_vif_commands == 0U ||
@@ -62,7 +70,18 @@ void validate_limits(const RacLevelMobyAssetLimitsV1 &limits) {
       limits.textures.max_height == 0U ||
       limits.textures.max_pixels_per_texture == 0U ||
       limits.textures.max_total_pixels == 0U ||
-      limits.textures.max_total_rgba_bytes == 0U) {
+      limits.textures.max_total_rgba_bytes == 0U ||
+      limits.tie_class.max_input_bytes == 0U ||
+      limits.tie_class.max_packets == 0U ||
+      limits.tie_class.max_strips == 0U ||
+      limits.tie_class.max_source_vertices == 0U ||
+      limits.tie_class.max_output_vertices == 0U ||
+      limits.tie_class.max_output_triangles == 0U ||
+      limits.tie_class.max_materials == 0U ||
+      limits.max_tie_models == 0U ||
+      limits.max_total_tie_packets == 0U ||
+      limits.max_total_tie_vertices == 0U ||
+      limits.max_total_tie_triangles == 0U) {
     fail("RAC1 level Moby asset limits must all be non-zero");
   }
   if (limits.local_class.require_shared_bank_byte_b_ff ||
@@ -243,6 +262,18 @@ RacLevelMobyAssetsV1 load_rac_level_moby_assets_v1(
   auto textures = decode_rac_level_moby_texture_bank_v1(
       moby_texture_table_bytes, decoded_assets.bytes, raw_gs_ram,
       core.header.textures_base_offset, limits.textures);
+  const auto tie_texture_table_bytes = index_bytes.subspan(
+      static_cast<std::size_t>(core.tie_texture_table_range.offset),
+      static_cast<std::size_t>(core.tie_texture_table_range.size));
+  auto tie_textures = decode_rac_level_moby_texture_bank_v1(
+      tie_texture_table_bytes, decoded_assets.bytes, raw_gs_ram,
+      core.header.textures_base_offset, limits.textures);
+  const auto shrub_texture_table_bytes = index_bytes.subspan(
+      static_cast<std::size_t>(core.shrub_texture_table_range.offset),
+      static_cast<std::size_t>(core.shrub_texture_table_range.size));
+  auto shrub_textures = decode_rac_level_moby_texture_bank_v1(
+      shrub_texture_table_bytes, decoded_assets.bytes, raw_gs_ram,
+      core.header.textures_base_offset, limits.textures);
 
   const auto &gameplay_ref = level_assets->primary_wads.front();
   if (gameplay_ref.signature != DiscTocSignature::wad ||
@@ -263,11 +294,72 @@ RacLevelMobyAssetsV1 load_rac_level_moby_assets_v1(
       fail("RAC1 gameplay and level-core Moby class order disagrees");
     }
   }
+  if (gameplay.tie_class_ids.size() != core.tie_classes.size()) {
+    fail("RAC1 gameplay and level-core tie class counts disagree");
+  }
+  for (std::size_t index = 0U; index < core.tie_classes.size(); ++index) {
+    if (gameplay.tie_class_ids[index] !=
+        static_cast<std::uint32_t>(core.tie_classes[index].class_id)) {
+      fail("RAC1 gameplay and level-core tie class order disagrees");
+    }
+  }
+  if (gameplay.shrub_class_ids.size() != core.shrub_classes.size()) {
+    fail("RAC1 gameplay and level-core shrub class counts disagree");
+  }
+  for (std::size_t index = 0U; index < core.shrub_classes.size(); ++index) {
+    if (gameplay.shrub_class_ids[index] !=
+        static_cast<std::uint32_t>(core.shrub_classes[index].class_id)) {
+      fail("RAC1 gameplay and level-core shrub class order disagrees");
+    }
+  }
 
   RacLevelMobyAssetsV1 result;
   result.level_id = level_id;
   result.tfrag_textures = std::move(tfrag_textures);
   result.textures = std::move(textures);
+  result.tie_textures = std::move(tie_textures);
+  result.shrub_textures = std::move(shrub_textures);
+  if (core.tie_classes.size() > limits.max_tie_models ||
+      core.tie_classes.size() > result.tie_models.max_size()) {
+    fail("The RAC1 level TIE model count exceeds its output limit");
+  }
+  result.tie_models.reserve(core.tie_classes.size());
+  const auto decoded_asset_span =
+      std::span<const std::byte>(decoded_assets.bytes);
+  for (const auto &entry : core.tie_classes) {
+    if (entry.asset_range.size == 0U) {
+      continue;
+    }
+    const auto model_bytes = decoded_asset_span.subspan(
+        static_cast<std::size_t>(entry.asset_range.offset),
+        static_cast<std::size_t>(entry.asset_range.size));
+    RacTieClassV1 model;
+    try {
+      model = parse_rac_tie_class_v1(model_bytes, limits.tie_class);
+    } catch (const RacTieClassError &error) {
+      fail("Local RAC1 TIE class " + std::to_string(entry.class_id) +
+           " failed validation: " + error.what());
+    }
+    if (model.texture_count > entry.used_texture_slot_count) {
+      fail("A RAC1 TIE class uses more materials than its level-core slots");
+    }
+    add_bounded_total(result.total_tie_packet_count, model.packets.size(),
+                      limits.max_total_tie_packets,
+                      "The RAC1 level TIE packet count");
+    add_bounded_total(result.total_tie_vertex_count, model.vertices.size(),
+                      limits.max_total_tie_vertices,
+                      "The RAC1 level TIE vertex count");
+    add_bounded_total(result.total_tie_triangle_count, model.triangles.size(),
+                      limits.max_total_tie_triangles,
+                      "The RAC1 level TIE triangle count");
+    result.tie_model_bytes += entry.asset_range.size;
+    result.tie_models.push_back(RacLevelTieModelV1{
+        static_cast<std::uint32_t>(entry.class_id),
+        entry.texture_slots,
+        entry.used_texture_slot_count,
+        std::move(model),
+    });
+  }
   if (core.moby_classes.size() > limits.max_models ||
       core.moby_classes.size() > result.models.max_size()) {
     fail("The RAC1 level Moby model count exceeds its output limit");
@@ -292,8 +384,6 @@ RacLevelMobyAssetsV1 load_rac_level_moby_assets_v1(
   }
   loaded_class_ids.reserve(core.moby_classes.size());
 
-  const auto decoded_asset_span =
-      std::span<const std::byte>(decoded_assets.bytes);
   for (const auto &entry : core.moby_classes) {
     if (entry.asset_range.size == 0U) {
       continue;

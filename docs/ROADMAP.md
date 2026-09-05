@@ -102,10 +102,15 @@ This roadmap describes technical milestones rather than release dates.
 - [x] decode level tfrag texture banks, retain TEX0/CLAMP context snapshots,
   convert recovered SceneBlock STQ, and render bounded terrain material batches
   in the native viewer
+- [x] parse the level-core/gameplay TIE and shrub class-instance tables, decode
+  every TIE high-LOD packet and texture bank, and apply complete instance
+  matrices across all 19 levels
+- [x] render all 1,114 Veldin TIE placements as a separately textured scene
+  region alongside terrain and static Moby geometry
 - [ ] parse and classify terrain, collision, metal/bangle geometry, skeletal
   bind poses, and animation transforms
-- [ ] render classified terrain and the remaining Veldin asset families as one
-  complete textured scene in the native window
+- [ ] decode and render the remaining shrub, animated-Moby, and specialized
+  Veldin asset families as one complete textured scene in the native window
 - [ ] compare geometry and transforms with reference captures
 
 ## Stage 3 — First playable vertical slice

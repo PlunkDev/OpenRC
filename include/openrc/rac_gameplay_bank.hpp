@@ -16,6 +16,8 @@ inline constexpr std::uint32_t kRacGameplayBlockAlignmentV1 = 0x10U;
 inline constexpr std::uint32_t kRacGameplayDirectorySlotCountV1 = 37U;
 inline constexpr std::uint32_t kRacGameplayBlockCountV1 = 36U;
 inline constexpr std::uint32_t kRacGameplayMobyRecordBytesV1 = 0x78U;
+inline constexpr std::uint32_t kRacGameplayTieRecordBytesV1 = 0xe0U;
+inline constexpr std::uint32_t kRacGameplayShrubRecordBytesV1 = 0x70U;
 
 // Values follow the on-disc header slots. The physical block order is
 // deliberately different and is reconstructed by the parser.
@@ -62,6 +64,10 @@ struct RacGameplayBankLimitsV1 {
     std::uint64_t max_input_bytes = 0U;
     std::uint64_t max_moby_classes = 65'536U;
     std::uint64_t max_static_mobies = 65'536U;
+    std::uint64_t max_tie_classes = 65'536U;
+    std::uint64_t max_tie_instances = 65'536U;
+    std::uint64_t max_shrub_classes = 65'536U;
+    std::uint64_t max_shrub_instances = 65'536U;
 };
 
 struct RacGameplayRangeV1 {
@@ -101,6 +107,26 @@ struct RacGameplayMobyInstanceV1 {
     std::int32_t light_index = 0;
 };
 
+// TIE and shrub placement records carry a complete 4x4 matrix at byte 0x10.
+// The remaining words are retained verbatim until their runtime meaning is
+// proven. This keeps the complete fixed-size record available without
+// assigning semantics to lighting, occlusion, or visibility fields yet.
+struct RacGameplayTieInstanceV1 {
+    RacGameplayRangeV1 record_range;
+    std::uint32_t class_id = 0U;
+    std::array<std::uint32_t, 16U> matrix_bits{};
+    std::array<float, 16U> matrix{};
+    std::array<std::uint32_t, kRacGameplayTieRecordBytesV1 / 4U> raw_words{};
+};
+
+struct RacGameplayShrubInstanceV1 {
+    RacGameplayRangeV1 record_range;
+    std::uint32_t class_id = 0U;
+    std::array<std::uint32_t, 16U> matrix_bits{};
+    std::array<float, 16U> matrix{};
+    std::array<std::uint32_t, kRacGameplayShrubRecordBytesV1 / 4U> raw_words{};
+};
+
 struct RacGameplayBankV1 {
     std::uint64_t input_bytes = 0U;
     RacGameplayRangeV1 header_range;
@@ -114,6 +140,16 @@ struct RacGameplayBankV1 {
     std::uint32_t static_moby_count = 0U;
     std::uint32_t spawnable_moby_count = 0U;
     std::vector<RacGameplayMobyInstanceV1> static_mobies;
+
+    std::uint32_t tie_class_count = 0U;
+    std::vector<std::uint32_t> tie_class_ids;
+    std::uint32_t tie_instance_count = 0U;
+    std::vector<RacGameplayTieInstanceV1> tie_instances;
+
+    std::uint32_t shrub_class_count = 0U;
+    std::vector<std::uint32_t> shrub_class_ids;
+    std::uint32_t shrub_instance_count = 0U;
+    std::vector<RacGameplayShrubInstanceV1> shrub_instances;
 };
 
 class RacGameplayBankError final : public std::runtime_error {
@@ -130,11 +166,10 @@ find_rac_gameplay_block_v1(const RacGameplayBankV1& bank,
 
 // Parses one complete, decoded Ratchet & Clank (2002) level gameplay bank.
 // The fixed pointer directory and its physical ordering are validated, while
-// every section remains a zero-copy range. The class list and 0x78-byte moby
-// instance records provide a strict semantic anchor for format probing. The
-// class, scale, position, and rotation fields are decoded so callers can map
-// validated model classes to their level placements without copying the
-// opaque remainder of each record.
+// every section remains a zero-copy range. Moby, TIE, and shrub class lists
+// and fixed-size instance records provide strict semantic anchors for format
+// probing. Moby placement fields and complete TIE/shrub transform matrices
+// are decoded while all TIE/shrub record words remain available verbatim.
 [[nodiscard]] RacGameplayBankV1
 parse_rac_gameplay_bank_v1(std::span<const std::byte> bytes,
                            RacGameplayBankLimitsV1 limits);

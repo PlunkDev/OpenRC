@@ -23,12 +23,13 @@ openrc_core
 ├── streaming decoded-WAD corpus inventory, provenance, deduplication, and strict probes
 ├── deterministic structural candidate-family profiling and Veldin-ranked TSV export
 ├── strict bounded SceneAnimationBankV1 camera/actor/frame/root parsing
-├── strict RacGameplayBankV1 directory plus RAC1 Moby IDs/static placements
-├── RacLevelCoreIndexV1 ownership/linking for local and shared Moby model cores
-├── bounded per-level tfrag texture and local/shared Moby asset loading
+├── strict RacGameplayBankV1 directory plus RAC1 Moby/TIE/shrub placements
+├── RacLevelCoreIndexV1 ownership/linking for Moby/TIE/shrub model cores
+├── bounded per-level tfrag/Moby/TIE/shrub texture and model asset loading
 ├── bounded RacMobyClassV1 headers, packet ownership, and fixed asset ranges
 ├── regular Moby VIF/vertex-cache/strip/packet-local triangle recovery
 ├── regular high/low LOD assembly with cross-packet cache/material state
+├── bounded RAC1 TIE high-LOD packet/strip/material/triangle recovery
 ├── shared PAL five-language subtitle-directory timing/text parsing
 ├── neutral SceneBlockDirectoryV1 parsing with owned blocks and 8-section layouts
 ├── bounded zero-copy SceneBlock VIF command parsing across sections 0-4
@@ -56,8 +57,8 @@ openrc_core
 
 openrc-cli
 ├── disc inspection and inventory
-├── TOC, WAD/bundle/companion/corpus/family/gameplay/level-core/Moby diagnostics
-├── static high-LOD Moby placement/bounds diagnostics
+├── TOC, WAD/bundle/companion/corpus/family/gameplay/level-core diagnostics
+├── static high-LOD Moby and TIE placement/bounds diagnostics
 ├── scene-animation and subtitle diagnostics
 ├── scene-block/VIF/VU/GS, 2FIP, MapArt, PS2D, VAGp, and SBlk diagnostics
 ├── explicit-policy SBlk WAV and EE/R5900 boundary diagnostics
@@ -77,8 +78,8 @@ openrc-runtime
 ├── exact ISO-to-prepared-ELF SHA-256 binding before scene access
 ├── emitted GS-triangle conversion with raster-context coordinates
 ├── recovered-level 3D tfrag material batches with bounded debug orbit controls
-├── explicit world-to-SceneBlock ×1024 Moby unit conversion and bounded merge
-├── tfrag STQ/TEX0 and static-Moby UV/material base-texture sampling
+├── explicit world-to-SceneBlock ×1024 Moby/TIE conversion and bounded merge
+├── separate tfrag, static-Moby, and TIE UV/material texture regions
 ├── D24 depth ordering and explicit untextured wireframe fallback
 ├── Tab comparison against the decoded GS 2D output
 └── native D3D11 submission, auto-fit resize, and WARP fallback
@@ -163,9 +164,10 @@ from the same validated entry-0/TOP=0 state, merges complete raster and source
 triangle batches under aggregate limits, and reports diagnostic GS-only records
 separately. The viewer can orbit the merged source mesh, but that orbit is
 isolated PC-side diagnostic state: it never rewrites the VU frame transform or
-claims to reproduce the original camera. Static Moby batches now retain their
-decoded material UVs and sample their normalized base textures with D3D depth
-ordering. The GIF/GS layer also retains both TEX0 and CLAMP contexts on every
+claims to reproduce the original camera. Static Moby and TIE batches retain
+their decoded material UVs and sample independent normalized texture banks
+through explicitly bounded D3D regions with depth ordering. The GIF/GS layer
+also retains both TEX0 and CLAMP contexts on every
 vertex/primitive snapshot, even when PRMODE leaves the effective context
 unresolved. The RAC1 SceneBlock adapter converts complete STQ to `S/Q,T/Q` and
 accepts a table-index material only from the selected context or the sole
@@ -242,7 +244,8 @@ and current texture separately for high and low LOD; duplicate vertices retain
 their transfer-local UV and exact source provenance. The level asset loader
 links local/shared ownership back to gameplay placements. It also slices raw
 GS RAM from primary-extent-0 subrange 3 and decodes every 0x10-byte tfrag and
-Moby texture record against the shared-texture block in decompressed subrange 10.
+Moby, TIE, and shrub texture record against the shared-texture block in
+decompressed subrange 10.
 Base pixels remain linear PSMT8 indices; the decoder swaps GS CLUT address bits
 3/4, expands PS2 alpha, and owns both indexed and RGBA output. Each model keeps
 its 16 local material slots, and the static scene builder retains UVs while
@@ -253,6 +256,13 @@ explicit: CLI diagnostics retain world units, while the current source viewer
 converts Moby output to 1,024 raw SceneBlock ITOF0 units per world unit before
 the bounded merge. Model loading and preparation also have aggregate workspace
 caps rather than multiplying per-model limits by the class count.
+TIE classes use their own bounded high-LOD packet format. Their local positions
+already include the class scale; the static builder applies the complete
+column-major gameplay matrix, ignores its non-homogeneous final `0.01` word for
+XYZ, performs no perspective divide, and then applies the same explicit 1,024
+unit conversion. Local TIE materials resolve through each class's slot table
+into a separate texture bank. Shrub class, placement, billboard, and texture
+metadata are retained for the next specialized geometry decoder.
 Metal and bangle geometry, mip/filter material state, skeletal bind/animation,
 and the original visibility policy remain separate rather than being guessed.
 MapArtV1 composes three palette-compatible images without assigning gameplay

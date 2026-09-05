@@ -57,6 +57,16 @@ constexpr std::array<std::uint8_t,
     return std::bit_cast<std::int32_t>(read_le32(bytes, offset));
 }
 
+[[nodiscard]] std::int16_t read_le_i16(
+    const std::span<const std::byte> bytes,
+    const std::size_t offset) noexcept {
+    const std::uint16_t value = static_cast<std::uint16_t>(
+        static_cast<std::uint16_t>(byte_value(bytes[offset])) |
+        static_cast<std::uint16_t>(
+            static_cast<std::uint16_t>(byte_value(bytes[offset + 1U])) << 8U));
+    return std::bit_cast<std::int16_t>(value);
+}
+
 [[nodiscard]] std::uint64_t checked_add(
     const std::uint64_t left,
     const std::uint64_t right,
@@ -200,7 +210,11 @@ RacLevelCoreIndexV1 parse_rac_level_core_index_v1(
         limits.max_encoded_asset_bytes == 0U ||
         limits.max_decoded_asset_bytes == 0U ||
         limits.max_moby_classes == 0U ||
-        limits.max_moby_textures == 0U || limits.max_gadgets == 0U) {
+        limits.max_moby_textures == 0U || limits.max_gadgets == 0U ||
+        limits.max_tie_classes == 0U ||
+        limits.max_shrub_classes == 0U ||
+        limits.max_tie_textures == 0U ||
+        limits.max_shrub_textures == 0U) {
         fail("RacLevelCoreIndexV1 caller limits must all be non-zero");
     }
     if (index_bytes.size() > limits.max_index_bytes) {
@@ -338,6 +352,20 @@ RacLevelCoreIndexV1 parse_rac_level_core_index_v1(
         header.moby_textures.count > kRacLevelCoreUnusedTextureSlotV1) {
         fail("RacLevelCoreIndexV1 has an invalid Moby-texture count");
     }
+    if (header.tie_classes.count > limits.max_tie_classes) {
+        fail("RacLevelCoreIndexV1 has an invalid tie-class count");
+    }
+    if (header.shrub_classes.count > limits.max_shrub_classes) {
+        fail("RacLevelCoreIndexV1 has an invalid shrub-class count");
+    }
+    if (header.tie_textures.count > limits.max_tie_textures ||
+        header.tie_textures.count > kRacLevelCoreUnusedTextureSlotV1) {
+        fail("RacLevelCoreIndexV1 has an invalid tie-texture count");
+    }
+    if (header.shrub_textures.count > limits.max_shrub_textures ||
+        header.shrub_textures.count > kRacLevelCoreUnusedTextureSlotV1) {
+        fail("RacLevelCoreIndexV1 has an invalid shrub-texture count");
+    }
     if (header.gadget_count == 0U ||
         header.gadget_count > limits.max_gadgets) {
         fail("RacLevelCoreIndexV1 has an invalid gadget count");
@@ -451,8 +479,12 @@ RacLevelCoreIndexV1 parse_rac_level_core_index_v1(
     }
 
     result.moby_class_table_range = header.moby_classes.byte_range;
+    result.tie_class_table_range = header.tie_classes.byte_range;
+    result.shrub_class_table_range = header.shrub_classes.byte_range;
     result.tfrag_texture_table_range = header.tfrag_textures.byte_range;
     result.moby_texture_table_range = header.moby_textures.byte_range;
+    result.tie_texture_table_range = header.tie_textures.byte_range;
+    result.shrub_texture_table_range = header.shrub_textures.byte_range;
 
     if (header.assets_encoded_size != encoded_asset_bytes.size() ||
         header.assets_decoded_size != decoded_asset_bytes.size()) {
@@ -541,6 +573,157 @@ RacLevelCoreIndexV1 parse_rac_level_core_index_v1(
         result.moby_classes.push_back(entry);
     }
 
+    std::unordered_set<std::int32_t> tie_class_ids;
+    std::unordered_set<std::uint32_t> tie_asset_offsets;
+    if (static_cast<std::uint64_t>(header.tie_classes.count) >
+            static_cast<std::uint64_t>(result.tie_classes.max_size()) ||
+        static_cast<std::uint64_t>(header.tie_classes.count) >
+            static_cast<std::uint64_t>(tie_class_ids.max_size()) ||
+        static_cast<std::uint64_t>(header.tie_classes.count) >
+            static_cast<std::uint64_t>(tie_asset_offsets.max_size())) {
+        fail("RacLevelCoreIndexV1 tie metadata exceeds a host container limit");
+    }
+    result.tie_classes.reserve(header.tie_classes.count);
+    tie_class_ids.reserve(header.tie_classes.count);
+    tie_asset_offsets.reserve(header.tie_classes.count);
+    for (std::uint32_t index = 0U; index < header.tie_classes.count; ++index) {
+        const auto record_offset = checked_add(
+            header.tie_classes.offset,
+            checked_multiply(
+                index,
+                kRacLevelCoreTieClassEntryBytesV1,
+                "a tie-class record offset"),
+            "a tie-class record offset");
+        const auto host_offset = static_cast<std::size_t>(record_offset);
+
+        RacLevelCoreTieClassEntryV1 entry;
+        entry.table_entry_range = {
+            record_offset,
+            kRacLevelCoreTieClassEntryBytesV1,
+        };
+        entry.asset_offset = read_le32(index_bytes, host_offset);
+        entry.class_id = read_le_i32(index_bytes, host_offset + 0x04U);
+        entry.reserved_words[0U] = read_le32(index_bytes, host_offset + 0x08U);
+        entry.reserved_words[1U] = read_le32(index_bytes, host_offset + 0x0cU);
+        if (entry.class_id < 0 || entry.reserved_words[0U] != 0U ||
+            entry.reserved_words[1U] != 0U ||
+            !tie_class_ids.insert(entry.class_id).second) {
+            fail("A tie-class entry has an invalid ID or reserved words");
+        }
+
+        bool saw_unused_texture = false;
+        for (std::size_t slot = 0U; slot < entry.texture_slots.size(); ++slot) {
+            const auto texture =
+                byte_value(index_bytes[host_offset + 0x10U + slot]);
+            entry.texture_slots[slot] = texture;
+            if (texture == kRacLevelCoreUnusedTextureSlotV1) {
+                saw_unused_texture = true;
+                continue;
+            }
+            if (saw_unused_texture) {
+                fail("A tie-class texture appears after the 0xff sentinel");
+            }
+            if (texture >= header.tie_textures.count) {
+                fail("A tie-class texture index exceeds the tie-texture table");
+            }
+            ++entry.used_texture_slot_count;
+        }
+
+        if (entry.asset_offset != 0U) {
+            if (!is_aligned(entry.asset_offset, kRacLevelCoreAssetAlignmentV1) ||
+                entry.asset_offset >= decoded_asset_bytes.size()) {
+                fail("A tie-class asset offset is outside the decoded core");
+            }
+            if (!tie_asset_offsets.insert(entry.asset_offset).second) {
+                fail("RacLevelCoreIndexV1 contains duplicate tie asset offsets");
+            }
+        }
+        result.tie_classes.push_back(entry);
+    }
+
+    std::unordered_set<std::int32_t> shrub_class_ids;
+    std::unordered_set<std::uint32_t> shrub_asset_offsets;
+    if (static_cast<std::uint64_t>(header.shrub_classes.count) >
+            static_cast<std::uint64_t>(result.shrub_classes.max_size()) ||
+        static_cast<std::uint64_t>(header.shrub_classes.count) >
+            static_cast<std::uint64_t>(shrub_class_ids.max_size()) ||
+        static_cast<std::uint64_t>(header.shrub_classes.count) >
+            static_cast<std::uint64_t>(shrub_asset_offsets.max_size())) {
+        fail("RacLevelCoreIndexV1 shrub metadata exceeds a host container limit");
+    }
+    result.shrub_classes.reserve(header.shrub_classes.count);
+    shrub_class_ids.reserve(header.shrub_classes.count);
+    shrub_asset_offsets.reserve(header.shrub_classes.count);
+    for (std::uint32_t index = 0U; index < header.shrub_classes.count;
+         ++index) {
+        const auto record_offset = checked_add(
+            header.shrub_classes.offset,
+            checked_multiply(
+                index,
+                kRacLevelCoreShrubClassEntryBytesV1,
+                "a shrub-class record offset"),
+            "a shrub-class record offset");
+        const auto host_offset = static_cast<std::size_t>(record_offset);
+
+        RacLevelCoreShrubClassEntryV1 entry;
+        entry.table_entry_range = {
+            record_offset,
+            kRacLevelCoreShrubClassEntryBytesV1,
+        };
+        entry.asset_offset = read_le32(index_bytes, host_offset);
+        entry.class_id = read_le_i32(index_bytes, host_offset + 0x04U);
+        entry.reserved_words[0U] = read_le32(index_bytes, host_offset + 0x08U);
+        entry.reserved_words[1U] = read_le32(index_bytes, host_offset + 0x0cU);
+        if (entry.class_id < 0 || entry.reserved_words[0U] != 0U ||
+            entry.reserved_words[1U] != 0U ||
+            !shrub_class_ids.insert(entry.class_id).second) {
+            fail("A shrub-class entry has an invalid ID or reserved words");
+        }
+
+        bool saw_unused_texture = false;
+        for (std::size_t slot = 0U; slot < entry.texture_slots.size(); ++slot) {
+            const auto texture =
+                byte_value(index_bytes[host_offset + 0x10U + slot]);
+            entry.texture_slots[slot] = texture;
+            if (texture == kRacLevelCoreUnusedTextureSlotV1) {
+                saw_unused_texture = true;
+                continue;
+            }
+            if (saw_unused_texture) {
+                fail("A shrub-class texture appears after the 0xff sentinel");
+            }
+            if (texture >= header.shrub_textures.count) {
+                fail(
+                    "A shrub-class texture index exceeds the shrub-texture table");
+            }
+            ++entry.used_texture_slot_count;
+        }
+        entry.billboard.texture_width = read_le_i16(index_bytes, host_offset + 0x20U);
+        entry.billboard.texture_height = read_le_i16(index_bytes, host_offset + 0x22U);
+        entry.billboard.maximum_mipmap_level =
+            read_le_i16(index_bytes, host_offset + 0x24U);
+        entry.billboard.palette_offset =
+            read_le_i16(index_bytes, host_offset + 0x26U);
+        entry.billboard.texture_offset =
+            read_le_i16(index_bytes, host_offset + 0x28U);
+        for (std::size_t mip = 0U; mip < entry.billboard.mipmap_offsets.size();
+             ++mip) {
+            entry.billboard.mipmap_offsets[mip] = read_le_i16(
+                index_bytes, host_offset + 0x2aU + mip * sizeof(std::int16_t));
+        }
+
+        if (entry.asset_offset != 0U) {
+            if (!is_aligned(entry.asset_offset, kRacLevelCoreAssetAlignmentV1) ||
+                entry.asset_offset >= decoded_asset_bytes.size()) {
+                fail("A shrub-class asset offset is outside the decoded core");
+            }
+            if (!shrub_asset_offsets.insert(entry.asset_offset).second) {
+                fail("RacLevelCoreIndexV1 contains duplicate shrub asset offsets");
+            }
+        }
+        result.shrub_classes.push_back(entry);
+    }
+
     std::vector<std::uint32_t> asset_boundaries;
     auto asset_boundary_capacity = checked_add(
         header.moby_classes.count,
@@ -603,28 +786,18 @@ RacLevelCoreIndexV1 parse_rac_level_core_index_v1(
             asset_boundaries.push_back(entry.asset_offset);
         }
     }
-    for (std::uint32_t index = 0U; index < header.tie_classes.count; ++index) {
-        const auto offset = read_le32(
-            index_bytes,
-            static_cast<std::size_t>(header.tie_classes.offset) +
-                static_cast<std::size_t>(index) *
-                    kRacLevelCoreTieClassEntryBytesV1);
+    for (const auto& entry : result.tie_classes) {
         add_aligned_asset_boundary(
             asset_boundaries,
-            offset,
+            entry.asset_offset,
             decoded_asset_bytes.size(),
             kRacLevelCoreAssetAlignmentV1,
             "A tie-class asset");
     }
-    for (std::uint32_t index = 0U; index < header.shrub_classes.count; ++index) {
-        const auto offset = read_le32(
-            index_bytes,
-            static_cast<std::size_t>(header.shrub_classes.offset) +
-                static_cast<std::size_t>(index) *
-                    kRacLevelCoreShrubClassEntryBytesV1);
+    for (const auto& entry : result.shrub_classes) {
         add_aligned_asset_boundary(
             asset_boundaries,
-            offset,
+            entry.asset_offset,
             decoded_asset_bytes.size(),
             kRacLevelCoreAssetAlignmentV1,
             "A shrub-class asset");
@@ -749,6 +922,34 @@ RacLevelCoreIndexV1 parse_rac_level_core_index_v1(
             entry.asset_offset);
         if (next == asset_boundaries.end() || *next <= entry.asset_offset) {
             fail("A Moby-class asset has no greater proven block boundary");
+        }
+        entry.asset_range = {
+            entry.asset_offset,
+            static_cast<std::uint64_t>(*next) - entry.asset_offset,
+        };
+    }
+    for (auto& entry : result.tie_classes) {
+        if (entry.asset_offset == 0U) {
+            continue;
+        }
+        const auto next = std::upper_bound(
+            asset_boundaries.begin(), asset_boundaries.end(), entry.asset_offset);
+        if (next == asset_boundaries.end() || *next <= entry.asset_offset) {
+            fail("A tie-class asset has no greater proven block boundary");
+        }
+        entry.asset_range = {
+            entry.asset_offset,
+            static_cast<std::uint64_t>(*next) - entry.asset_offset,
+        };
+    }
+    for (auto& entry : result.shrub_classes) {
+        if (entry.asset_offset == 0U) {
+            continue;
+        }
+        const auto next = std::upper_bound(
+            asset_boundaries.begin(), asset_boundaries.end(), entry.asset_offset);
+        if (next == asset_boundaries.end() || *next <= entry.asset_offset) {
+            fail("A shrub-class asset has no greater proven block boundary");
         }
         entry.asset_range = {
             entry.asset_offset,

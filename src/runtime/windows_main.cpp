@@ -1,6 +1,7 @@
 #include "d3d11_renderer.hpp"
 #include "moby_scene_geometry.hpp"
 #include "scene_geometry.hpp"
+#include "tie_scene_geometry.hpp"
 
 #include "openrc/dvp_vu.hpp"
 #include "openrc/dvp_vu_execute.hpp"
@@ -38,8 +39,8 @@ constexpr wchar_t kWindowClassName[] = L"PlunkDev.OpenRC.Runtime.Window";
 constexpr wchar_t kApplicationName[] = L"OpenRC native level viewer";
 constexpr std::uint64_t kMaximumRuntimeBytes = 64U * 1024U * 1024U;
 constexpr std::uint64_t kMaximumAggregateRecords = 4096U;
-constexpr std::uint64_t kMaximumAggregateVertices = 1'000'000U;
-constexpr std::uint64_t kMaximumAggregateTriangleIndices = 3'000'000U;
+constexpr std::uint64_t kMaximumAggregateVertices = 3'000'000U;
+constexpr std::uint64_t kMaximumAggregateTriangleIndices = 9'000'000U;
 
 struct RuntimeArguments {
     std::filesystem::path disc_image;
@@ -66,10 +67,15 @@ struct LoadedSceneGeometry {
     std::optional<openrc::RacLevelMobyTextureBankV1> tfrag_texture_bank;
     std::vector<openrc::runtime::SceneMaterialBatchV1>
         terrain_material_batches;
+    std::uint64_t terrain_triangle_count = 0U;
     std::optional<openrc::RacLevelMobyTextureBankV1> moby_texture_bank;
     std::vector<openrc::runtime::MobySceneMaterialBatchV1>
         moby_material_batches;
     std::optional<std::uint64_t> moby_first_triangle;
+    std::optional<openrc::RacLevelMobyTextureBankV1> tie_texture_bank;
+    std::vector<openrc::runtime::MobySceneMaterialBatchV1>
+        tie_material_batches;
+    std::optional<std::uint64_t> tie_first_triangle;
     std::uint64_t total_record_count = 0U;
     std::uint64_t decoded_record_count = 0U;
     std::uint64_t raster_record_count = 0U;
@@ -89,6 +95,12 @@ struct LoadedSceneGeometry {
     std::uint64_t moby_animated_placement_count = 0U;
     std::uint64_t moby_missing_or_empty_placement_count = 0U;
     std::uint64_t moby_triangle_count = 0U;
+    std::uint64_t tie_model_count = 0U;
+    std::uint64_t tie_rendered_model_count = 0U;
+    std::uint64_t tie_placement_count = 0U;
+    std::uint64_t tie_rendered_placement_count = 0U;
+    std::uint64_t tie_missing_or_empty_placement_count = 0U;
+    std::uint64_t tie_triangle_count = 0U;
 };
 
 void add_aggregate_size(
@@ -395,6 +407,10 @@ make_moby_asset_limits() {
             4096U,
             255U,
             4096U,
+            4096U,
+            4096U,
+            255U,
+            255U,
         },
         openrc::RacGameplayBankLimitsV1{kMaximumRuntimeBytes},
         openrc::RacMobyClassLimitsV1{kMaximumRuntimeBytes, false},
@@ -416,6 +432,19 @@ make_moby_asset_limits() {
             16U * 1024U * 1024U,
             64U * 1024U * 1024U,
         },
+        openrc::RacTieClassLimitsV1{
+            kMaximumRuntimeBytes,
+            4096U,
+            65'536U,
+            kMaximumAggregateVertices,
+            kMaximumAggregateVertices,
+            kMaximumAggregateTriangleIndices / 3U,
+            16U,
+        },
+        4096U,
+        65'536U,
+        kMaximumAggregateVertices,
+        kMaximumAggregateTriangleIndices / 3U,
     };
 }
 
@@ -676,7 +705,7 @@ load_scene_geometry(const RuntimeArguments& arguments) {
     return result;
 }
 
-void attach_static_moby_geometry(
+void attach_static_environment_geometry(
     const RuntimeArguments& arguments,
     LoadedSceneGeometry& geometry) {
     if (arguments.entrypoint !=
@@ -696,6 +725,7 @@ void attach_static_moby_geometry(
     }
     const auto terrain_triangle_count =
         geometry.source->triangle_indices.size() / 3U;
+    geometry.terrain_triangle_count = terrain_triangle_count;
     const auto& final_terrain_batch = geometry.terrain_material_batches.back();
     if (geometry.source->triangle_indices.size() % 3U != 0U ||
         final_terrain_batch.first_triangle +
@@ -740,21 +770,55 @@ void attach_static_moby_geometry(
     geometry.moby_missing_or_empty_placement_count =
         moby.stats.missing_model_placement_count +
         moby.stats.empty_model_placement_count;
-    if (!moby.geometry) {
+
+    constexpr openrc::runtime::TieSceneGeometryLimitsV1 tie_limits{
+        4096U,
+        65'536U,
+        kMaximumAggregateVertices,
+        kMaximumAggregateTriangleIndices,
+        kMaximumAggregateVertices,
+        kMaximumAggregateTriangleIndices,
+    };
+    auto tie = openrc::runtime::build_tie_scene_geometry_v1(
+        assets.tie_models,
+        assets.gameplay.tie_instances,
+        openrc::runtime::TieSceneCoordinateDomainV1::
+            scene_block_itof0_units,
+        tie_limits);
+    geometry.tie_model_count = tie.stats.model_count;
+    geometry.tie_rendered_model_count = tie.stats.rendered_model_count;
+    geometry.tie_placement_count = tie.stats.placement_count;
+    geometry.tie_rendered_placement_count =
+        tie.stats.rendered_placement_count;
+    geometry.tie_missing_or_empty_placement_count =
+        tie.stats.missing_model_placement_count +
+        tie.stats.empty_model_placement_count;
+
+    std::vector<openrc::runtime::SceneGeometry3dV1> batches;
+    batches.reserve(3U);
+    batches.push_back(std::move(*geometry.source));
+    auto next_triangle = terrain_triangle_count;
+    if (moby.geometry) {
+        geometry.moby_first_triangle = next_triangle;
+        geometry.moby_triangle_count =
+            moby.geometry->emitted_triangle_count;
+        geometry.moby_material_batches = std::move(moby.material_batches);
+        geometry.moby_texture_bank = std::move(assets.textures);
+        next_triangle += geometry.moby_triangle_count;
+        batches.push_back(std::move(*moby.geometry));
+    }
+    if (tie.geometry) {
+        geometry.tie_first_triangle = next_triangle;
+        geometry.tie_triangle_count = tie.geometry->emitted_triangle_count;
+        geometry.tie_material_batches = std::move(tie.material_batches);
+        geometry.tie_texture_bank = std::move(assets.tie_textures);
+        batches.push_back(std::move(*tie.geometry));
+    }
+
+    if (batches.size() == 1U) {
+        geometry.source = std::move(batches.front());
         return;
     }
-    geometry.moby_triangle_count = moby.geometry->emitted_triangle_count;
-    if (geometry.source->triangle_indices.size() % 3U != 0U) {
-        throw std::runtime_error(
-            "The terrain source geometry is not a triangle list");
-    }
-    geometry.moby_first_triangle = terrain_triangle_count;
-    geometry.moby_material_batches = std::move(moby.material_batches);
-    geometry.moby_texture_bank = std::move(assets.textures);
-    std::array<openrc::runtime::SceneGeometry3dV1, 2U> batches{
-        std::move(*geometry.source),
-        std::move(*moby.geometry),
-    };
     constexpr openrc::runtime::SceneGeometryMergeLimitsV1 merge_limits{
         kMaximumAggregateVertices,
         kMaximumAggregateTriangleIndices,
@@ -956,13 +1020,7 @@ LRESULT CALLBACK window_procedure(
         }
         const auto non_drawing_record_count =
             geometry.total_record_count - geometry.raster_record_count;
-        const auto total_source_triangle_count = geometry.source
-            ? geometry.source->emitted_triangle_count
-            : 0U;
-        const auto source_triangle_count =
-            total_source_triangle_count >= geometry.moby_triangle_count
-            ? total_source_triangle_count - geometry.moby_triangle_count
-            : 0U;
+        const auto source_triangle_count = geometry.terrain_triangle_count;
         return std::wstring(L"OpenRC - Level ") +
             std::to_wstring(arguments.level_id) +
             L", all records - source " +
@@ -972,11 +1030,15 @@ LRESULT CALLBACK window_procedure(
             std::to_wstring(non_drawing_record_count) + L", triangles " +
             std::to_wstring(source_triangle_count) + L" source + " +
             std::to_wstring(geometry.moby_triangle_count) +
-            L" static-Moby, terrain-textured " +
+            L" static-Moby + " +
+            std::to_wstring(geometry.tie_triangle_count) +
+            L" TIE, terrain-textured " +
             std::to_wstring(geometry.terrain_textured_triangle_count) + L"/" +
             std::to_wstring(source_triangle_count) + L", placements " +
             std::to_wstring(geometry.moby_rendered_placement_count) + L"/" +
-            std::to_wstring(geometry.moby_placement_count) + L", " +
+            std::to_wstring(geometry.moby_placement_count) + L" Moby + " +
+            std::to_wstring(geometry.tie_rendered_placement_count) + L"/" +
+            std::to_wstring(geometry.tie_placement_count) + L" TIE, " +
             std::to_wstring(geometry.raster.emitted_triangle_count) + L" GS";
     }
     return std::wstring(L"OpenRC - Level ") +
@@ -1072,7 +1134,7 @@ int WINAPI wWinMain(
         }
 
         auto geometry = load_scene_geometry(arguments);
-        attach_static_moby_geometry(arguments, geometry);
+        attach_static_environment_geometry(arguments, geometry);
         WindowState state;
         state.base_title = make_window_title(arguments, geometry);
         const auto window = create_runtime_window(
@@ -1083,26 +1145,36 @@ int WINAPI wWinMain(
             if (geometry.source) {
                 if (geometry.tfrag_texture_bank &&
                     !geometry.terrain_material_batches.empty()) {
-                    const auto terrain_triangle_count =
-                        geometry.moby_first_triangle.value_or(
-                            geometry.source->emitted_triangle_count);
+                    std::vector<
+                        openrc::runtime::D3d11ObjectTextureSourceV1>
+                        object_texture_sources;
+                    object_texture_sources.reserve(2U);
+                    if (geometry.moby_texture_bank &&
+                        geometry.moby_first_triangle) {
+                        object_texture_sources.push_back({
+                            *geometry.moby_first_triangle,
+                            geometry.moby_triangle_count,
+                            geometry.moby_material_batches,
+                            geometry.moby_texture_bank->textures,
+                        });
+                    }
+                    if (geometry.tie_texture_bank &&
+                        geometry.tie_first_triangle) {
+                        object_texture_sources.push_back({
+                            *geometry.tie_first_triangle,
+                            geometry.tie_triangle_count,
+                            geometry.tie_material_batches,
+                            geometry.tie_texture_bank->textures,
+                        });
+                    }
                     openrc::runtime::D3d11SourceTextureSourcesV1 textures{
                         {
-                            terrain_triangle_count,
+                            geometry.terrain_triangle_count,
                             geometry.terrain_material_batches,
                             geometry.tfrag_texture_bank->textures,
                         },
-                        std::nullopt,
+                        object_texture_sources,
                     };
-                    if (geometry.moby_texture_bank &&
-                        geometry.moby_first_triangle) {
-                        textures.moby =
-                            openrc::runtime::D3d11MobyTextureSourceV1{
-                                *geometry.moby_first_triangle,
-                                geometry.moby_material_batches,
-                                geometry.moby_texture_bank->textures,
-                            };
-                    }
                     state.renderer =
                         std::make_unique<openrc::runtime::D3d11Renderer>(
                             window,

@@ -42,6 +42,7 @@ add_library(openrc_core STATIC
     src/core/rac_moby_class.cpp
     src/core/rac_moby_model_geometry.cpp
     src/core/rac_moby_packet_geometry.cpp
+    src/core/rac_tie_class.cpp
     src/core/scene_animation_bank.cpp
     src/core/scene_block_directory.cpp
     src/core/scene_block_geometry.cpp
@@ -87,6 +88,7 @@ endif()
 add_executable(openrc-cli
     src/cli/main.cpp
     src/runtime/moby_scene_geometry.cpp
+    src/runtime/tie_scene_geometry.cpp
 )
 target_include_directories(openrc-cli
     PRIVATE
@@ -135,6 +137,7 @@ if(OPENRC_BUILD_RUNTIME AND WIN32)
         src/runtime/d3d11_renderer.cpp
         src/runtime/moby_scene_geometry.cpp
         src/runtime/scene_geometry.cpp
+        src/runtime/tie_scene_geometry.cpp
         src/runtime/openrc-runtime.manifest
     )
     target_compile_definitions(openrc-runtime PRIVATE
@@ -253,6 +256,21 @@ if(OPENRC_BUILD_TESTS)
     )
     target_compile_features(
         openrc-rac-moby-packet-geometry-tests
+        PRIVATE
+        cxx_std_20
+    )
+
+    add_executable(
+        openrc-rac-tie-class-tests
+        tests/rac_tie_class_tests.cpp
+    )
+    target_link_libraries(
+        openrc-rac-tie-class-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-rac-tie-class-tests
         PRIVATE
         cxx_std_20
     )
@@ -482,6 +500,7 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-rac-moby-class-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-moby-model-geometry-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-moby-packet-geometry-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-rac-tie-class-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-scene-animation-bank-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-disc-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-disc-toc-tests PRIVATE /W4 /permissive- /utf-8)
@@ -517,6 +536,7 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-rac-moby-class-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-moby-model-geometry-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-moby-packet-geometry-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-rac-tie-class-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-scene-animation-bank-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-disc-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-disc-toc-tests PRIVATE -Wall -Wextra -Wpedantic)
@@ -553,6 +573,7 @@ if(OPENRC_BUILD_TESTS)
     add_test(NAME rac-moby-class COMMAND openrc-rac-moby-class-tests)
     add_test(NAME rac-moby-model-geometry COMMAND openrc-rac-moby-model-geometry-tests)
     add_test(NAME rac-moby-packet-geometry COMMAND openrc-rac-moby-packet-geometry-tests)
+    add_test(NAME rac-tie-class COMMAND openrc-rac-tie-class-tests)
     add_test(NAME scene-animation-bank COMMAND openrc-scene-animation-bank-tests)
     add_test(NAME disc-inspector COMMAND openrc-disc-tests)
     add_test(NAME disc-toc COMMAND openrc-disc-toc-tests)
@@ -660,6 +681,27 @@ if(OPENRC_BUILD_TESTS)
         cxx_std_20
     )
 
+    add_executable(
+        openrc-tie-scene-geometry-tests
+        tests/tie_scene_geometry_tests.cpp
+        src/runtime/tie_scene_geometry.cpp
+    )
+    target_include_directories(
+        openrc-tie-scene-geometry-tests
+        PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/runtime"
+    )
+    target_link_libraries(
+        openrc-tie-scene-geometry-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-tie-scene-geometry-tests
+        PRIVATE
+        cxx_std_20
+    )
+
     add_executable(openrc-hash-tests tests/hash_tests.cpp)
     target_link_libraries(openrc-hash-tests PRIVATE openrc_core)
     target_compile_features(openrc-hash-tests PRIVATE cxx_std_20)
@@ -685,6 +727,7 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-scene-block-geometry-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-scene-geometry-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-moby-scene-geometry-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-tie-scene-geometry-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-hash-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-iso9660-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-preparation-tests PRIVATE /W4 /permissive- /utf-8)
@@ -698,6 +741,7 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-scene-block-geometry-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-scene-geometry-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-moby-scene-geometry-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-tie-scene-geometry-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-hash-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-iso9660-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-preparation-tests PRIVATE -Wall -Wextra -Wpedantic)
@@ -712,6 +756,7 @@ if(OPENRC_BUILD_TESTS)
     add_test(NAME scene-block-geometry COMMAND openrc-scene-block-geometry-tests)
     add_test(NAME scene-geometry COMMAND openrc-scene-geometry-tests)
     add_test(NAME moby-scene-geometry COMMAND openrc-moby-scene-geometry-tests)
+    add_test(NAME tie-scene-geometry COMMAND openrc-tie-scene-geometry-tests)
     add_test(NAME sha256 COMMAND openrc-hash-tests)
     add_test(NAME iso9660-reader COMMAND openrc-iso9660-tests)
     add_test(NAME preparation COMMAND openrc-preparation-tests)

@@ -1,5 +1,6 @@
 #include "openrc/rac_level_core.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -25,6 +26,10 @@ constexpr openrc::RacLevelCoreLimitsV1 kLimits{
     1024U,
     255U,
     1024U,
+    1024U,
+    1024U,
+    255U,
+    255U,
 };
 
 struct Fixture {
@@ -47,6 +52,14 @@ void write_le32(
     bytes[offset + 1U] = static_cast<std::byte>((value >> 8U) & 0xffU);
     bytes[offset + 2U] = static_cast<std::byte>((value >> 16U) & 0xffU);
     bytes[offset + 3U] = static_cast<std::byte>((value >> 24U) & 0xffU);
+}
+
+void write_le16(
+    std::vector<std::byte>& bytes,
+    const std::size_t offset,
+    const std::uint16_t value) {
+    bytes[offset] = static_cast<std::byte>(value & 0xffU);
+    bytes[offset + 1U] = static_cast<std::byte>((value >> 8U) & 0xffU);
 }
 
 void write_array_range(
@@ -131,10 +144,23 @@ void fill_unused_textures(
     write_le32(index, 0x144U, 12U);
     index[0x150U] = std::byte{3};
 
-    // Only the first word of these records is needed as a proven next asset
-    // boundary for the final non-empty Moby class.
+    fill_unused_textures(index, 0x160U);
     write_le32(index, 0x160U, 0x200U);
+    write_le32(index, 0x164U, 20U);
+    index[0x170U] = std::byte{0};
+
+    fill_unused_textures(index, 0x180U);
     write_le32(index, 0x180U, 0x280U);
+    write_le32(index, 0x184U, 30U);
+    index[0x190U] = std::byte{0};
+    write_le16(index, 0x1a0U, 64U);
+    write_le16(index, 0x1a2U, 128U);
+    write_le16(index, 0x1a4U, 2U);
+    write_le16(index, 0x1a6U, 3U);
+    write_le16(index, 0x1a8U, 4U);
+    write_le16(index, 0x1aaU, 5U);
+    write_le16(index, 0x1acU, 6U);
+    write_le16(index, 0x1aeU, 7U);
     write_le32(index, kRatchetSequenceTableOffset, 0x300U);
 
     write_le32(index, 0x670U, 0x380U);
@@ -191,10 +217,18 @@ void test_valid_level_core() {
     expect(
         result.moby_class_table_range ==
                 openrc::RacLevelCoreRangeV1{0xe0U, 0x80U} &&
+            result.tie_class_table_range ==
+                openrc::RacLevelCoreRangeV1{0x160U, 0x20U} &&
+            result.shrub_class_table_range ==
+                openrc::RacLevelCoreRangeV1{0x180U, 0x30U} &&
             result.tfrag_texture_table_range ==
                 openrc::RacLevelCoreRangeV1{0x1b0U, 0x10U} &&
             result.moby_texture_table_range ==
                 openrc::RacLevelCoreRangeV1{0x1c0U, 0x40U} &&
+            result.tie_texture_table_range ==
+                openrc::RacLevelCoreRangeV1{0x200U, 0x10U} &&
+            result.shrub_texture_table_range ==
+                openrc::RacLevelCoreRangeV1{0x210U, 0x10U} &&
             result.ratchet_sequence_table_range ==
                 openrc::RacLevelCoreRangeV1{0x270U, 0x400U} &&
             result.gadget_table_range ==
@@ -213,6 +247,26 @@ void test_valid_level_core() {
             result.moby_classes[2U].asset_range ==
                 openrc::RacLevelCoreRangeV1{},
         "RAC level-core Moby-class records are wrong");
+    expect(
+        result.tie_classes.size() == 1U &&
+            result.tie_classes[0U].class_id == 20 &&
+            result.tie_classes[0U].texture_slots[0U] == 0U &&
+            result.tie_classes[0U].used_texture_slot_count == 1U &&
+            result.tie_classes[0U].asset_range ==
+                openrc::RacLevelCoreRangeV1{0x200U, 0x80U},
+        "RAC level-core tie-class records are wrong");
+    expect(
+        result.shrub_classes.size() == 1U &&
+            result.shrub_classes[0U].class_id == 30 &&
+            result.shrub_classes[0U].used_texture_slot_count == 1U &&
+            result.shrub_classes[0U].billboard.texture_width == 64 &&
+            result.shrub_classes[0U].billboard.texture_height == 128 &&
+            result.shrub_classes[0U].billboard.maximum_mipmap_level == 2 &&
+            result.shrub_classes[0U].billboard.mipmap_offsets ==
+                std::array<std::int16_t, 3>{5, 6, 7} &&
+            result.shrub_classes[0U].asset_range ==
+                openrc::RacLevelCoreRangeV1{0x280U, 0x80U},
+        "RAC level-core shrub-class records are wrong");
     expect(
         result.gadgets.size() == 2U &&
             result.gadgets[0U].class_id == 11 &&
@@ -246,13 +300,17 @@ void test_non_numeric_class_order_is_allowed() {
 void test_limits() {
     const auto fixture = make_fixture();
     const std::vector<openrc::RacLevelCoreLimitsV1> limits{
-        {0U, 1U, 1U, 1U, 1U, 1U},
-        {kIndexBytes - 1U, 1U, 1U, 1U, 1U, 1U},
-        {kIndexBytes, kEncodedBytes - 1U, 1U, 1U, 1U, 1U},
-        {kIndexBytes, kEncodedBytes, kDecodedBytes - 1U, 1U, 1U, 1U},
-        {kIndexBytes, kEncodedBytes, kDecodedBytes, 3U, 4U, 2U},
-        {kIndexBytes, kEncodedBytes, kDecodedBytes, 4U, 3U, 2U},
-        {kIndexBytes, kEncodedBytes, kDecodedBytes, 4U, 4U, 1U},
+        {0U, 1U, 1U, 1U, 1U, 1U, 1U, 1U, 1U, 1U},
+        {kIndexBytes - 1U, 1U, 1U, 1U, 1U, 1U, 1U, 1U, 1U, 1U},
+        {kIndexBytes, kEncodedBytes - 1U, 1U, 1U, 1U, 1U, 1U, 1U, 1U, 1U},
+        {kIndexBytes, kEncodedBytes, kDecodedBytes - 1U, 1U, 1U, 1U, 1U, 1U, 1U, 1U},
+        {kIndexBytes, kEncodedBytes, kDecodedBytes, 3U, 4U, 2U, 1U, 1U, 1U, 1U},
+        {kIndexBytes, kEncodedBytes, kDecodedBytes, 4U, 3U, 2U, 1U, 1U, 1U, 1U},
+        {kIndexBytes, kEncodedBytes, kDecodedBytes, 4U, 4U, 1U, 1U, 1U, 1U, 1U},
+        {kIndexBytes, kEncodedBytes, kDecodedBytes, 4U, 4U, 2U, 0U, 1U, 1U, 1U},
+        {kIndexBytes, kEncodedBytes, kDecodedBytes, 4U, 4U, 2U, 1U, 0U, 1U, 1U},
+        {kIndexBytes, kEncodedBytes, kDecodedBytes, 4U, 4U, 2U, 1U, 1U, 0U, 1U},
+        {kIndexBytes, kEncodedBytes, kDecodedBytes, 4U, 4U, 2U, 1U, 1U, 1U, 0U},
     };
     for (const auto& candidate : limits) {
         try {
@@ -313,6 +371,24 @@ void test_moby_class_rejections() {
         "an out-of-range Moby texture index was accepted");
 }
 
+void test_static_environment_class_rejections() {
+    expect_rejected(
+        [](auto& fixture) { write_le32(fixture.index, 0x168U, 1U); },
+        "a non-zero tie-class reserved word was accepted");
+    expect_rejected(
+        [](auto& fixture) { write_le32(fixture.index, 0x180U, 0x281U); },
+        "an unaligned shrub-class asset offset was accepted");
+    expect_rejected(
+        [](auto& fixture) { fixture.index[0x170U] = std::byte{1}; },
+        "an out-of-range tie texture index was accepted");
+    expect_rejected(
+        [](auto& fixture) {
+            fixture.index[0x190U] = std::byte{0xff};
+            fixture.index[0x191U] = std::byte{0};
+        },
+        "a shrub texture after the 0xff slot sentinel was accepted");
+}
+
 void test_gadget_rejections() {
     expect_rejected(
         [](auto& fixture) { write_le32(fixture.index, 0x674U, 99U); },
@@ -346,6 +422,7 @@ int main() {
         test_limits();
         test_header_and_table_rejections();
         test_moby_class_rejections();
+        test_static_environment_class_rejections();
         test_gadget_rejections();
         std::cout << "RAC level-core tests passed\n";
         return 0;

@@ -5,6 +5,7 @@
 #include "openrc/rac_level_moby_texture.hpp"
 #include "openrc/rac_moby_class.hpp"
 #include "openrc/rac_moby_model_geometry.hpp"
+#include "openrc/rac_tie_class.hpp"
 
 #include <array>
 #include <cstdint>
@@ -29,6 +30,13 @@ struct RacLevelMobyModelV1 {
   RacMobyModelGeometryV1 high_lod;
 };
 
+struct RacLevelTieModelV1 {
+  std::uint32_t class_id = 0U;
+  std::array<std::uint8_t, 16U> texture_slots{};
+  std::uint8_t used_texture_slot_count = 0U;
+  RacTieClassV1 high_lod;
+};
+
 struct RacLevelMobyAssetLimitsV1 {
   std::uint64_t max_primary_extent_bytes = 0U;
   std::uint64_t max_decoded_wad_bytes = 0U;
@@ -43,6 +51,11 @@ struct RacLevelMobyAssetLimitsV1 {
   RacMobyClassLimitsV1 shared_class;
   RacMobyModelGeometryLimitsV1 model_geometry;
   RacLevelMobyTextureLimitsV1 textures;
+  RacTieClassLimitsV1 tie_class;
+  std::uint64_t max_tie_models = 0U;
+  std::uint64_t max_total_tie_packets = 0U;
+  std::uint64_t max_total_tie_vertices = 0U;
+  std::uint64_t max_total_tie_triangles = 0U;
 };
 
 struct RacLevelMobyAssetsV1 {
@@ -53,7 +66,10 @@ struct RacLevelMobyAssetsV1 {
   // separate banks so their table-local indices cannot be confused.
   RacLevelMobyTextureBankV1 tfrag_textures;
   RacLevelMobyTextureBankV1 textures;
+  RacLevelMobyTextureBankV1 tie_textures;
+  RacLevelMobyTextureBankV1 shrub_textures;
   std::vector<RacLevelMobyModelV1> models;
+  std::vector<RacLevelTieModelV1> tie_models;
   std::uint64_t local_model_count = 0U;
   std::uint64_t shared_model_count = 0U;
   std::uint64_t external_model_count = 0U;
@@ -62,6 +78,10 @@ struct RacLevelMobyAssetsV1 {
   std::uint64_t total_model_packet_count = 0U;
   std::uint64_t total_model_vertex_count = 0U;
   std::uint64_t total_model_triangle_count = 0U;
+  std::uint64_t tie_model_bytes = 0U;
+  std::uint64_t total_tie_packet_count = 0U;
+  std::uint64_t total_tie_vertex_count = 0U;
+  std::uint64_t total_tie_triangle_count = 0U;
 };
 
 class RacLevelMobyAssetError final : public std::runtime_error {

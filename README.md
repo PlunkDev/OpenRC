@@ -30,10 +30,12 @@ Stage 1 is in progress. The repository currently provides:
   transforms, and optional PAL five-language subtitle tails;
 - a strict `RacGameplayBankV1` parser for both regional gameplay payloads on
   all 19 levels, exposing 36 named block ranges plus validated RAC1 moby-class
-  IDs and 0x78-byte static-instance placements;
+  IDs and 0x78-byte static-instance placements, together with bounded TIE and
+  shrub class lists and their complete instance matrices;
 - a strict `RacLevelCoreIndexV1` parser that links every gameplay Moby class in
   exact count/order to its local model range, shared gadget WAD, texture slots,
-  and placement count on all 19 levels;
+  and placement count on all 19 levels, and independently links the TIE and
+  shrub class tables to their local assets and texture slots;
 - a bounded `RacMobyClassV1` parser for all local level models and the 21 shared
   companion-bank models, including packet directories, animation/skeleton
   ranges, and regular high/low/metal packet ownership;
@@ -48,9 +50,12 @@ Stage 1 is in progress. The repository currently provides:
   explicitly skipping animated classes until bind transforms are recovered,
   while retaining per-class material slots, per-vertex UVs, and contiguous
   resolved material batches;
-- bounded RAC1 level tfrag and Moby texture-bank decoding from raw GS RAM and
-  the decoded level core, including linear PSMT8 pixels, GS CLUT permutation,
-  PS2 alpha expansion, RGBA output, and single-texture TGA export;
+- bounded RAC1 TIE high-LOD packet, vertex, strip, material, and triangle
+  recovery plus a scene builder that applies each complete column-major
+  instance matrix without treating its special final word as perspective;
+- bounded RAC1 level tfrag, Moby, TIE, and shrub texture-bank decoding from raw
+  GS RAM and the decoded level core, including linear PSMT8 pixels, GS CLUT
+  permutation, PS2 alpha expansion, RGBA output, and single-texture TGA export;
 - a bounded `2FIP` indexed-texture parser with PS2 CLUT normalization,
   RGBA expansion, and lossless TGA export;
 - a neutral seven-region boundary-table parser for decoded level payloads;
@@ -108,10 +113,10 @@ Stage 1 is in progress. The repository currently provides:
 - a native Windows D3D11 level-viewer window that independently executes and
   merges every supported SceneBlock record in the selected level, defaults to
   an auto-fit recovered-level 3D orbit view, renders recovered tfrag terrain
-  and static high-LOD Moby placements with their decoded base textures and
-  material UVs, uses a depth buffer plus an explicit wireframe fallback for
-  unresolved batches, retains the aggregate decoded GS projection for
-  comparison, and falls back from hardware rendering to WARP;
+  plus static high-LOD Moby and TIE placements with their independent decoded
+  texture banks and material UVs, uses a depth buffer plus an explicit
+  wireframe fallback for unresolved gaps, retains the aggregate decoded GS
+  projection for comparison, and falls back from hardware rendering to WARP;
 - recognition of the PAL (`SCES-50916`) reference executable and detection of
   the NTSC-U/C (`SCUS-97199`) release;
 - a native Windows launcher with disc inspection, asynchronous Prepare,
@@ -120,8 +125,9 @@ Stage 1 is in progress. The repository currently provides:
 - application directories following the `PlunkDev/OpenRC` convention;
 - synthetic ISO, ELF, SHA-256, disc, WAD, bundle, 2FIP, boundary-table,
   MapArtV1, PS2 save-bundle, PS ADPCM, VAGp, SBlk/audio/WAV, decoded-WAD
-  inventory/probes, RAC gameplay/level-core/tfrag and Moby texture/class/packet/LOD
-  geometry, static Moby scene transforms and material-slot mapping,
+  inventory/probes, RAC gameplay/level-core and tfrag/Moby/TIE/shrub texture
+  tables, Moby and TIE class/packet/LOD geometry, static scene transforms and
+  material-slot mapping,
   scene-animation/subtitle, EE/R5900 boundaries, scene-block, scene-block
   VIF/VU execution and phase grouping, DVP VU microprogram decoding/execution,
   companion-WAD-index, and preparation tests that contain no copyrighted game
@@ -288,8 +294,8 @@ cache and texture state across each high-LOD packet sequence, applies each
 static placement's verified `T * S * Rz * Ry * Rx` transform, then explicitly
 converts world coordinates to the current SceneBlock diagnostic domain at
 1,024 raw ITOF0 units per world unit before the bounded merge. On Veldin this
-adds 133 placements from five
-non-animated classes: 20,370 compacted vertices and 13,130 triangles beside
+adds 133 placements from five non-animated classes: 20,370 compacted vertices
+and 13,130 triangles beside
 the existing 22,428/18,660 recovered SceneBlock batch. They are now submitted
 through contiguous material batches with perspective-correct
 UV interpolation, decoded RGBA base textures, alpha-zero rejection, and depth
@@ -297,6 +303,14 @@ testing. Explicitly untextured or unresolved terrain batches remain diagnostic
 wireframes. Metal/bangle meshes and 153 animated placements still wait for
 their respective decoders and bind transforms. Ten Veldin placements reference
 external/zero model ownership and remain skipped.
+
+The same full-level path now decodes all 63 Veldin TIE classes and applies the
+complete column-major matrix of every one of their 1,114 placements. This adds
+500,510 compacted vertices and 396,708 triangles, resolved through 131 entries
+in the separate TIE texture bank. The renderer accepts explicit ordered texture
+regions, so equal numeric texture indices in the terrain, Moby, and TIE tables
+cannot alias each other. Shrub metadata and its 70 textures are inventoried,
+but the 1,697 shrub placements still await their specialized geometry decoder.
 
 `dvp-vu` accepts comma-separated decimal VU pair addresses and ELF overlay
 section indices, with at most 128 values in either list. The example selects
@@ -326,7 +340,8 @@ until skeleton bind transforms are applied.
 
 `level-moby-scene` runs the same production loader and static-placement builder
 used by the native viewer without opening D3D. It reports the rendered,
-animated, missing, and empty placement counts plus compacted geometry bounds.
+animated, missing, and empty Moby placement counts plus compacted geometry
+bounds, and separately reports decoded/instantiated TIE geometry and bounds.
 Across all 19 levels it builds 9,122 static placements into 3,214,949 vertices
 and 2,628,565 triangles; 6,237 animated and 873 external/zero-model placements
 remain explicitly skipped.

@@ -15,14 +15,16 @@
 
 #include <cstdint>
 #include <memory>
-#include <optional>
 #include <span>
 
 namespace openrc::runtime {
 
-struct D3d11MobyTextureSourceV1 {
-    // Triangle ordinal where the Moby suffix begins in source_geometry.
+struct D3d11ObjectTextureSourceV1 {
+    // Explicit region in the merged source-space triangle list. Keeping both
+    // bounds prevents one object family from accidentally claiming the suffix
+    // that belongs to a later family.
     std::uint64_t first_triangle = 0U;
+    std::uint64_t triangle_count = 0U;
     std::span<const MobySceneMaterialBatchV1> material_batches;
     std::span<const RacLevelMobyTextureV1> textures;
 };
@@ -36,7 +38,7 @@ struct D3d11TerrainTextureSourceV1 {
 
 struct D3d11SourceTextureSourcesV1 {
     D3d11TerrainTextureSourceV1 terrain;
-    std::optional<D3d11MobyTextureSourceV1> moby;
+    std::span<const D3d11ObjectTextureSourceV1> objects;
 };
 
 class D3d11Renderer final {

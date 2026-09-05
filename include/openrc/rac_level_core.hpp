@@ -27,6 +27,10 @@ struct RacLevelCoreLimitsV1 {
     std::uint64_t max_moby_classes = 0U;
     std::uint64_t max_moby_textures = 0U;
     std::uint64_t max_gadgets = 0U;
+    std::uint64_t max_tie_classes = 0U;
+    std::uint64_t max_shrub_classes = 0U;
+    std::uint64_t max_tie_textures = 0U;
+    std::uint64_t max_shrub_textures = 0U;
 };
 
 struct RacLevelCoreRangeV1 {
@@ -94,6 +98,36 @@ struct RacLevelCoreMobyClassEntryV1 {
     RacLevelCoreRangeV1 asset_range;
 };
 
+struct RacLevelCoreTieClassEntryV1 {
+    RacLevelCoreRangeV1 table_entry_range;
+    std::uint32_t asset_offset = 0U;
+    std::int32_t class_id = 0;
+    std::array<std::uint32_t, 2> reserved_words{};
+    std::array<std::uint8_t, 16> texture_slots{};
+    std::uint8_t used_texture_slot_count = 0U;
+    RacLevelCoreRangeV1 asset_range;
+};
+
+struct RacLevelCoreShrubBillboardTextureV1 {
+    std::int16_t texture_width = 0;
+    std::int16_t texture_height = 0;
+    std::int16_t maximum_mipmap_level = 0;
+    std::int16_t palette_offset = 0;
+    std::int16_t texture_offset = 0;
+    std::array<std::int16_t, 3> mipmap_offsets{};
+};
+
+struct RacLevelCoreShrubClassEntryV1 {
+    RacLevelCoreRangeV1 table_entry_range;
+    std::uint32_t asset_offset = 0U;
+    std::int32_t class_id = 0;
+    std::array<std::uint32_t, 2> reserved_words{};
+    std::array<std::uint8_t, 16> texture_slots{};
+    std::uint8_t used_texture_slot_count = 0U;
+    RacLevelCoreShrubBillboardTextureV1 billboard;
+    RacLevelCoreRangeV1 asset_range;
+};
+
 struct RacLevelCoreGadgetEntryV1 {
     RacLevelCoreRangeV1 table_entry_range;
     std::uint32_t asset_offset = 0U;
@@ -116,8 +150,12 @@ struct RacLevelCoreIndexV1 {
     RacLevelCoreRangeV1 rac1_header_trailer_range;
     RacLevelCoreHeaderV1 header;
     RacLevelCoreRangeV1 moby_class_table_range;
+    RacLevelCoreRangeV1 tie_class_table_range;
+    RacLevelCoreRangeV1 shrub_class_table_range;
     RacLevelCoreRangeV1 tfrag_texture_table_range;
     RacLevelCoreRangeV1 moby_texture_table_range;
+    RacLevelCoreRangeV1 tie_texture_table_range;
+    RacLevelCoreRangeV1 shrub_texture_table_range;
     RacLevelCoreRangeV1 ratchet_sequence_table_range;
     RacLevelCoreRangeV1 gadget_table_range;
     RacLevelCoreRangeV1 gadget_asset_prefix_range;
@@ -125,6 +163,8 @@ struct RacLevelCoreIndexV1 {
     std::uint64_t total_gadget_encoded_bytes = 0U;
     std::uint64_t total_gadget_padding_bytes = 0U;
     std::vector<RacLevelCoreMobyClassEntryV1> moby_classes;
+    std::vector<RacLevelCoreTieClassEntryV1> tie_classes;
+    std::vector<RacLevelCoreShrubClassEntryV1> shrub_classes;
     std::vector<RacLevelCoreGadgetEntryV1> gadgets;
 };
 

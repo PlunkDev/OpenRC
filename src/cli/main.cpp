@@ -1,4 +1,5 @@
 #include "moby_scene_geometry.hpp"
+#include "tie_scene_geometry.hpp"
 
 #include "openrc/boundary_table.hpp"
 #include "openrc/companion_wad_index.hpp"
@@ -154,12 +155,28 @@ make_cli_moby_asset_limits() {
             kMaximumCliDecodedWadBytes,
             4096U,
             255U,
-            4096U},
+            4096U,
+            4096U,
+            4096U,
+            255U,
+            255U},
         openrc::RacGameplayBankLimitsV1{kMaximumCliDecodedWadBytes},
         openrc::RacMobyClassLimitsV1{kMaximumCliDecodedWadBytes, false},
         openrc::RacMobyClassLimitsV1{kMaximumCliDecodedWadBytes, true},
         kCliMobyModelGeometryLimits,
-        kCliMobyTextureLimits};
+        kCliMobyTextureLimits,
+        openrc::RacTieClassLimitsV1{
+            kMaximumCliDecodedWadBytes,
+            4096U,
+            65'536U,
+            1'000'000U,
+            1'000'000U,
+            1'000'000U,
+            16U},
+        4096U,
+        65'536U,
+        1'000'000U,
+        1'000'000U};
 }
 
 void print_usage() {
@@ -2045,6 +2062,11 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 << "Static moby instances: " << gameplay.static_moby_count
                 << '\n'
                 << "Spawnable mobies:      " << gameplay.spawnable_moby_count
+                << '\n'
+                << "TIE classes/instances: " << gameplay.tie_class_count << '/'
+                << gameplay.tie_instance_count << '\n'
+                << "Shrub classes/instances: " << gameplay.shrub_class_count
+                << '/' << gameplay.shrub_instance_count
                 << "\n\nBlocks:\n";
             for (const auto& block : gameplay.blocks) {
                 std::cout
@@ -4074,8 +4096,20 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                     3'000'000U,
                     1'000'000U,
                     3'000'000U});
+            const auto tie_scene =
+                openrc::runtime::build_tie_scene_geometry_v1(
+                    assets.tie_models,
+                    assets.gameplay.tie_instances,
+                    openrc::runtime::TieSceneCoordinateDomainV1::world_units,
+                    openrc::runtime::TieSceneGeometryLimitsV1{
+                        4096U,
+                        65'536U,
+                        1'000'000U,
+                        3'000'000U,
+                        4'000'000U,
+                        12'000'000U});
             std::cout
-                << "OpenRC static RAC1 Moby scene report\n"
+                << "OpenRC static RAC1 environment scene report\n"
                 << "Image:                  "
                 << openrc::path_to_utf8(arguments[1]) << '\n'
                 << "Level ID:               " << level_id << '\n'
@@ -4087,6 +4121,23 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 << "Moby textures/pixels:   "
                 << assets.textures.textures.size() << '/'
                 << assets.textures.total_pixel_count << '\n'
+                << "TIE classes/instances/textures: "
+                << assets.gameplay.tie_class_count << '/'
+                << assets.gameplay.tie_instance_count << '/'
+                << assets.tie_textures.textures.size() << '\n'
+                << "TIE packets/vertices/triangles: "
+                << assets.total_tie_packet_count << '/'
+                << assets.total_tie_vertex_count << '/'
+                << assets.total_tie_triangle_count << '\n'
+                << "Rendered TIE classes/instances: "
+                << tie_scene.stats.rendered_model_count << '/'
+                << tie_scene.stats.rendered_placement_count << '\n'
+                << "TIE material batches: "
+                << tie_scene.material_batches.size() << '\n'
+                << "Shrub classes/instances/textures: "
+                << assets.gameplay.shrub_class_count << '/'
+                << assets.gameplay.shrub_instance_count << '/'
+                << assets.shrub_textures.textures.size() << '\n'
                 << "Model packets/vertices/triangles: "
                 << assets.total_model_packet_count << '/'
                 << assets.total_model_vertex_count << '/'
@@ -4123,6 +4174,24 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                     << scene.geometry->maximum_z << "]\n";
             } else {
                 std::cout << "Output geometry:        empty\n";
+            }
+            if (tie_scene.geometry) {
+                std::cout
+                    << "TIE output vertices:    "
+                    << tie_scene.geometry->vertices.size() << '\n'
+                    << "TIE output triangles:   "
+                    << tie_scene.geometry->emitted_triangle_count << '\n'
+                    << "TIE bounds X:           ["
+                    << tie_scene.geometry->minimum_x << ", "
+                    << tie_scene.geometry->maximum_x << "]\n"
+                    << "TIE bounds Y:           ["
+                    << tie_scene.geometry->minimum_y << ", "
+                    << tie_scene.geometry->maximum_y << "]\n"
+                    << "TIE bounds Z:           ["
+                    << tie_scene.geometry->minimum_z << ", "
+                    << tie_scene.geometry->maximum_z << "]\n";
+            } else {
+                std::cout << "TIE output geometry:    empty\n";
             }
             return 0;
         } catch (const std::exception& error) {
@@ -4218,7 +4287,11 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                     kMaximumCliDecodedWadBytes,
                     4096U,
                     255U,
-                    4096U});
+                    4096U,
+                    4096U,
+                    4096U,
+                    255U,
+                    255U});
 
             const auto& gameplay_ref = level_assets->primary_wads.front();
             if (gameplay_ref.signature != openrc::DiscTocSignature::wad ||
