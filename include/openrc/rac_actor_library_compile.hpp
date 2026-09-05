@@ -8,8 +8,18 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace openrc {
+
+// RAC metal-family packets refer to negative effect-material sentinels rather
+// than class-local texture slots. RenderSceneMaterialV1 cannot yet express the
+// original view-dependent effect, so a caller that wants a renderable neutral
+// fallback must opt in explicitly for each observed sentinel.
+struct RacActorSpecialMaterialPolicyV1 {
+  std::int32_t source_effect_material_index = -2;
+  std::uint32_t fallback_base_color_rgba8 = UINT32_C(0xffffffff);
+};
 
 // Compiler-only RAC1 inputs for one neutral actor model. Source class IDs,
 // packet offsets, and level ownership deliberately do not cross this adapter.
@@ -24,6 +34,7 @@ struct RacActorLibraryCompileRequestV1 {
       0xffU, 0xffU, 0xffU, 0xffU, 0xffU, 0xffU, 0xffU, 0xffU};
   std::uint8_t used_texture_slot_count = 0U;
   RacLevelMobyTextureBankV1 texture_bank;
+  std::vector<RacActorSpecialMaterialPolicyV1> special_material_policies;
 };
 
 class RacActorLibraryCompileError final : public std::runtime_error {
@@ -31,8 +42,11 @@ public:
   using std::runtime_error::runtime_error;
 };
 
-// Compiles one regular high-LOD bind-pose model into a self-contained neutral
-// actor library. Only triangle-referenced vertices and source images are
+// Compiles one high-LOD bind-pose model and its optional independently
+// recovered metal overlay into a self-contained neutral actor library. The
+// overlay becomes a separate skinned mesh and requires an explicit fallback
+// policy for every source effect sentinel; no negative sentinel is guessed to
+// be a local texture. Only triangle-referenced vertices and source images are
 // retained. Triangle/corner order and exact skin numerators/sums are preserved;
 // canonical ActorLibraryV1 IDs, influence order, and content digests are then
 // supplied by the neutral canonicalizer under the caller's explicit limits.

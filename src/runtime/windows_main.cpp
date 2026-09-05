@@ -1,6 +1,8 @@
 #include "d3d11_renderer.hpp"
+#include "windows_gamepad.hpp"
 
 #include "openrc/prepared_game_v2_fs.hpp"
+#include "openrc/rac_pad_input.hpp"
 #include "openrc/runtime_gameplay.hpp"
 #include "openrc/runtime_level_content.hpp"
 #include "openrc/runtime_player_actor.hpp"
@@ -81,6 +83,8 @@ struct WindowState {
         gameplay_animation;
     std::optional<openrc::game::ThirdPersonCameraV1> gameplay_camera;
     GameplayKeyboardState gameplay_keyboard;
+    openrc::runtime::WindowsGamepadV1 gameplay_gamepad;
+    openrc::game::GameInputSampleV1 gameplay_gamepad_sample;
     std::uint32_t gameplay_pending_pressed_buttons = 0U;
     std::uint32_t gameplay_pending_released_buttons = 0U;
     std::uint32_t gameplay_submitted_buttons = 0U;
@@ -94,6 +98,7 @@ struct WindowState {
     std::optional<std::string> fatal_error;
     std::wstring base_title;
     bool gameplay_actor = false;
+    bool gameplay_input_active = true;
 };
 
 constexpr std::uint64_t kMaximumRuntimeRenderScenePayloadBytes =
@@ -141,9 +146,9 @@ make_runtime_level_content_limits() {
 [[nodiscard]] openrc::game::RuntimePlayerAnimationProfileV1
 make_runtime_player_animation_profile() {
     return openrc::game::RuntimePlayerAnimationProfileV1{
-        "actors/ratchet/idle",
-        "actors/ratchet/walk",
-        "actors/ratchet/run",
+        "actors/ratchet/source-sequence/000",
+        "actors/ratchet/source-sequence/003",
+        "actors/ratchet/source-sequence/004",
         0.25,
         2.0,
         60U,
@@ -343,7 +348,7 @@ void remember_window_error(
 }
 
 [[nodiscard]] openrc::game::GameInputSampleV1
-make_gameplay_input_sample(const GameplayKeyboardState& keyboard) noexcept {
+make_gameplay_keyboard_sample(const GameplayKeyboardState& keyboard) noexcept {
     openrc::game::GameInputSampleV1 sample;
     sample.axes.move_x = gameplay_axis(
         keyboard.move_right, keyboard.move_left);
@@ -366,6 +371,40 @@ make_gameplay_input_sample(const GameplayKeyboardState& keyboard) noexcept {
             openrc::game::GameButtonV1::primary_action);
     }
     return sample;
+}
+
+[[nodiscard]] constexpr std::int16_t select_gameplay_axis(
+    const std::int16_t keyboard,
+    const std::int16_t gamepad) noexcept {
+    return keyboard == 0 ? gamepad : keyboard;
+}
+
+[[nodiscard]] openrc::game::GameInputSampleV1 make_gameplay_input_sample(
+    const WindowState& state) noexcept {
+    const auto keyboard =
+        make_gameplay_keyboard_sample(state.gameplay_keyboard);
+    openrc::game::GameInputSampleV1 result;
+    result.axes.move_x = select_gameplay_axis(
+        keyboard.axes.move_x, state.gameplay_gamepad_sample.axes.move_x);
+    result.axes.move_y = select_gameplay_axis(
+        keyboard.axes.move_y, state.gameplay_gamepad_sample.axes.move_y);
+    result.axes.look_x = select_gameplay_axis(
+        keyboard.axes.look_x, state.gameplay_gamepad_sample.axes.look_x);
+    result.axes.look_y = select_gameplay_axis(
+        keyboard.axes.look_y, state.gameplay_gamepad_sample.axes.look_y);
+    result.held_buttons = keyboard.held_buttons |
+                          state.gameplay_gamepad_sample.held_buttons;
+    return result;
+}
+
+void remember_gameplay_button_transition(
+    WindowState& state,
+    const std::uint32_t buttons_before,
+    const std::uint32_t buttons_after) noexcept {
+    state.gameplay_pending_pressed_buttons |=
+        buttons_after & ~buttons_before;
+    state.gameplay_pending_released_buttons |=
+        buttons_before & ~buttons_after;
 }
 
 [[nodiscard]] bool set_gameplay_key(
@@ -415,36 +454,44 @@ make_gameplay_input_sample(const GameplayKeyboardState& keyboard) noexcept {
     WindowState& state,
     const WPARAM key,
     const bool held) noexcept {
-    const auto buttons_before =
-        make_gameplay_input_sample(state.gameplay_keyboard).held_buttons;
+    const auto buttons_before = make_gameplay_input_sample(state).held_buttons;
     if (!set_gameplay_key(state.gameplay_keyboard, key, held)) {
         return false;
     }
-    const auto buttons_after =
-        make_gameplay_input_sample(state.gameplay_keyboard).held_buttons;
-    state.gameplay_pending_pressed_buttons |=
-        buttons_after & ~buttons_before;
-    state.gameplay_pending_released_buttons |=
-        buttons_before & ~buttons_after;
+    const auto buttons_after = make_gameplay_input_sample(state).held_buttons;
+    remember_gameplay_button_transition(
+        state, buttons_before, buttons_after);
     return true;
 }
 
 void update_gameplay_primary_pointer(
     WindowState& state,
     const bool held) noexcept {
-    const auto buttons_before =
-        make_gameplay_input_sample(state.gameplay_keyboard).held_buttons;
+    const auto buttons_before = make_gameplay_input_sample(state).held_buttons;
     state.gameplay_keyboard.primary_action_pointer = held;
-    const auto buttons_after =
-        make_gameplay_input_sample(state.gameplay_keyboard).held_buttons;
-    state.gameplay_pending_pressed_buttons |=
-        buttons_after & ~buttons_before;
-    state.gameplay_pending_released_buttons |=
-        buttons_before & ~buttons_after;
+    const auto buttons_after = make_gameplay_input_sample(state).held_buttons;
+    remember_gameplay_button_transition(
+        state, buttons_before, buttons_after);
 }
 
-void release_gameplay_input(WindowState& state) noexcept {
+void poll_gameplay_gamepad(WindowState& state) noexcept {
+    if (!state.gameplay_input_active) {
+        return;
+    }
+    const auto buttons_before = make_gameplay_input_sample(state).held_buttons;
+    const auto poll = state.gameplay_gamepad.poll();
+    state.gameplay_gamepad_sample = poll.connected
+                                        ? poll.sample
+                                        : openrc::game::GameInputSampleV1{};
+    const auto buttons_after = make_gameplay_input_sample(state).held_buttons;
+    remember_gameplay_button_transition(
+        state, buttons_before, buttons_after);
+}
+
+void suspend_gameplay_input(WindowState& state) noexcept {
+    state.gameplay_input_active = false;
     state.gameplay_keyboard = {};
+    state.gameplay_gamepad_sample = {};
     state.gameplay_pending_pressed_buttons = 0U;
     state.gameplay_pending_released_buttons =
         state.gameplay_submitted_buttons;
@@ -454,8 +501,7 @@ void submit_pending_gameplay_input(WindowState& state) {
     if (!state.gameplay) {
         return;
     }
-    const auto final_sample =
-        make_gameplay_input_sample(state.gameplay_keyboard);
+    const auto final_sample = make_gameplay_input_sample(state);
     auto working_buttons = state.gameplay_submitted_buttons;
     const auto submit_buttons =
         [&state, &final_sample, &working_buttons](
@@ -831,11 +877,13 @@ void advance_gameplay_frame(
     const openrc::game::RuntimeMovementMapperV1 movement_mapper =
         [&next_camera](const openrc::game::GameInputCommandV1& input,
                        const double fixed_delta_seconds) {
+            const auto source_axes =
+                openrc::game::apply_rac_pad_axes_response_v1(input.axes);
             next_camera.fixed_update(
-                {input.axes.look_x, input.axes.look_y, 0},
+                {source_axes.look_x, source_axes.look_y, 0},
                 fixed_delta_seconds);
             const auto movement = next_camera.map_movement(
-                input.axes.move_x, input.axes.move_y);
+                source_axes.move_x, source_axes.move_y);
             return openrc::game::RuntimeMovementAxesV1{
                 quantize_gameplay_axis(movement.move_x),
                 quantize_gameplay_axis(movement.move_y),
@@ -849,8 +897,7 @@ void advance_gameplay_frame(
     }
     if (will_emit_tick) {
         state.gameplay_submitted_buttons =
-            make_gameplay_input_sample(
-                state.gameplay_keyboard).held_buttons;
+            make_gameplay_input_sample(state).held_buttons;
         state.gameplay_pending_pressed_buttons = 0U;
         state.gameplay_pending_released_buttons = 0U;
     }
@@ -934,13 +981,23 @@ LRESULT CALLBACK window_procedure(
         return DefWindowProcW(window, message, w_param, l_param);
     case WM_KILLFOCUS:
         if (state != nullptr && state->gameplay) {
-            release_gameplay_input(*state);
+            suspend_gameplay_input(*state);
+            return 0;
+        }
+        break;
+    case WM_SETFOCUS:
+        if (state != nullptr && state->gameplay) {
+            state->gameplay_input_active = true;
             return 0;
         }
         break;
     case WM_ACTIVATEAPP:
-        if (state != nullptr && state->gameplay && w_param == FALSE) {
-            release_gameplay_input(*state);
+        if (state != nullptr && state->gameplay) {
+            if (w_param == FALSE) {
+                suspend_gameplay_input(*state);
+            } else {
+                state->gameplay_input_active = true;
+            }
             return 0;
         }
         break;
@@ -1059,7 +1116,9 @@ constexpr wchar_t kUsageText[] =
     L"  arrow keys - rotate/pitch camera\n"
     L"  Space - jump\n"
     L"  F or left mouse button - primary action\n"
-    L"  R - reset to checkpoint\n";
+    L"  R - reset to checkpoint\n"
+    L"  XInput left/right sticks - analog move/camera\n"
+    L"  XInput A/X - jump/primary action\n";
 
 } // namespace
 
@@ -1363,6 +1422,7 @@ int WINAPI wWinMain(
                         std::chrono::steady_clock::now();
                     continue;
                 }
+                poll_gameplay_gamepad(state);
                 advance_gameplay_frame(
                     window, state, std::chrono::steady_clock::now());
                 if (!state.renderer->render()) {

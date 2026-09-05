@@ -88,6 +88,16 @@ void test_camera_relative_movement_at_cardinal_yaws() {
   const auto diagonal = subject.map_movement(kMaximumAxis, kMaximumAxis);
   expect(near(std::hypot(diagonal.move_x, diagonal.move_y), 1.0),
          "diagonal camera-relative movement escaped the unit circle");
+
+  subject.set_state({0.0, 0.0, 5.0});
+  constexpr std::int16_t kPartialAxis = 8'192;
+  const auto partial = subject.map_movement(0, kPartialAxis);
+  expect_movement(
+      partial,
+      static_cast<double>(kPartialAxis) /
+          static_cast<double>(kGameInputAxisMagnitudeV1),
+      0.0,
+      "camera-relative movement expanded partial analog travel to full speed");
 }
 
 void test_pitch_distance_clamps_and_elapsed_time() {

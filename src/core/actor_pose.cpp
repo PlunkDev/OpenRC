@@ -260,6 +260,45 @@ build_actor_bind_pose_palette_v1(const ActorRigV1 &rig,
   return build_actor_pose_palette_v1(rig, locals, limits);
 }
 
+ActorAffineTransformV1 resolve_actor_joint_attachment_model_to_world_v1(
+    const ActorPosePaletteV1 &parent_pose,
+    const ActorAffineTransformV1 &parent_model_to_world,
+    const ActorJointAttachmentV1 &attachment,
+    const ActorPoseLimitsV1 limits) {
+  validate_limits(limits);
+  if (parent_pose.global_joint_transforms.empty() ||
+      parent_pose.global_joint_transforms.size() !=
+          parent_pose.skin_transforms.size() ||
+      parent_pose.global_joint_transforms.size() > limits.max_joints ||
+      attachment.parent_joint_index >=
+          parent_pose.global_joint_transforms.size()) {
+    fail("Actor joint attachment has an invalid parent-pose domain");
+  }
+
+  require_invertible(parent_model_to_world, limits,
+                     "Actor attachment parent model-to-world transform");
+  const auto &parent_joint = parent_pose.global_joint_transforms[
+      attachment.parent_joint_index];
+  require_invertible(parent_joint, limits,
+                     "Actor attachment parent-joint transform");
+  require_invertible(attachment.child_model_to_parent_joint, limits,
+                     "Actor attachment child-to-joint transform");
+
+  const auto child_to_parent_model =
+      compose(parent_joint, attachment.child_model_to_parent_joint);
+  require_invertible(child_to_parent_model, limits,
+                     "Actor attachment child-to-parent-model transform");
+  auto result = compose(parent_model_to_world, child_to_parent_model);
+  require_invertible(result, limits,
+                     "Actor attachment child model-to-world transform");
+  for (auto &value : result.values) {
+    if (value == 0.0F) {
+      value = 0.0F;
+    }
+  }
+  return result;
+}
+
 std::vector<ActorPosedVertexV1> pose_actor_mesh_vertices_v1(
     const ActorSkinnedMeshV1 &mesh, const ActorPosePaletteV1 &palette,
     const ActorAffineTransformV1 &model_to_world,

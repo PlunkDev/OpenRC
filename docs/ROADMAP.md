@@ -197,12 +197,18 @@ decoders remain compiler/diagnostic-side evidence feeding neutral packages.
 - [x] pass a fresh supported-image all-level preparation/reuse validation and
   package-only Veldin graphical smoke for the eight-resource
   crate/wrench/locomotion path
-- [x] decode, package, select, and play Ratchet's confirmed idle slot 0, walk
-  slot 3, and run slot 4 through the generic actor pipeline, advancing PAL
-  50 Hz source updates on the 60 Hz fixed simulation with an integer cadence
-  accumulator
+- [x] decode and package every occupied per-level Ratchet animation slot under
+  numeric source keys (134 on Veldin), with exact rig binding and PAL 50 Hz
+  source cadence; retain slots 0, 3, and 4 only as temporary preview selections
 - [ ] identify and connect Ratchet's airborne, landing, wrench, and remaining
-  gameplay animation mappings without guessing source slots
+  gameplay animation mappings from the original state machine without guessing
+  source slots
+- [x] connect dependency-free XInput polling and preserve raw analog magnitude
+  at the deterministic input boundary
+- [x] reproduce the original four-axis DualShock centering and dead-zone
+  response (`127`, `48`, `/76`, clamped) after the replay boundary
+- [ ] connect the recovered analog magnitude to the original slow-walk speed
+  response and locomotion-transition behavior from the player state machine
 - [x] connect Win32 keyboard input and a deterministic third-person camera to
   package-only fixed-step movement in the graphical runtime
 - [x] package actor and entity data independently of RAC/PS2 source layouts
@@ -216,14 +222,15 @@ decoders remain compiler/diagnostic-side evidence feeding neutral packages.
 - [x] make package-only gameplay smoke on Veldin and at least one second planet
   a checked regression using the same published-package code path
 
-The eight-resource collectible, crate/wrench, and grounded-locomotion profile
-is verified on fresh prepared data across all 19 levels, including deterministic
+The eight-resource collectible, crate/wrench, and source-animation profile is
+verified on fresh prepared data across all 19 levels, including deterministic
 reuse, package-only Veldin gameplay, exact animation-to-rig validation, and
-visible-to-destroyed D3D11 smoke. Airborne ticks intentionally hold the last
-grounded pose. This does not declare Veldin finished: airborne and wrench
-animation, original pickup and destruction presentation, broader interactive
-entities, one weapon/enemy loop, original camera behavior, menus, and full
-scene-family coverage remain open.
+visible-to-destroyed D3D11 smoke. The complete source animation banks are
+available, but gameplay-state meanings and transitions are not yet connected.
+This does not declare Veldin finished: airborne and wrench animation, original
+pickup and destruction presentation, broader interactive entities, one
+weapon/enemy loop, original camera behavior, menus, and full scene-family
+coverage remain open.
 
 ## Stage 4 — Game-complete runtime
 

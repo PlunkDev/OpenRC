@@ -52,6 +52,20 @@ struct ActorPoseLimitsV1 {
   [[nodiscard]] bool operator==(const ActorPoseLimitsV1 &) const = default;
 };
 
+// Maps one child model into a parent actor joint. The affine transform maps
+// child-model coordinates into the selected parent-joint coordinates; the
+// resolved result is therefore:
+//   parent_model_to_world * parent_joint_global * child_model_to_parent_joint.
+// Keeping this independent from entity and gameplay state lets the same
+// verified path carry a wrench, weapon, or gadget selected by higher layers.
+struct ActorJointAttachmentV1 {
+  std::uint32_t parent_joint_index = 0U;
+  ActorAffineTransformV1 child_model_to_parent_joint;
+
+  [[nodiscard]] bool operator==(const ActorJointAttachmentV1 &) const =
+      default;
+};
+
 class ActorPoseError final : public std::runtime_error {
 public:
   using std::runtime_error::runtime_error;
@@ -72,6 +86,17 @@ public:
 [[nodiscard]] ActorPosePaletteV1
 build_actor_bind_pose_palette_v1(const ActorRigV1 &rig,
                                  ActorPoseLimitsV1 limits);
+
+// Resolves a child model's world transform from the current parent pose. The
+// parent palette tables must be parallel and bounded, the selected joint must
+// exist, and every consumed affine transform must be finite and nonsingular.
+// Signed zero in the result is canonicalized to positive zero.
+[[nodiscard]] ActorAffineTransformV1
+resolve_actor_joint_attachment_model_to_world_v1(
+    const ActorPosePaletteV1 &parent_pose,
+    const ActorAffineTransformV1 &parent_model_to_world,
+    const ActorJointAttachmentV1 &attachment,
+    ActorPoseLimitsV1 limits);
 
 // CPU linear-blend skinning for one complete mesh. Positions are blended by
 // exact integer source weights, then model_to_world is applied. Normals use

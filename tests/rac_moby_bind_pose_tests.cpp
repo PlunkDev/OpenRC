@@ -26,6 +26,11 @@ constexpr std::uint32_t kSecondVertexBytes = 0x0a0U;
 constexpr std::uint32_t kSkeletonOffset = 0x1e0U;
 constexpr std::uint32_t kCommonTranslationOffset = 0x2a0U;
 constexpr std::uint32_t kFixtureBytes = 0x2d0U;
+constexpr std::uint32_t kMetalVifOffset = 0x2d0U;
+constexpr std::uint32_t kMetalVifBytes = 0x060U;
+constexpr std::uint32_t kMetalVertexOffset = 0x330U;
+constexpr std::uint32_t kMetalVertexBytes = 0x040U;
+constexpr std::uint32_t kCompleteFixtureBytes = 0x370U;
 
 constexpr openrc::RacMobyPacketGeometryLimitsV1 kPacketLimits{
     0x10000U, 64U, 64U, 256U, 256U, 64U, 1024U};
@@ -244,6 +249,61 @@ void write_bind_joint(std::vector<std::byte> &bytes,
   return bytes;
 }
 
+void write_metal_packet(std::vector<std::byte> &bytes) {
+  const auto vif = static_cast<std::size_t>(kMetalVifOffset);
+  write_le32(bytes, vif + 0x00U, vif_code(0x6eU, 3U, 0x012dU));
+  bytes[vif + 0x04U] = std::byte{0xfe};
+  bytes[vif + 0x05U] = std::byte{3U};
+  bytes[vif + 0x06U] = std::byte{0x81U};
+  const std::array<std::uint8_t, 8U> indices{
+      0x00U, 0x82U, 0x03U, 0x01U, 0x01U, 0x01U, 0x00U, 0x00U};
+  for (std::size_t index = 0U; index < indices.size(); ++index) {
+    bytes[vif + 0x08U + index] = static_cast<std::byte>(indices[index]);
+  }
+  write_le32(bytes, vif + 0x10U, vif_code(0x6cU, 4U, 0x0130U));
+  write_le32(bytes, vif + 0x34U,
+             std::bit_cast<std::uint32_t>(std::int32_t{-2}));
+
+  const auto vertex = static_cast<std::size_t>(kMetalVertexOffset);
+  write_le32(bytes, vertex + 0x00U, 3U);
+  write_le32(bytes, vertex + 0x04U, 0x10U);
+  write_le32(bytes, vertex + 0x08U, 0x30U);
+  write_le32(bytes, vertex + 0x0cU, 0x40U);
+  const auto records = vertex + 0x10U;
+  write_le_s16(bytes, records + 0x00U, 0);
+  write_le_s16(bytes, records + 0x02U, 0);
+  write_le_s16(bytes, records + 0x04U, 0);
+  bytes[records + 0x08U] = std::byte{1U};
+  bytes[records + 0x0bU] = std::byte{1U};
+
+  write_le_s16(bytes, records + 0x10U, 512);
+  write_le_s16(bytes, records + 0x12U, 0);
+  write_le_s16(bytes, records + 0x14U, 0);
+  bytes[records + 0x18U] = std::byte{1U};
+  bytes[records + 0x19U] = std::byte{2U};
+  bytes[records + 0x1bU] = std::byte{2U};
+  bytes[records + 0x1cU] = std::byte{64U};
+  bytes[records + 0x1dU] = std::byte{192U};
+
+  write_le_s16(bytes, records + 0x20U, 0);
+  write_le_s16(bytes, records + 0x22U, 512);
+  write_le_s16(bytes, records + 0x24U, 0);
+  bytes[records + 0x28U] = std::byte{0U};
+  bytes[records + 0x29U] = std::byte{1U};
+  bytes[records + 0x2aU] = std::byte{2U};
+  bytes[records + 0x2bU] = std::byte{3U};
+  bytes[records + 0x2cU] = std::byte{50U};
+  bytes[records + 0x2dU] = std::byte{100U};
+  bytes[records + 0x2eU] = std::byte{106U};
+}
+
+[[nodiscard]] std::vector<std::byte> make_complete_fixture_bytes() {
+  auto bytes = make_fixture_bytes();
+  bytes.resize(kCompleteFixtureBytes, std::byte{0});
+  write_metal_packet(bytes);
+  return bytes;
+}
+
 [[nodiscard]] openrc::RacMobyClassV1 make_fixture_class() {
   openrc::RacMobyClassV1 moby;
   moby.input_bytes = kFixtureBytes;
@@ -269,6 +329,22 @@ void write_bind_joint(std::vector<std::byte> &bytes,
        0U,
        10U,
        4U}};
+  return moby;
+}
+
+[[nodiscard]] openrc::RacMobyClassV1 make_complete_fixture_class() {
+  auto moby = make_fixture_class();
+  moby.input_bytes = kCompleteFixtureBytes;
+  moby.metal_packet_count = 1U;
+  moby.metal_packet_begin = 2U;
+  moby.packets.push_back(
+      {openrc::RacMobyPacketKindV1::metal,
+       {},
+       {kMetalVifOffset, kMetalVifBytes},
+       {kMetalVertexOffset, kMetalVertexBytes},
+       4U,
+       4U,
+       3U});
   return moby;
 }
 
@@ -376,6 +452,77 @@ void test_skin_state_and_duplicate_propagation() {
               "the neutral normalized-weight derivation is wrong");
 }
 
+void test_complete_visual_adds_separate_metal_overlay() {
+  const auto regular = openrc::compile_rac_moby_bind_pose_geometry_v1(
+      make_complete_fixture_bytes(), make_complete_fixture_class(),
+      openrc::RacMobyLodV1::high, kLimits);
+  expect(!regular.metal_overlay,
+         "the regular bind-pose compiler changed its explicit scope");
+
+  const auto result =
+      openrc::compile_rac_moby_complete_bind_pose_geometry_v1(
+          make_complete_fixture_bytes(), make_complete_fixture_class(),
+          openrc::RacMobyLodV1::high, kLimits);
+  expect(result.geometry.vertices.size() == 7U && result.metal_overlay &&
+             result.metal_overlay->packets.size() == 1U &&
+             result.metal_overlay->vertices.size() == 3U &&
+             result.metal_overlay->triangles.size() == 1U &&
+             result.metal_overlay->vertex_skin_bindings.size() == 3U,
+         "the complete bind-pose compiler did not preserve both draw streams");
+  const auto &metal = *result.metal_overlay;
+  expect(!metal.packets[0U].entry_effect_material_index &&
+             metal.packets[0U].final_effect_material_index == -2 &&
+             metal.triangles[0U].texture_index == -2 &&
+             metal.triangles[0U].vertex_indices ==
+                 std::array<std::uint32_t, 3U>{1U, 0U, 2U},
+         "the metal effect state or direct triangle domain is wrong");
+  expect_binding(metal.vertex_skin_bindings[0U], 1U, {1U, 0U, 0U},
+                 {1U, 0U, 0U}, 1U,
+                 "the implicit one-joint metal binding is wrong");
+  expect_binding(metal.vertex_skin_bindings[1U], 2U, {1U, 2U, 0U},
+                 {64U, 192U, 0U}, 256U,
+                 "the two-joint metal binding is wrong");
+  expect_binding(metal.vertex_skin_bindings[2U], 3U, {0U, 1U, 2U},
+                 {50U, 100U, 106U}, 256U,
+                 "the three-joint metal binding is wrong");
+}
+
+void test_complete_visual_limits_and_joint_validation() {
+  const auto rejected = [](auto mutation, const std::string &message) {
+    auto bytes = make_complete_fixture_bytes();
+    auto moby = make_complete_fixture_class();
+    auto limits = kLimits;
+    std::invoke(mutation, bytes, moby, limits);
+    try {
+      (void)openrc::compile_rac_moby_complete_bind_pose_geometry_v1(
+          bytes, moby, openrc::RacMobyLodV1::high, limits);
+    } catch (const openrc::RacMobyBindPoseError &) {
+      return;
+    }
+    throw std::runtime_error(message);
+  };
+  rejected(
+      [](auto &, auto &, auto &limits) {
+        limits.geometry_limits.max_packets = 2U;
+      },
+      "the aggregate regular-plus-metal packet limit was ignored");
+  rejected(
+      [](auto &, auto &, auto &limits) {
+        limits.geometry_limits.max_output_vertices = 9U;
+      },
+      "the aggregate regular-plus-metal vertex limit was ignored");
+  rejected(
+      [](auto &, auto &, auto &limits) {
+        limits.max_output_skin_bindings = 9U;
+      },
+      "the aggregate regular-plus-metal skin limit was ignored");
+  rejected(
+      [](auto &bytes, auto &, auto &) {
+        bytes[kMetalVertexOffset + 0x10U + 0x08U] = std::byte{3U};
+      },
+      "an out-of-rig metal joint was accepted");
+}
+
 void test_public_domains_reject_invalid_values() {
   openrc::ActorAffineTransformV1 transform;
   try {
@@ -467,6 +614,8 @@ int main() {
   try {
     test_general_affine_bind_rig();
     test_skin_state_and_duplicate_propagation();
+    test_complete_visual_adds_separate_metal_overlay();
+    test_complete_visual_limits_and_joint_validation();
     test_public_domains_reject_invalid_values();
     test_hard_validation();
     std::cout << "rac_moby_bind_pose_tests: ok\n";

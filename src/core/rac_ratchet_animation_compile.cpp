@@ -10,7 +10,9 @@
 #include <limits>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 namespace openrc {
 namespace {
@@ -95,7 +97,84 @@ canonical_rig_digest(const RacMobyBindRigV1 &bind_rig) {
   }
 }
 
+[[nodiscard]] bool known_wrap_mode(
+    const ActorAnimationWrapModeV1 mode) noexcept {
+  return mode == ActorAnimationWrapModeV1::clamp ||
+         mode == ActorAnimationWrapModeV1::loop;
+}
+
+[[nodiscard]] std::string source_sequence_key(
+    const std::string_view prefix, const std::uint32_t slot) {
+  std::string result(prefix);
+  result.push_back(static_cast<char>('0' + (slot / 100U) % 10U));
+  result.push_back(static_cast<char>('0' + (slot / 10U) % 10U));
+  result.push_back(static_cast<char>('0' + slot % 10U));
+  return result;
+}
+
 } // namespace
+
+std::vector<RacRatchetAnimationClipProfileV1>
+make_rac_ratchet_complete_animation_profiles_v1(
+    const RacLevelCoreIndexV1 &level_core,
+    const std::span<const RacRatchetAnimationClipProfileV1>
+        confirmed_profiles,
+    const std::string_view source_sequence_key_prefix,
+    const ActorAnimationWrapModeV1 unclassified_wrap_mode) {
+  if (source_sequence_key_prefix.empty() ||
+      !known_wrap_mode(unclassified_wrap_mode)) {
+    fail("The complete RAC1 Ratchet animation profile policy is invalid");
+  }
+
+  std::array<bool, kRacLevelCoreRatchetSequenceCountV1> mapped_slots{};
+  std::vector<RacRatchetAnimationClipProfileV1> result;
+  result.reserve(level_core.ratchet_sequences.size());
+  for (std::size_t index = 0U; index < confirmed_profiles.size(); ++index) {
+    const auto &profile = confirmed_profiles[index];
+    if (profile.clip_id != index ||
+        profile.source_slot >= kRacLevelCoreRatchetSequenceCountV1 ||
+        level_core.ratchet_sequence_offsets[profile.source_slot] == 0U ||
+        profile.semantic_key.empty() || !known_wrap_mode(profile.wrap_mode) ||
+        mapped_slots[profile.source_slot]) {
+      fail("A confirmed RAC1 Ratchet animation profile is invalid");
+    }
+    if (std::any_of(result.begin(), result.end(),
+                    [&profile](const auto &previous) {
+                      return previous.semantic_key == profile.semantic_key;
+                    })) {
+      fail("Confirmed RAC1 Ratchet animation profiles repeat a semantic key");
+    }
+    mapped_slots[profile.source_slot] = true;
+    result.push_back(profile);
+  }
+
+  for (std::uint32_t slot = 0U;
+       slot < kRacLevelCoreRatchetSequenceCountV1; ++slot) {
+    if (level_core.ratchet_sequence_offsets[slot] == 0U ||
+        mapped_slots[slot]) {
+      continue;
+    }
+    if (result.size() >= std::numeric_limits<std::uint32_t>::max()) {
+      fail("The complete RAC1 Ratchet animation profile exceeds clip IDs");
+    }
+    auto key = source_sequence_key(source_sequence_key_prefix, slot);
+    if (std::any_of(result.begin(), result.end(),
+                    [&key](const auto &previous) {
+                      return previous.semantic_key == key;
+                    })) {
+      fail("A source-addressed RAC1 Ratchet animation key is not unique");
+    }
+    result.push_back(RacRatchetAnimationClipProfileV1{
+        static_cast<std::uint32_t>(result.size()), slot, std::move(key),
+        unclassified_wrap_mode});
+  }
+
+  if (result.empty() || result.size() != level_core.ratchet_sequences.size()) {
+    fail("The complete RAC1 Ratchet animation profile does not cover every "
+         "indexed source sequence exactly once");
+  }
+  return result;
+}
 
 ActorAnimationBankV1 compile_rac_ratchet_animation_bank_v1(
     const std::span<const std::byte> decoded_level_core,
@@ -123,8 +202,7 @@ ActorAnimationBankV1 compile_rac_ratchet_animation_bank_v1(
        ++profile_index) {
     const auto &profile = profiles[profile_index];
     if (profile.clip_id != profile_index || profile.semantic_key.empty() ||
-        (profile.wrap_mode != ActorAnimationWrapModeV1::clamp &&
-         profile.wrap_mode != ActorAnimationWrapModeV1::loop)) {
+        !known_wrap_mode(profile.wrap_mode)) {
       fail("A RAC1 Ratchet animation profile is non-canonical");
     }
     for (std::size_t previous = 0U; previous < profile_index; ++previous) {

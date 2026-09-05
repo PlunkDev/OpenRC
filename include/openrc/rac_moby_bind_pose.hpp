@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <vector>
@@ -33,12 +34,32 @@ struct RacMobyBindRigV1 {
   std::vector<std::array<float, 3U>> source_common_translations;
 };
 
+struct RacMobyMetalBindPosePacketV1 {
+  std::uint32_t class_packet_index = 0U;
+  std::uint32_t vertex_begin = 0U;
+  std::uint32_t vertex_count = 0U;
+  std::uint32_t triangle_begin = 0U;
+  std::uint32_t triangle_count = 0U;
+  std::optional<std::int32_t> entry_effect_material_index;
+  std::optional<std::int32_t> final_effect_material_index;
+};
+
+struct RacMobyMetalBindPoseGeometryV1 {
+  std::vector<RacMobyMetalBindPosePacketV1> packets;
+  std::vector<RacMobyModelVertexV1> vertices;
+  std::vector<RacMobyModelTriangleV1> triangles;
+  std::vector<ActorSkinBindingV1> vertex_skin_bindings;
+};
+
 struct RacMobyBindPoseGeometryV1 {
   RacMobyBindRigV1 bind_rig;
   RacMobyModelGeometryV1 geometry;
   // Parallel to geometry.vertices. Duplicated geometry retains the binding of
   // the earlier packet/local source identified by the model provenance.
   std::vector<ActorSkinBindingV1> vertex_skin_bindings;
+  // Present only when the explicit complete-visual compiler below recovered
+  // the independent metal-family draw stream.
+  std::optional<RacMobyMetalBindPoseGeometryV1> metal_overlay;
 };
 
 class RacMobyBindPoseError final : public std::runtime_error {
@@ -59,6 +80,15 @@ public:
 // matrix state is carried across packets in the selected LOD and reset between
 // calls. Metal packets and animation decoding remain outside this V1 contract.
 [[nodiscard]] RacMobyBindPoseGeometryV1 compile_rac_moby_bind_pose_geometry_v1(
+    std::span<const std::byte> class_bytes, const RacMobyClassV1 &moby,
+    RacMobyLodV1 lod, RacMobyBindPoseLimitsV1 limits);
+
+// Reconstructs the selected regular LOD and, when present, the source metal
+// packet stream. Metal records retain the source-proven direct 0/1/2/3-joint
+// influence form and exact 1 or 256 weight denominator; a rigid metal record
+// is rejected here because this compiler requires a jointed bind rig.
+[[nodiscard]] RacMobyBindPoseGeometryV1
+compile_rac_moby_complete_bind_pose_geometry_v1(
     std::span<const std::byte> class_bytes, const RacMobyClassV1 &moby,
     RacMobyLodV1 lod, RacMobyBindPoseLimitsV1 limits);
 

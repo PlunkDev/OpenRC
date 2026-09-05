@@ -45,6 +45,13 @@ constexpr std::string_view kPlayerModelKey = "actors/ratchet/high";
 constexpr std::string_view kPlayerArchetypeKey = "openrc.player/default";
 constexpr std::string_view kCrateArchetypeKey = "openrc.breakable/bolt-crate";
 constexpr std::string_view kBoltItemKey = "openrc.currency/bolts";
+constexpr std::string_view kPlayerSourceSequenceKeyPrefix =
+    "actors/ratchet/source-sequence/";
+constexpr std::array<std::uint16_t, openrc::kDiscTocLevelCount>
+    kPlayerAnimationClipCountsByLevel{
+        134U, 88U, 86U, 79U, 84U, 100U, 89U, 98U, 108U, 79U,
+        83U,  96U, 105U, 86U, 94U, 89U, 96U, 99U, 111U,
+    };
 
 const auto kRuntimeLimits =
     openrc::game::make_runtime_level_content_limits_v1();
@@ -66,6 +73,7 @@ enum class ProfileMutation {
   animation_clamp,
   animation_stale_rig_digest,
   animation_wrong_joint_count,
+  animation_missing_source_clip,
 };
 
 [[nodiscard]] std::vector<std::byte> bytes_of(const std::string_view value) {
@@ -268,12 +276,15 @@ make_bootstrap(const std::uint32_t level_id) {
 }
 
 [[nodiscard]] openrc::ActorAnimationBankV1
-make_actor_animations(const ProfileMutation mutation) {
+make_actor_animations(const ProfileMutation mutation,
+                      const std::uint32_t level_id) {
   const auto library = make_actor_library();
   const auto rig_digest =
       openrc::actor_rig_content_sha256_v1(library.rigs.front().rig);
   const std::array<std::string_view, 3U> keys{
-      "actors/ratchet/idle", "actors/ratchet/walk", "actors/ratchet/run"};
+      "actors/ratchet/source-sequence/000",
+      "actors/ratchet/source-sequence/003",
+      "actors/ratchet/source-sequence/004"};
   const std::array<float, 3U> rates{0.125F, 0.25F, 0.5F};
 
   openrc::ActorAnimationBankV1 result;
@@ -289,6 +300,28 @@ make_actor_animations(const ProfileMutation mutation) {
         rates[index], {openrc::ActorJointPoseV1{}}});
     result.clips.push_back(std::move(clip));
   }
+  for (std::uint32_t source_slot = 0U;
+       result.clips.size() < kPlayerAnimationClipCountsByLevel[level_id];
+       ++source_slot) {
+    if (source_slot == 0U || source_slot == 3U || source_slot == 4U) {
+      continue;
+    }
+    std::string key(kPlayerSourceSequenceKeyPrefix);
+    key.push_back(
+        static_cast<char>('0' + (source_slot / 100U) % 10U));
+    key.push_back(static_cast<char>('0' + (source_slot / 10U) % 10U));
+    key.push_back(static_cast<char>('0' + source_slot % 10U));
+    openrc::ActorAnimationClipV1 clip;
+    clip.id = static_cast<std::uint32_t>(result.clips.size());
+    clip.semantic_key = std::move(key);
+    clip.rig_key = std::string(kPlayerRigKey);
+    clip.rig_content_sha256 = rig_digest;
+    clip.source_updates_per_second = 50U;
+    clip.wrap_mode = openrc::ActorAnimationWrapModeV1::clamp;
+    clip.frames.push_back(openrc::ActorAnimationFrameV1{
+        0.25F, {openrc::ActorJointPoseV1{}}});
+    result.clips.push_back(std::move(clip));
+  }
 
   if (mutation == ProfileMutation::animation_wrong_key) {
     result.clips.front().semantic_key = "actors/ratchet/not-idle";
@@ -302,6 +335,8 @@ make_actor_animations(const ProfileMutation mutation) {
   } else if (mutation == ProfileMutation::animation_wrong_joint_count) {
     result.clips.front().frames.front().joint_poses.push_back(
         openrc::ActorJointPoseV1{});
+  } else if (mutation == ProfileMutation::animation_missing_source_clip) {
+    result.clips.pop_back();
   }
   return result;
 }
@@ -483,7 +518,8 @@ make_level_package(const std::uint32_t level_id,
       openrc::kActorAnimationResourceTypeIdV1,
       openrc::kActorAnimationResourceSchemaVersionV1,
       openrc::encode_actor_animation_bank_v1(
-          make_actor_animations(mutation), kRuntimeLimits.actor_animation),
+          make_actor_animations(mutation, level_id),
+          kRuntimeLimits.actor_animation),
       {source_provenance(openrc::LevelPackageProvenanceKindV1::iso_range,
                          "rac1/disc-image", kSourceImageBytes,
                          kSourceImageSha256),
@@ -655,6 +691,7 @@ void test_player_animation_profile_is_exact() {
       ProfileMutation::animation_clamp,
       ProfileMutation::animation_stale_rig_digest,
       ProfileMutation::animation_wrong_joint_count,
+      ProfileMutation::animation_missing_source_clip,
   };
   const std::array<std::string_view, mutations.size()> descriptions{
       "a missing animation bank",
@@ -663,6 +700,7 @@ void test_player_animation_profile_is_exact() {
       "a clamped player animation",
       "a stale player rig digest",
       "a player animation joint-count mismatch",
+      "an incomplete source-addressed animation bank",
   };
 
   for (std::size_t index = 0U; index < mutations.size(); ++index) {

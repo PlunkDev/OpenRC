@@ -153,6 +153,53 @@ void test_compiles_mapped_clips() {
          "decoded joint pose was not preserved in the neutral clip");
 }
 
+void test_builds_complete_source_addressed_profiles() {
+  const Fixture fixture;
+  const std::array confirmed{
+      openrc::RacRatchetAnimationClipProfileV1{
+          0U, 0U, "actors/ratchet/source-sequence/000",
+          openrc::ActorAnimationWrapModeV1::loop}};
+  const auto profiles =
+      openrc::make_rac_ratchet_complete_animation_profiles_v1(
+          fixture.core, confirmed, "actors/ratchet/source-sequence/",
+          openrc::ActorAnimationWrapModeV1::clamp);
+  expect(profiles.size() == 2U && profiles[0U].clip_id == 0U &&
+             profiles[0U].source_slot == 0U &&
+             profiles[0U].semantic_key ==
+                 "actors/ratchet/source-sequence/000" &&
+             profiles[0U].wrap_mode ==
+                 openrc::ActorAnimationWrapModeV1::loop &&
+             profiles[1U].clip_id == 1U &&
+             profiles[1U].source_slot == 3U &&
+             profiles[1U].semantic_key ==
+                 "actors/ratchet/source-sequence/003" &&
+             profiles[1U].wrap_mode ==
+                 openrc::ActorAnimationWrapModeV1::clamp,
+         "complete Ratchet profile did not preserve confirmed mappings and "
+         "source-address every remaining slot");
+
+  const auto source_only =
+      openrc::make_rac_ratchet_complete_animation_profiles_v1(
+          fixture.core,
+          std::span<const openrc::RacRatchetAnimationClipProfileV1>{},
+          "source/", openrc::ActorAnimationWrapModeV1::clamp);
+  expect(source_only.size() == 2U &&
+             source_only[0U].semantic_key == "source/000" &&
+             source_only[1U].semantic_key == "source/003",
+         "source-only Ratchet profile is not canonical by source slot");
+
+  try {
+    static_cast<void>(
+        openrc::make_rac_ratchet_complete_animation_profiles_v1(
+            fixture.core, confirmed, "",
+            openrc::ActorAnimationWrapModeV1::clamp));
+  } catch (const openrc::RacRatchetAnimationCompileError &) {
+    return;
+  }
+  throw std::runtime_error(
+      "complete Ratchet profile accepted an empty source-key prefix");
+}
+
 void test_rejects_inconsistent_sources_and_profiles() {
   expect_rejected(
       [](Fixture &fixture) { --fixture.core.decoded_asset_input_bytes; },
@@ -178,6 +225,7 @@ void test_rejects_inconsistent_sources_and_profiles() {
 int main() {
   try {
     test_compiles_mapped_clips();
+    test_builds_complete_source_addressed_profiles();
     test_rejects_inconsistent_sources_and_profiles();
     std::cout << "RAC Ratchet animation compile tests passed\n";
     return 0;

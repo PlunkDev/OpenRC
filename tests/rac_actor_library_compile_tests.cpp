@@ -152,6 +152,28 @@ void expect(const bool condition, const std::string &message) {
   return request;
 }
 
+[[nodiscard]] openrc::RacActorLibraryCompileRequestV1
+make_request_with_metal_overlay() {
+  auto request = make_request();
+  openrc::RacMobyMetalBindPoseGeometryV1 metal;
+  metal.vertices = {
+      make_vertex({0.0F, 0.0F, 0.0F}, {1.0F, 0.0F, 0.0F},
+                  {0.0F, 0.0F}),
+      make_vertex({1.0F, 0.0F, 0.0F}, {0.0F, 1.0F, 0.0F},
+                  {0.0F, 0.0F}),
+      make_vertex({0.0F, 1.0F, 0.0F}, {0.0F, 0.0F, 1.0F},
+                  {0.0F, 0.0F}),
+  };
+  metal.vertex_skin_bindings = {single_skin(0U), single_skin(1U),
+                                 single_skin(2U)};
+  metal.vertex_skin_bindings[0U].weight_numerators[0U] = 1U;
+  metal.vertex_skin_bindings[0U].weight_sum = 1U;
+  metal.triangles = {{{0U, 1U, 2U}, -2, 11U}};
+  request.bind_pose.metal_overlay = std::move(metal);
+  request.special_material_policies.push_back({-2, UINT32_C(0xffb0c0d0)});
+  return request;
+}
+
 template <typename Mutation>
 void expect_rejected(Mutation &&mutation, const std::string &message) {
   auto request = make_request();
@@ -274,6 +296,72 @@ void test_dense_textures_materials_and_draw_partition() {
          "adjacent actor material runs were not partitioned exactly");
 }
 
+void test_explicit_metal_overlay_compiles_as_separate_mesh() {
+  auto output_limits = limits();
+  output_limits.max_meshes = 2U;
+  const auto library = openrc::compile_rac_actor_library_v1(
+      make_request_with_metal_overlay(), output_limits);
+  const auto &model = library.models[0U];
+  expect(model.meshes.size() == 2U && model.materials.size() == 4U,
+         "the RAC1 metal overlay was not retained as a separate mesh");
+  const auto &mesh = model.meshes[1U];
+  expect(mesh.id == 1U && mesh.vertices.size() == 3U &&
+             mesh.triangle_indices ==
+                 std::vector<std::uint32_t>{0U, 1U, 2U} &&
+             mesh.draw_ranges ==
+                 std::vector<openrc::RenderSceneDrawRangeV1>{
+                     {3U, 0U, 3U}},
+         "the neutral RAC1 metal mesh topology or draw range is wrong");
+  expect(mesh.vertices[0U].skin.influence_count == 1U &&
+             mesh.vertices[0U].skin.weight_numerators[0U] == 1U &&
+             mesh.vertices[0U].skin.weight_sum == 1U,
+         "the exact implicit metal skin weight was changed");
+  const auto &material = model.materials[3U];
+  expect(!material.base_color_texture_id &&
+             material.base_color_rgba8 == UINT32_C(0xffb0c0d0) &&
+             !material.use_vertex_color && material.double_sided &&
+             material.alpha_mode == openrc::RenderSceneAlphaModeV1::opaque,
+         "the explicit neutral metal fallback policy was not preserved");
+}
+
+void test_metal_overlay_requires_explicit_bounded_policy() {
+  expect_rejected(
+      [](auto &request, auto &output_limits) {
+        request = make_request_with_metal_overlay();
+        request.special_material_policies.clear();
+        output_limits.max_meshes = 2U;
+      },
+      "a RAC1 metal effect was guessed without a neutral fallback policy");
+  expect_rejected(
+      [](auto &request, auto &output_limits) {
+        request = make_request_with_metal_overlay();
+        request.special_material_policies.push_back(
+            {-2, UINT32_C(0xffffffff)});
+        output_limits.max_meshes = 2U;
+      },
+      "a duplicate RAC1 effect-material policy was accepted");
+  expect_rejected(
+      [](auto &request, auto &output_limits) {
+        request = make_request_with_metal_overlay();
+        request.special_material_policies[0U].source_effect_material_index =
+            -4;
+        output_limits.max_meshes = 2U;
+      },
+      "an unproven RAC1 effect-material sentinel was accepted");
+  expect_rejected(
+      [](auto &request, auto &) {
+        request = make_request_with_metal_overlay();
+      },
+      "the aggregate neutral mesh limit ignored a RAC1 metal overlay");
+  expect_rejected(
+      [](auto &request, auto &output_limits) {
+        request = make_request_with_metal_overlay();
+        request.bind_pose.metal_overlay->vertex_skin_bindings.pop_back();
+        output_limits.max_meshes = 2U;
+      },
+      "non-parallel RAC1 metal skin data was accepted");
+}
+
 void test_invalid_source_domains_are_rejected() {
   expect_rejected(
       [](auto &request, auto &) {
@@ -298,8 +386,10 @@ void test_invalid_source_domains_are_rejected() {
   expect_rejected(
       [](auto &request, auto &) {
         request.bind_pose.geometry.triangles[0U].texture_index = -2;
+        request.special_material_policies.push_back(
+            {-2, UINT32_C(0xffb0c0d0)});
       },
-      "a metal-only texture index was accepted");
+      "a metal-only effect material was accepted in regular geometry");
   expect_rejected(
       [](auto &request, auto &) {
         request.bind_pose.geometry.triangles[0U].texture_index = 2;
@@ -376,6 +466,8 @@ int main() {
     test_deterministic_neutral_compilation();
     test_compaction_order_normals_and_skin();
     test_dense_textures_materials_and_draw_partition();
+    test_explicit_metal_overlay_compiles_as_separate_mesh();
+    test_metal_overlay_requires_explicit_bounded_policy();
     test_invalid_source_domains_are_rejected();
     test_invalid_referenced_images_are_rejected();
     test_explicit_output_limits_are_enforced();

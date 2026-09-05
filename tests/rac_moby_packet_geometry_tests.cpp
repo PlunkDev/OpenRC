@@ -17,6 +17,11 @@ constexpr std::uint32_t kVifBytes = 0x70U;
 constexpr std::uint32_t kVertexBytes = 0x90U;
 constexpr std::uint32_t kVertexOffset = kVifBytes;
 constexpr std::uint32_t kFixtureBytes = kVifBytes + kVertexBytes;
+constexpr std::uint32_t kMetalVifBytes = 0x60U;
+constexpr std::uint32_t kMetalVertexBytes = 0x40U;
+constexpr std::uint32_t kMetalVertexOffset = kMetalVifBytes;
+constexpr std::uint32_t kMetalFixtureBytes =
+    kMetalVifBytes + kMetalVertexBytes;
 constexpr openrc::RacMobyPacketGeometryLimitsV1 kLimits{
     0x10000U, 64U, 64U, 256U, 256U, 64U, 1024U};
 
@@ -124,6 +129,65 @@ void write_le32(std::vector<std::byte> &bytes, const std::size_t offset,
   return bytes;
 }
 
+[[nodiscard]] openrc::RacMobyPacketV1 make_metal_packet() {
+  return {openrc::RacMobyPacketKindV1::metal,
+          {},
+          {0U, kMetalVifBytes},
+          {kMetalVertexOffset, kMetalVertexBytes},
+          4U,
+          4U,
+          3U};
+}
+
+[[nodiscard]] std::vector<std::byte> make_metal_fixture() {
+  std::vector<std::byte> bytes(kMetalFixtureBytes, std::byte{0});
+  write_le32(bytes, 0x00U, vif_code(0x6eU, 3U, 0x012dU));
+  bytes[0x04U] = std::byte{0xfe};
+  bytes[0x05U] = std::byte{3U};
+  bytes[0x06U] = std::byte{0x81U};
+  const std::array<std::uint8_t, 8U> indices{
+      0x00U, 0x82U, 0x03U, 0x01U, 0x01U, 0x01U, 0x00U, 0x00U};
+  for (std::size_t index = 0U; index < indices.size(); ++index) {
+    bytes[0x08U + index] = static_cast<std::byte>(indices[index]);
+  }
+  write_le32(bytes, 0x10U, vif_code(0x6cU, 4U, 0x0130U));
+  write_le32(bytes, 0x34U,
+             std::bit_cast<std::uint32_t>(std::int32_t{-2}));
+
+  const auto vertex = static_cast<std::size_t>(kMetalVertexOffset);
+  write_le32(bytes, vertex + 0x00U, 3U);
+  write_le32(bytes, vertex + 0x04U, 0x10U);
+  write_le32(bytes, vertex + 0x08U, 0x30U);
+  write_le32(bytes, vertex + 0x0cU, 0x40U);
+  const auto records = vertex + 0x10U;
+  write_le_s16(bytes, records + 0x00U, 0);
+  write_le_s16(bytes, records + 0x02U, 0);
+  write_le_s16(bytes, records + 0x04U, 0);
+  bytes[records + 0x08U] = std::byte{1U};
+  bytes[records + 0x0bU] = std::byte{1U};
+
+  write_le_s16(bytes, records + 0x10U, 512);
+  write_le_s16(bytes, records + 0x12U, 0);
+  write_le_s16(bytes, records + 0x14U, 0);
+  bytes[records + 0x18U] = std::byte{1U};
+  bytes[records + 0x19U] = std::byte{2U};
+  bytes[records + 0x1bU] = std::byte{2U};
+  bytes[records + 0x1cU] = std::byte{64U};
+  bytes[records + 0x1dU] = std::byte{192U};
+
+  write_le_s16(bytes, records + 0x20U, 0);
+  write_le_s16(bytes, records + 0x22U, 512);
+  write_le_s16(bytes, records + 0x24U, 0);
+  bytes[records + 0x28U] = std::byte{0U};
+  bytes[records + 0x29U] = std::byte{1U};
+  bytes[records + 0x2aU] = std::byte{2U};
+  bytes[records + 0x2bU] = std::byte{3U};
+  bytes[records + 0x2cU] = std::byte{50U};
+  bytes[records + 0x2dU] = std::byte{100U};
+  bytes[records + 0x2eU] = std::byte{106U};
+  return bytes;
+}
+
 [[nodiscard]] openrc::RacMobyPacketGeometryV1 parse(
     const std::vector<std::byte> &bytes,
     const openrc::RacMobyPacketV1 &packet = make_packet(),
@@ -131,6 +195,15 @@ void write_le32(std::vector<std::byte> &bytes, const std::size_t offset,
     const float scale = 2.0F) {
   return openrc::parse_rac_moby_packet_geometry_v1(bytes, packet, scale,
                                                     limits);
+}
+
+[[nodiscard]] openrc::RacMobyMetalPacketGeometryV1 parse_metal(
+    const std::vector<std::byte> &bytes,
+    const openrc::RacMobyPacketV1 &packet = make_metal_packet(),
+    const openrc::RacMobyPacketGeometryLimitsV1 limits = kLimits,
+    const float scale = 2.0F) {
+  return openrc::parse_rac_moby_metal_packet_geometry_v1(bytes, packet, scale,
+                                                          limits);
 }
 
 template <typename Mutation>
@@ -208,6 +281,77 @@ void test_valid_non_drawing_packet() {
                  std::vector<std::uint32_t>{0U} &&
              result.triangles.empty(),
          "a valid non-drawing RAC1 Moby packet was reconstructed incorrectly");
+}
+
+void test_metal_packet_layout_effect_and_direct_influences() {
+  const auto result = parse_metal(make_metal_fixture());
+  expect(result.input_bytes == kMetalFixtureBytes &&
+             result.strip_index_unpack.vector_count == 3U &&
+             result.texture_primitives.size() == 1U &&
+             result.texture_primitives[0U].texture_index == -2 &&
+             result.consumed_texture_primitive_count == 1U,
+         "RAC1 Moby metal VIF/effect metadata is wrong");
+  expect(result.vertex_header.raw_words ==
+                 std::array<std::uint32_t, 4U>{3U, 0x10U, 0x30U, 0x40U} &&
+             result.vertices.size() == 3U &&
+             result.vertices[1U].diagnostic_position ==
+                 std::array<float, 3U>{1.0F, 0.0F, 0.0F},
+         "RAC1 Moby metal direct vertex layout is wrong");
+  expect(result.vertices[0U].influence_count == 1U &&
+             result.vertices[0U].joint_indices ==
+                 std::array<std::uint8_t, 3U>{1U, 0U, 0U} &&
+             result.vertices[1U].influence_count == 2U &&
+             result.vertices[1U].weight_numerators ==
+                 std::array<std::uint8_t, 3U>{64U, 192U, 0U} &&
+             result.vertices[2U].influence_count == 3U &&
+             result.vertices[2U].weight_numerators ==
+                 std::array<std::uint8_t, 3U>{50U, 100U, 106U},
+         "RAC1 Moby metal influences lost their exact source encoding");
+  expect(result.strips.size() == 1U && result.triangles.size() == 1U &&
+             result.triangles[0U].texture_index == -2 &&
+             result.triangles[0U].transfer_vertex_indices ==
+                 std::array<std::uint32_t, 3U>{1U, 0U, 2U},
+         "RAC1 Moby metal strip reconstruction is wrong");
+
+  auto second_effect = make_metal_fixture();
+  write_le32(second_effect, 0x34U,
+             std::bit_cast<std::uint32_t>(std::int32_t{-3}));
+  expect(parse_metal(second_effect).triangles[0U].texture_index == -3,
+         "the second source-proven metal-family effect sentinel was lost");
+}
+
+void test_metal_packet_rejections() {
+  const auto rejected = [](auto mutation, const std::string &message) {
+    auto bytes = make_metal_fixture();
+    auto packet = make_metal_packet();
+    std::invoke(mutation, bytes, packet);
+    try {
+      (void)parse_metal(bytes, packet);
+    } catch (const openrc::RacMobyPacketGeometryError &) {
+      return;
+    }
+    throw std::runtime_error(message);
+  };
+  rejected(
+      [](auto &, auto &packet) {
+        packet.kind = openrc::RacMobyPacketKindV1::high_lod;
+      },
+      "a regular packet entered the RAC1 metal decoder");
+  rejected(
+      [](auto &bytes, auto &) { write_le32(bytes, kMetalVertexOffset + 4U, 0U); },
+      "an unproven RAC1 metal vertex-header layout was accepted");
+  rejected(
+      [](auto &bytes, auto &) { bytes[kMetalVertexOffset + 0x2dU] = std::byte{191U}; },
+      "RAC1 metal blend weights not summing to 256 were accepted");
+  rejected(
+      [](auto &bytes, auto &) { bytes[kMetalVertexOffset + 0x1aU] = std::byte{3U}; },
+      "a non-zero unused RAC1 metal influence was accepted");
+  rejected(
+      [](auto &bytes, auto &) {
+        write_le32(bytes, 0x34U,
+                   std::bit_cast<std::uint32_t>(std::int32_t{-4}));
+      },
+      "an unproven RAC1 metal effect sentinel was accepted");
 }
 
 void test_limits_and_kind_policy() {
@@ -293,6 +437,8 @@ int main() {
     test_valid_packet_with_physical_padding();
     test_texture_switch_secret_index();
     test_valid_non_drawing_packet();
+    test_metal_packet_layout_effect_and_direct_influences();
+    test_metal_packet_rejections();
     test_limits_and_kind_policy();
     test_structural_rejections();
     test_scale_policy();

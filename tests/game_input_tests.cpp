@@ -1,5 +1,7 @@
 #include "openrc/game_input.hpp"
+#include "openrc/rac_pad_input.hpp"
 
+#include <cmath>
 #include <cstdint>
 #include <iostream>
 #include <limits>
@@ -113,6 +115,57 @@ void test_validation_and_tick_order() {
                      "an invalid replay command was accepted");
 }
 
+void test_platform_axis_canonicalization_preserves_analog_magnitude() {
+  using namespace openrc::game;
+
+  expect(canonical_game_input_axis_v1(0) == 0 &&
+             canonical_game_input_axis_v1(1'234) == 1'234 &&
+             canonical_game_input_axis_v1(-23'456) == -23'456,
+         "platform axis canonicalization changed an in-range magnitude");
+  expect(
+      canonical_game_input_axis_v1(32'767) == 32'767 &&
+          canonical_game_input_axis_v1(-32'768) == -32'767,
+      "platform axis canonicalization did not make signed endpoints symmetric");
+  expect(canonical_game_input_axis_v1(100'000) == 32'767 &&
+             canonical_game_input_axis_v1(-100'000) == -32'767,
+         "platform axis canonicalization did not clamp a wider source domain");
+}
+
+void test_recovered_rac_pad_byte_response() {
+  using namespace openrc::game;
+
+  expect(decode_rac_pad_axis_v1(127U) == 0.0F &&
+             !std::signbit(decode_rac_pad_axis_v1(127U)) &&
+             decode_rac_pad_axis_v1(175U) == 0.0F &&
+             decode_rac_pad_axis_v1(128U) == 0.0F,
+         "the recovered RAC pad center/dead-zone response is wrong");
+  expect(decode_rac_pad_axis_v1(79U) == 0.0F &&
+             std::signbit(decode_rac_pad_axis_v1(79U)),
+         "the recovered RAC pad response lost its negative zero boundary");
+  expect(decode_rac_pad_axis_v1(78U) == -1.0F / 76.0F &&
+             decode_rac_pad_axis_v1(176U) == 1.0F / 76.0F,
+         "the recovered RAC pad response has the wrong first nonzero step");
+  expect(decode_rac_pad_axis_v1(0U) == -1.0F &&
+             decode_rac_pad_axis_v1(255U) == 1.0F,
+         "the recovered RAC pad response did not clamp its endpoints");
+}
+
+void test_signed_controller_bridge_and_four_axis_response() {
+  using namespace openrc::game;
+
+  expect(quantize_game_input_axis_to_rac_pad_v1(0) == 127U &&
+             quantize_game_input_axis_to_rac_pad_v1(32'767) == 255U &&
+             quantize_game_input_axis_to_rac_pad_v1(-32'767) == 0U,
+         "the signed controller bridge missed the DualShock byte endpoints");
+  const auto filtered =
+      apply_rac_pad_axes_response_v1({12'000, 16'384, -32'767, 32'767});
+  expect(filtered.move_x == 0 && filtered.move_y > 0 &&
+             filtered.move_y < kGameInputAxisMagnitudeV1 &&
+             filtered.look_x == -kGameInputAxisMagnitudeV1 &&
+             filtered.look_y == kGameInputAxisMagnitudeV1,
+         "the recovered RAC pad response did not preserve partial/full axes");
+}
+
 } // namespace
 
 int main() {
@@ -121,6 +174,9 @@ int main() {
     test_complete_tap_between_ticks();
     test_release_all_and_reset();
     test_validation_and_tick_order();
+    test_platform_axis_canonicalization_preserves_analog_magnitude();
+    test_recovered_rac_pad_byte_response();
+    test_signed_controller_bridge_and_four_axis_response();
     std::cout << "game_input_tests: ok\n";
     return 0;
   } catch (const std::exception &error) {

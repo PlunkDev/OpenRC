@@ -73,10 +73,20 @@ constexpr std::uint64_t kMaximumDestructibleScenePayloadBytes =
 constexpr std::uint64_t kMaximumTwoFipPixels = 16U * 1024U * 1024U;
 constexpr std::string_view kPlayerRigKey = "actors/ratchet/rig";
 constexpr std::string_view kPlayerHighModelKey = "actors/ratchet/high";
-constexpr std::string_view kPlayerIdleAnimationKey = "actors/ratchet/idle";
-constexpr std::string_view kPlayerWalkAnimationKey = "actors/ratchet/walk";
-constexpr std::string_view kPlayerRunAnimationKey = "actors/ratchet/run";
+constexpr std::string_view kPlayerSourceSequenceKeyPrefix =
+    "actors/ratchet/source-sequence/";
+constexpr std::string_view kPlayerIdleAnimationKey =
+    "actors/ratchet/source-sequence/000";
+constexpr std::string_view kPlayerWalkAnimationKey =
+    "actors/ratchet/source-sequence/003";
+constexpr std::string_view kPlayerRunAnimationKey =
+    "actors/ratchet/source-sequence/004";
 constexpr std::uint32_t kPlayerAnimationSourceUpdatesPerSecond = 50U;
+constexpr std::array<std::uint16_t, kDiscTocLevelCount>
+    kPlayerAnimationClipCountsByLevel{
+        134U, 88U, 86U, 79U, 84U, 100U, 89U, 98U, 108U, 79U,
+        83U,  96U, 105U, 86U, 94U, 89U, 96U, 99U, 111U,
+    };
 constexpr std::string_view kPlayerArchetypeKey = "openrc.player/default";
 constexpr std::uint32_t kBoltSourceClassId = 13U;
 constexpr std::string_view kBoltRigKey = "actors/collectibles/bolt/rig";
@@ -237,13 +247,17 @@ make_player_animation_io_limits() {
   return ActorAnimationIoLimitsV1{
       kMaximumPlayerAnimationPayloadBytes,
       ActorAnimationLimitsV1{
-          3U,
+          kRacLevelCoreRatchetSequenceCountV1,
           255U,
-          3U * 255U,
+          static_cast<std::uint64_t>(
+              kRacLevelCoreRatchetSequenceCountV1) *
+              255U,
           255U,
-          3U * 255U * 255U,
+          static_cast<std::uint64_t>(
+              kRacLevelCoreRatchetSequenceCountV1) *
+              255U * 255U,
           128U,
-          512U,
+          65'536U,
           kPlayerAnimationSourceUpdatesPerSecond,
           1'000'000.0F,
           1.0e-8,
@@ -262,9 +276,9 @@ make_player_animation_compile_limits() {
   };
 }
 
-[[nodiscard]] std::array<RacRatchetAnimationClipProfileV1, 3U>
-make_player_animation_profiles() {
-  return {
+[[nodiscard]] std::vector<RacRatchetAnimationClipProfileV1>
+make_player_animation_profiles(const RacLevelCoreIndexV1 &level_core) {
+  const std::array confirmed{
       RacRatchetAnimationClipProfileV1{
           0U, 0U, std::string(kPlayerIdleAnimationKey),
           ActorAnimationWrapModeV1::loop},
@@ -275,6 +289,9 @@ make_player_animation_profiles() {
           2U, 4U, std::string(kPlayerRunAnimationKey),
           ActorAnimationWrapModeV1::loop},
   };
+  return make_rac_ratchet_complete_animation_profiles_v1(
+      level_core, confirmed, kPlayerSourceSequenceKeyPrefix,
+      ActorAnimationWrapModeV1::clamp);
 }
 
 [[nodiscard]] constexpr EntitySceneIoLimitsV1
@@ -526,7 +543,7 @@ compile_player_bind_pose(const RacLevelMobyModelV1 &player) {
 [[nodiscard]] ActorAnimationBankV1 compile_player_animation_bank(
     const RacLevelMobyAssetsV1 &assets, const RacLevelMobyModelV1 &player,
     const RacMobyBindRigV1 &bind_rig) {
-  const auto profiles = make_player_animation_profiles();
+  const auto profiles = make_player_animation_profiles(assets.level_core);
   return compile_rac_ratchet_animation_bank_v1(
       assets.level_core_source_bytes, assets.level_core, bind_rig,
       player.source_class.scale, std::string(kPlayerRigKey), profiles,
@@ -978,7 +995,10 @@ exact_player_actor_provenance(const LevelPackageV1 &package,
         actor_resource->payload, make_player_actor_io_limits());
     const auto animations = decode_actor_animation_bank_v1(
         animation_resource->payload, make_player_animation_io_limits());
-    if (library.rigs.size() != 1U || animations.clips.size() != 3U) {
+    if (library.rigs.size() != 1U ||
+        package.level_id >= kPlayerAnimationClipCountsByLevel.size() ||
+        animations.clips.size() !=
+            kPlayerAnimationClipCountsByLevel[package.level_id]) {
       return false;
     }
     const auto &rig = library.rigs.front();
@@ -986,16 +1006,49 @@ exact_player_actor_provenance(const LevelPackageV1 &package,
     const std::array expected_keys{kPlayerIdleAnimationKey,
                                    kPlayerWalkAnimationKey,
                                    kPlayerRunAnimationKey};
+    std::array<bool, kRacLevelCoreRatchetSequenceCountV1> seen_slots{};
+    std::optional<std::uint32_t> previous_unclassified_slot;
     for (std::size_t index = 0U; index < animations.clips.size(); ++index) {
       const auto &clip = animations.clips[index];
-      if (clip.id != index || clip.semantic_key != expected_keys[index] ||
-          clip.rig_key != kPlayerRigKey ||
+      const auto prefix_bytes = kPlayerSourceSequenceKeyPrefix.size();
+      if (clip.semantic_key.size() != prefix_bytes + 3U ||
+          clip.semantic_key.compare(0U, prefix_bytes,
+                                    kPlayerSourceSequenceKeyPrefix) != 0) {
+        return false;
+      }
+      std::uint32_t source_slot = 0U;
+      for (std::size_t digit = 0U; digit < 3U; ++digit) {
+        const auto value = clip.semantic_key[prefix_bytes + digit];
+        if (value < '0' || value > '9') {
+          return false;
+        }
+        source_slot = source_slot * 10U +
+                      static_cast<std::uint32_t>(value - '0');
+      }
+      if (source_slot >= kRacLevelCoreRatchetSequenceCountV1 ||
+          seen_slots[source_slot]) {
+        return false;
+      }
+      seen_slots[source_slot] = true;
+
+      const auto is_preview_sequence = index < expected_keys.size();
+      if ((is_preview_sequence && clip.semantic_key != expected_keys[index]) ||
+          (!is_preview_sequence &&
+           (source_slot == 0U || source_slot == 3U || source_slot == 4U ||
+            (previous_unclassified_slot &&
+             source_slot <= *previous_unclassified_slot))) ||
+          clip.id != index || clip.rig_key != kPlayerRigKey ||
           clip.rig_content_sha256 != rig_digest ||
           clip.source_updates_per_second !=
               kPlayerAnimationSourceUpdatesPerSecond ||
-          clip.wrap_mode != ActorAnimationWrapModeV1::loop ||
+          clip.wrap_mode != (is_preview_sequence
+                                 ? ActorAnimationWrapModeV1::loop
+                                 : ActorAnimationWrapModeV1::clamp) ||
           clip.frames.empty()) {
         return false;
+      }
+      if (!is_preview_sequence) {
+        previous_unclassified_slot = source_slot;
       }
       for (const auto &frame : clip.frames) {
         if (frame.joint_poses.size() != rig.rig.joints.size()) {

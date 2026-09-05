@@ -193,14 +193,26 @@ The current player presentation exercises that design with Ratchet's decoded
 high-LOD textures, bind-space mesh, hierarchy, inverse binds, and skin weights.
 The compiler decodes every regular Ratchet frame into neutral local joint
 transforms, preserving authored zero scale rather than repairing it, then
-packages the clean-room-confirmed idle slot 0, walk slot 3, and run slot 4 as
-semantic looping clips bound to the exact rig digest. The generic player uses
+packages every occupied per-level sequence under a numeric source-slot key
+bound to the exact rig digest. The temporary preview selects slots 0, 3, and 4
+without declaring final idle/walk/run semantics. The generic player uses
 an integer cadence accumulator to advance PAL 50 Hz source updates on the 60 Hz
 fixed simulation, interpolates and composes the palette, and sends it to the
 renderer independently of the actor's world transform. A separate
 position-only skinning path handles finite singular palettes for the current
 unlit renderer. Airborne ticks hold the last grounded palette until their
-source mapping is proven; no jump, fall, landing, or wrench sequence is guessed.
+source mapping is proven; no jump, fall, crouch, landing, or wrench sequence is
+guessed. Original analog-stick magnitude, dead zones, and locomotion
+transitions are recovered with the player state machine rather than inferred
+from keyboard input. The Win32 adapter now polls XInput through runtime symbol
+lookup, avoiding a new shipped DLL, and passes symmetric signed stick values
+through unchanged except for canonicalizing the unmatched `-32768` endpoint.
+That adapter intentionally owns no dead-zone or speed-response policy.
+After the deterministic/replay boundary, the RAC-specific input layer samples
+the signed device domain onto the original eight-bit DualShock lattice and
+executes the recovered four-axis response (`center=127`, `dead-zone=48`,
+`divisor=76`). This keeps source-game policy out of Windows input while exact
+locomotion consumers and thresholds continue to be recovered.
 The generic interaction paths cover collectibles and a neutral
 wrench-to-Bolt-Crate damage/destruction/drop loop. Finished attack and
 destruction presentation, broader entity behaviors, enemies, menus, and the

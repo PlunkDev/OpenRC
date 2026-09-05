@@ -84,6 +84,7 @@ add_library(openrc_core STATIC
     src/core/rac_moby_bind_pose.cpp
     src/core/rac_moby_model_geometry.cpp
     src/core/rac_moby_packet_geometry.cpp
+    src/core/rac_pad_input.cpp
     src/core/rac_ratchet_animation_compile.cpp
     src/core/rac_ratchet_pose.cpp
     src/core/rac_ratchet_sequence.cpp
@@ -284,6 +285,7 @@ endif()
 if(OPENRC_BUILD_RUNTIME AND WIN32)
     add_executable(openrc-runtime WIN32
         src/runtime/windows_main.cpp
+        src/runtime/windows_gamepad.cpp
         src/runtime/d3d11_renderer.cpp
         src/runtime/openrc-runtime.manifest
     )

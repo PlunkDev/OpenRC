@@ -7,6 +7,21 @@ namespace openrc::game {
 
 inline constexpr std::int16_t kGameInputAxisMagnitudeV1 = 32'767;
 
+// Platform backends may expose the complete signed 16-bit domain, whose
+// negative endpoint has no positive counterpart. Canonicalize that endpoint
+// instead of applying a device dead zone or response curve here. Those are
+// source-game policies and belong after the deterministic input boundary.
+[[nodiscard]] constexpr std::int16_t
+canonical_game_input_axis_v1(const std::int32_t value) noexcept {
+  if (value < -static_cast<std::int32_t>(kGameInputAxisMagnitudeV1)) {
+    return static_cast<std::int16_t>(-kGameInputAxisMagnitudeV1);
+  }
+  if (value > static_cast<std::int32_t>(kGameInputAxisMagnitudeV1)) {
+    return kGameInputAxisMagnitudeV1;
+  }
+  return static_cast<std::int16_t>(value);
+}
+
 // Platform adapters quantize physical controls before they reach simulation.
 // Recorded commands therefore contain no device-specific or wall-clock state.
 struct GameInputAxesV1 {

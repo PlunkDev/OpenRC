@@ -73,13 +73,17 @@ separate task; zero scale is never changed to an epsilon or identity.
 
 ## Neutral clip and runtime boundary
 
-The native compiler converts explicitly selected source sequences into
-`ActorAnimationBankV1`; packed records and source slots stop at that boundary.
-Each neutral clip stores a semantic key, the exact rig key and canonical rig
+The native compiler converts every occupied source sequence into
+`ActorAnimationBankV1`. Each neutral clip stores a numeric
+`actors/ratchet/source-sequence/NNN` key, the exact rig key and canonical rig
 digest, a pose for every joint in every frame, its integer source cadence, and
-loop/clamp policy. Current clean-room evidence maps only idle slot 0, walk slot
-3, and run slot 4, all as looping grounded-locomotion clips. No jump, fall,
-landing, or wrench mapping is inferred.
+a bounded preview wrap policy. Veldin contributes 134 clips; the other levels
+retain their own build-authored subsets. Numeric keys deliberately make no
+idle, walk, run, jump, crouch, landing, or wrench claim. The temporary preview
+selects slots 0, 3, and 4 only until the original player state machine and
+analog-speed transitions are recovered. The preceding four-axis pad normalizer
+is now recovered independently (`raw-127`, dead-zone 48, divide by 76, clamp
+to one); it does not by itself identify those transition thresholds.
 
 The generic player advances the PAL 50 Hz source cadence on the 60 Hz fixed
 runtime with an integer accumulator, interpolates normalized quaternions on the
@@ -100,7 +104,8 @@ The PAL all-level regression covers:
 - 25,267 singular global matrices and 25,267 matching skin matrices;
 - 5,583 finite position-skinned vertices for Veldin sequence 0 frame 0.
 
-This proves the regular source decoder. The three confirmed locomotion clips
-also pass neutral serialization, exact rig binding, deterministic cadence,
-selection, interpolation, package mounting, and runtime playback. Remaining
-animation semantics and original normal handling are separate open work.
+This proves the regular source decoder. The complete per-level source-slot
+banks also pass neutral serialization, exact rig binding, deterministic
+cadence, package mounting, and build-specific clip-count validation. Gameplay
+semantics, original state transitions, and original normal handling remain
+separate open work.

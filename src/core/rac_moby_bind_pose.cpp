@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <numbers>
 #include <optional>
 #include <span>
 #include <string>
@@ -19,6 +20,7 @@ namespace {
 constexpr std::uint64_t kRacSkeletonJointBytes = 0x40U;
 constexpr std::uint64_t kRacCommonTranslationBytes = 0x10U;
 constexpr std::uint16_t kRacSingleJointWeight = 255U;
+constexpr std::uint16_t kRacMetalSingleJointWeight = 1U;
 constexpr std::uint16_t kRacBlendedWeightTotal = 256U;
 constexpr std::size_t kRacVu0SkinSlots = 64U;
 
@@ -75,6 +77,31 @@ void require_limit(const std::uint64_t value, const std::uint64_t limit,
   if (value > limit) {
     fail(std::string(description) + " exceeds the caller's limit");
   }
+}
+
+void require_append_capacity(const std::uint64_t current,
+                             const std::uint64_t additional,
+                             const std::uint64_t limit,
+                             const std::size_t host_limit,
+                             const char *const description) {
+  if (current > limit || additional > limit - current ||
+      current > static_cast<std::uint64_t>(host_limit) ||
+      additional > static_cast<std::uint64_t>(host_limit) - current ||
+      current > UINT32_MAX || additional > UINT32_MAX - current) {
+    fail(std::string(description) + " exceeds its bounded output capacity");
+  }
+}
+
+[[nodiscard]] std::array<float, 3U>
+decode_packed_normal(const std::uint8_t azimuth_byte,
+                     const std::uint8_t elevation_byte) {
+  const auto azimuth = static_cast<float>(azimuth_byte) *
+                       (std::numbers::pi_v<float> / 128.0F);
+  const auto elevation = static_cast<float>(elevation_byte) *
+                         (std::numbers::pi_v<float> / 128.0F);
+  const auto cos_elevation = std::cos(elevation);
+  return {std::sin(azimuth) * cos_elevation,
+          std::cos(azimuth) * cos_elevation, std::sin(elevation)};
 }
 
 [[nodiscard]] double determinant(const AffineDouble &value) noexcept {
@@ -181,6 +208,40 @@ single_joint_binding(const std::uint16_t joint_index,
   result.joint_indices[0U] = joint_index;
   result.weight_numerators[0U] = kRacSingleJointWeight;
   result.weight_sum = kRacSingleJointWeight;
+  return result;
+}
+
+[[nodiscard]] ActorSkinBindingV1 metal_skin_binding(
+    const RacMobyMetalPacketVertexV1 &vertex,
+    const std::uint32_t joint_count) {
+  if (vertex.influence_count == 0U ||
+      vertex.influence_count > kActorMaximumSkinInfluencesV1) {
+    fail("A jointed RAC1 Moby metal vertex has an invalid influence count");
+  }
+  ActorSkinBindingV1 result;
+  result.influence_count = vertex.influence_count;
+  for (std::size_t index = 0U; index < vertex.influence_count; ++index) {
+    if (vertex.joint_indices[index] >= joint_count) {
+      fail("A RAC1 Moby metal vertex references a joint outside the bind rig");
+    }
+    for (std::size_t earlier = 0U; earlier < index; ++earlier) {
+      if (vertex.joint_indices[earlier] == vertex.joint_indices[index]) {
+        fail("A RAC1 Moby metal vertex repeats an active joint");
+      }
+    }
+    result.joint_indices[index] = vertex.joint_indices[index];
+    result.weight_numerators[index] =
+        vertex.influence_count == 1U ? kRacMetalSingleJointWeight
+                                     : vertex.weight_numerators[index];
+    result.weight_sum = static_cast<std::uint16_t>(
+        result.weight_sum + result.weight_numerators[index]);
+  }
+  const auto expected_sum = vertex.influence_count == 1U
+                                ? kRacMetalSingleJointWeight
+                                : kRacBlendedWeightTotal;
+  if (result.weight_sum != expected_sum) {
+    fail("A RAC1 Moby metal vertex has an invalid exact weight sum");
+  }
   return result;
 }
 
@@ -587,6 +648,151 @@ RacMobyBindPoseGeometryV1 compile_rac_moby_bind_pose_geometry_v1(
   if (result.vertex_skin_bindings.size() != result.geometry.vertices.size()) {
     fail("RAC1 Moby geometry and skin-binding outputs are not parallel");
   }
+  return result;
+}
+
+RacMobyBindPoseGeometryV1 compile_rac_moby_complete_bind_pose_geometry_v1(
+    const std::span<const std::byte> class_bytes, const RacMobyClassV1 &moby,
+    const RacMobyLodV1 lod, const RacMobyBindPoseLimitsV1 limits) {
+  auto result =
+      compile_rac_moby_bind_pose_geometry_v1(class_bytes, moby, lod, limits);
+  if (moby.metal_packet_count == 0U) {
+    return result;
+  }
+
+  const auto selected_packet_count = result.geometry.packets.size();
+  if (selected_packet_count > limits.geometry_limits.max_packets ||
+      moby.metal_packet_count > limits.geometry_limits.max_packets -
+                                    selected_packet_count) {
+    fail("The complete RAC1 Moby packet count exceeds the caller's limit");
+  }
+
+  RacMobyMetalBindPoseGeometryV1 metal;
+  metal.packets.reserve(moby.metal_packet_count);
+  std::optional<std::int32_t> current_effect_material;
+  const auto first_metal_packet =
+      static_cast<std::size_t>(moby.metal_packet_begin);
+  const auto end_metal_packet =
+      first_metal_packet + static_cast<std::size_t>(moby.metal_packet_count);
+
+  for (std::size_t class_packet_index = first_metal_packet;
+       class_packet_index < end_metal_packet; ++class_packet_index) {
+    if (class_packet_index >= moby.packets.size() ||
+        moby.packets[class_packet_index].kind !=
+            RacMobyPacketKindV1::metal) {
+      fail("The complete RAC1 Moby metal packet directory is inconsistent");
+    }
+    if (class_packet_index > UINT32_MAX) {
+      fail("A RAC1 Moby metal class-packet index exceeds the V1 domain");
+    }
+
+    RacMobyMetalPacketGeometryV1 packet_geometry;
+    try {
+      packet_geometry = parse_rac_moby_metal_packet_geometry_v1(
+          class_bytes, moby.packets[class_packet_index], moby.scale,
+          limits.geometry_limits.packet_limits);
+    } catch (const RacMobyPacketGeometryError &error) {
+      fail("RAC1 Moby metal packet " + std::to_string(class_packet_index) +
+           " failed geometry reconstruction: " + error.what());
+    }
+
+    require_append_capacity(
+        result.geometry.vertices.size() + metal.vertices.size(),
+        packet_geometry.vertices.size(),
+        limits.geometry_limits.max_output_vertices, metal.vertices.max_size(),
+        "The complete RAC1 Moby vertex count");
+    require_append_capacity(
+        result.geometry.triangles.size() + metal.triangles.size(),
+        packet_geometry.triangles.size(),
+        limits.geometry_limits.max_output_triangles,
+        metal.triangles.max_size(), "The complete RAC1 Moby triangle count");
+    require_append_capacity(
+        result.vertex_skin_bindings.size() +
+            metal.vertex_skin_bindings.size(),
+        packet_geometry.vertices.size(), limits.max_output_skin_bindings,
+        metal.vertex_skin_bindings.max_size(),
+        "The complete RAC1 Moby skin-binding count");
+
+    const auto packet_index = static_cast<std::uint32_t>(class_packet_index);
+    const auto vertex_begin = static_cast<std::uint32_t>(metal.vertices.size());
+    const auto triangle_begin =
+        static_cast<std::uint32_t>(metal.triangles.size());
+    const auto entry_effect_material = current_effect_material;
+
+    for (std::size_t local_index = 0U;
+         local_index < packet_geometry.vertices.size(); ++local_index) {
+      const auto &source = packet_geometry.vertices[local_index];
+      if (local_index > UINT32_MAX) {
+        fail("A RAC1 Moby metal transfer vertex exceeds the V1 domain");
+      }
+      const auto transfer_index = static_cast<std::uint32_t>(local_index);
+      metal.vertices.push_back(RacMobyModelVertexV1{
+          source.diagnostic_position,
+          decode_packed_normal(source.normal_azimuth,
+                               source.normal_elevation),
+          {0.0F, 0.0F},
+          0U,
+          packet_index,
+          transfer_index,
+          packet_index,
+          transfer_index,
+          false,
+          source.source_range,
+          source.source_range});
+      metal.vertex_skin_bindings.push_back(
+          metal_skin_binding(source, moby.joint_count));
+    }
+
+    for (const auto &source : packet_geometry.triangles) {
+      const auto material = source.texture_index
+                                ? source.texture_index
+                                : current_effect_material;
+      if (!material || (*material != -2 && *material != -3)) {
+        fail("A RAC1 Moby metal triangle has no source-proven effect "
+             "material state");
+      }
+      RacMobyModelTriangleV1 triangle;
+      triangle.texture_index = *material;
+      triangle.class_packet_index = packet_index;
+      for (std::size_t corner = 0U; corner < triangle.vertex_indices.size();
+           ++corner) {
+        const auto transfer_index = source.transfer_vertex_indices[corner];
+        if (transfer_index >= packet_geometry.vertices.size()) {
+          fail("A RAC1 Moby metal triangle exceeds its direct vertex table");
+        }
+        triangle.vertex_indices[corner] = vertex_begin + transfer_index;
+      }
+      metal.triangles.push_back(triangle);
+    }
+
+    if (packet_geometry.consumed_texture_primitive_count != 0U) {
+      if (packet_geometry.consumed_texture_primitive_count >
+          packet_geometry.texture_primitives.size()) {
+        fail("A RAC1 Moby metal packet consumed an unavailable effect "
+             "primitive");
+      }
+      current_effect_material =
+          packet_geometry
+              .texture_primitives[static_cast<std::size_t>(
+                  packet_geometry.consumed_texture_primitive_count - 1U)]
+              .texture_index;
+    }
+
+    metal.packets.push_back(RacMobyMetalBindPosePacketV1{
+        packet_index,
+        vertex_begin,
+        static_cast<std::uint32_t>(packet_geometry.vertices.size()),
+        triangle_begin,
+        static_cast<std::uint32_t>(packet_geometry.triangles.size()),
+        entry_effect_material,
+        current_effect_material});
+  }
+
+  if (metal.vertices.empty() || metal.triangles.empty() ||
+      metal.vertices.size() != metal.vertex_skin_bindings.size()) {
+    fail("The complete RAC1 Moby metal output is empty or inconsistent");
+  }
+  result.metal_overlay = std::move(metal);
   return result;
 }
 

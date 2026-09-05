@@ -238,6 +238,87 @@ void test_position_only_skinning_preserves_singular_animation_scale() {
       "full vertex skinning guessed a normal policy for a singular pose");
 }
 
+void test_joint_attachment_composes_current_parent_pose() {
+  openrc::ActorPosePaletteV1 parent_pose;
+  parent_pose.global_joint_transforms = {
+      translation(1.0F, 0.0F, 0.0F),
+      rotation_z_90_with_translation(2.0F, 3.0F, 4.0F),
+  };
+  parent_pose.skin_transforms.resize(2U);
+
+  const auto parent_to_world = translation(10.0F, -2.0F, 5.0F);
+  const openrc::ActorJointAttachmentV1 identity_mount{1U, {}};
+  const auto identity_world =
+      openrc::resolve_actor_joint_attachment_model_to_world_v1(
+          parent_pose, parent_to_world, identity_mount, kLimits);
+  expect_near(identity_world.values[3U], 12.0F,
+              "identity attachment lost parent-joint X");
+  expect_near(identity_world.values[7U], 1.0F,
+              "identity attachment lost parent-joint Y");
+  expect_near(identity_world.values[11U], 9.0F,
+              "identity attachment lost parent-joint Z");
+  expect_near(identity_world.values[0U], 0.0F,
+              "identity attachment lost parent-joint rotation");
+  expect_near(identity_world.values[1U], -1.0F,
+              "identity attachment lost parent-joint rotation");
+
+  const openrc::ActorJointAttachmentV1 offset_mount{
+      1U, translation(2.0F, 0.0F, -1.0F)};
+  const auto offset_world =
+      openrc::resolve_actor_joint_attachment_model_to_world_v1(
+          parent_pose, parent_to_world, offset_mount, kLimits);
+  expect_near(offset_world.values[3U], 12.0F,
+              "joint rotation produced the wrong child X offset");
+  expect_near(offset_world.values[7U], 3.0F,
+              "joint rotation produced the wrong child Y offset");
+  expect_near(offset_world.values[11U], 8.0F,
+              "child attachment produced the wrong Z offset");
+}
+
+void test_joint_attachment_fails_closed() {
+  openrc::ActorPosePaletteV1 parent_pose;
+  parent_pose.global_joint_transforms = {openrc::ActorAffineTransformV1{}};
+  parent_pose.skin_transforms = {openrc::ActorAffineTransformV1{}};
+
+  expect_pose_error(
+      [&] {
+        const openrc::ActorJointAttachmentV1 missing_joint{1U, {}};
+        (void)openrc::resolve_actor_joint_attachment_model_to_world_v1(
+            parent_pose, {}, missing_joint, kLimits);
+      },
+      "joint attachment accepted an unavailable parent joint");
+
+  expect_pose_error(
+      [&] {
+        auto inconsistent = parent_pose;
+        inconsistent.skin_transforms.clear();
+        const openrc::ActorJointAttachmentV1 mount{};
+        (void)openrc::resolve_actor_joint_attachment_model_to_world_v1(
+            inconsistent, {}, mount, kLimits);
+      },
+      "joint attachment accepted inconsistent parent palette tables");
+
+  expect_pose_error(
+      [&] {
+        auto singular = parent_pose;
+        singular.global_joint_transforms[0U].values[0U] = 0.0F;
+        const openrc::ActorJointAttachmentV1 mount{};
+        (void)openrc::resolve_actor_joint_attachment_model_to_world_v1(
+            singular, {}, mount, kLimits);
+      },
+      "joint attachment accepted a singular selected parent joint");
+
+  expect_pose_error(
+      [&] {
+        openrc::ActorJointAttachmentV1 mount{};
+        mount.child_model_to_parent_joint.values[3U] =
+            std::numeric_limits<float>::infinity();
+        (void)openrc::resolve_actor_joint_attachment_model_to_world_v1(
+            parent_pose, {}, mount, kLimits);
+      },
+      "joint attachment accepted a non-finite child mount");
+}
+
 void test_fail_closed_validation() {
   auto invalid_limits = kLimits;
   invalid_limits.minimum_normal_length = 0.0;
@@ -332,6 +413,8 @@ int main() {
     test_exact_blend_and_world_transform();
     test_inverse_transpose_normal_and_canonical_zero();
     test_position_only_skinning_preserves_singular_animation_scale();
+    test_joint_attachment_composes_current_parent_pose();
+    test_joint_attachment_fails_closed();
     test_fail_closed_validation();
     std::cout << "Actor pose tests passed\n";
     return 0;

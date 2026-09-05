@@ -150,15 +150,69 @@ struct RacMobyPacketGeometryV1 {
   std::uint64_t unresolved_duplicate_count = 0U;
 };
 
+// RAC1 metal packets use the same VU1 strip/GIF-primitive stream as regular
+// packets, but their vertex payload is a distinct direct-skinned layout.  The
+// last three words are deliberately retained as opaque, source-proven layout
+// words until their VU microprogram meaning is recovered.
+struct RacMobyMetalVertexHeaderV1 {
+  RacMobyPacketGeometryRangeV1 header_range;
+  RacMobyPacketGeometryRangeV1 vertex_record_range;
+  std::array<std::uint32_t, 4U> raw_words{};
+};
+
+struct RacMobyMetalPacketVertexV1 {
+  RacMobyPacketGeometryRangeV1 source_range;
+  std::array<std::int16_t, 3U> quantized_position{};
+  std::array<float, 3U> diagnostic_position{};
+  std::uint8_t normal_azimuth = 0U;
+  std::uint8_t normal_elevation = 0U;
+  // The metal-family suffix stores up to three direct joint indices followed
+  // by an influence count, three weight numerators, and one zero byte. A
+  // single influence has an implicit 1/1 weight; two- and three-way
+  // records store positive numerators summing exactly to 256.
+  std::array<std::uint8_t, 3U> joint_indices{};
+  std::uint8_t influence_count = 0U;
+  std::array<std::uint8_t, 3U> weight_numerators{};
+};
+
+struct RacMobyMetalPacketGeometryV1 {
+  std::uint64_t input_bytes = 0U;
+  RacMobyPacketUnpackV1 strip_index_unpack;
+  std::optional<RacMobyPacketUnpackV1> texture_primitive_unpack;
+  std::uint64_t vif_nop_count = 0U;
+  RacMobyPacketGeometryRangeV1 index_header_range;
+  RacMobyPacketGeometryRangeV1 raw_strip_index_range;
+  RacMobyPacketGeometryRangeV1 strip_terminator_range;
+  RacMobyPacketGeometryRangeV1 strip_trailing_padding_range;
+  std::uint8_t index_header_unknown = 0U;
+  std::uint8_t texture_unpack_relative_qwords = 0U;
+  RacMobyMetalVertexHeaderV1 vertex_header;
+  std::vector<RacMobyMetalPacketVertexV1> vertices;
+  std::vector<RacMobyTexturePrimitiveV1> texture_primitives;
+  std::vector<RacMobyPacketStripV1> strips;
+  std::vector<RacMobyPacketTriangleV1> triangles;
+  std::uint64_t consumed_texture_primitive_count = 0U;
+};
+
 class RacMobyPacketGeometryError final : public std::runtime_error {
 public:
   using std::runtime_error::runtime_error;
 };
 
 // Decodes one regular RAC1 high/low-LOD packet using ranges already exposed by
-// RacMobyClassV1. Positions are intentionally packet-local diagnostics. Metal
-// packets and skeletal bind/world transforms are outside this V1 contract.
+// RacMobyClassV1. Positions are intentionally packet-local diagnostics.
+// Skeletal bind/world transforms are outside this V1 contract.
 [[nodiscard]] RacMobyPacketGeometryV1 parse_rac_moby_packet_geometry_v1(
+    std::span<const std::byte> class_bytes, const RacMobyPacketV1 &packet,
+    float class_scale, RacMobyPacketGeometryLimitsV1 limits);
+
+// Decodes one RAC1 metal packet without pretending it is a regular packet.
+// Metal vertices have no authored ST stream or VU0 skin program: every record
+// carries XYZ, the same packed normal angles, and a distinct skin/control
+// influence suffix. Source effect-material sentinels (-2 and -3) are retained
+// for an explicit compiler policy rather than mapped to class-local slots.
+[[nodiscard]] RacMobyMetalPacketGeometryV1
+parse_rac_moby_metal_packet_geometry_v1(
     std::span<const std::byte> class_bytes, const RacMobyPacketV1 &packet,
     float class_scale, RacMobyPacketGeometryLimitsV1 limits);
 

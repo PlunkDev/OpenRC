@@ -220,22 +220,37 @@ boot ELF are not passed to or reopened by the runtime.
 Prepared-game mode is now an early playable Veldin prototype. Use `W/A/S/D` to
 move relative to the camera, the arrow keys to rotate and pitch it, `Space` to
 jump, `F` or the left mouse button for the primary wrench attack, and `R` to
-reset to the authored checkpoint. The runtime resolves Ratchet through neutral
+reset to the authored checkpoint. An XInput-compatible controller uses the
+left/right sticks for movement/camera, `A/Cross` for jump, and `X/Square` for
+the current primary action. The runtime resolves Ratchet through neutral
 entity-scene, actor-library, and actor-animation keys, CPU-skins his textured
 high-LOD mesh, and places it at the deterministic player transform. The
-clean-room-confirmed source slots are compiled as looping idle (slot 0), walk
-(slot 3), and run (slot 4) clips. Their PAL 50 Hz timing advances on the 60 Hz
-fixed simulation with an integer accumulator. Airborne movement deliberately
-holds the last sampled grounded pose until its source sequence mapping is
-proven; the primary action likewise has gameplay timing and a melee hit volume
-but not a guessed wrench clip or finished presentation.
+compiler now preserves every occupied Ratchet sequence slot under a numeric
+`actors/ratchet/source-sequence/NNN` key (134 clips on Veldin), rather than
+publishing guessed gameplay names. The temporary preview still selects slots
+0, 3, and 4 while the original state machine is recovered; those selections
+must not be read as final idle/walk/run semantics. Their PAL 50 Hz timing
+advances on the 60 Hz fixed simulation with an integer accumulator. Airborne
+movement deliberately holds the last sampled grounded pose until its source
+sequence mapping is proven; the primary action likewise has prototype gameplay
+timing and a melee hit volume but not the source wrench model, animation, or
+finished presentation yet. Keyboard input and dependency-free XInput polling
+are connected at the same deterministic boundary. The latter preserves the
+full signed stick magnitude, so partial left-stick travel reaches simulation
+instead of becoming a digital press. No guessed dead zone or speed curve is
+applied by the platform adapter. After that replay boundary, the runtime uses
+the recovered DualShock byte response: center 127, dead-zone magnitude 48,
+then `(abs(delta) - 48) / 76` clamped to one. Recovering how that magnitude
+selects Ratchet's exact speed and locomotion transitions remains part of the
+player state-machine reconstruction.
 
 The current eight-resource profile is verified end to end for the supported
 PAL v2.00 image: fresh compilation and exact validation cover all 19 levels,
 a second preparation reuses the same verified cache, and package-only gameplay
 smokes pass for both Veldin level IDs. The exact profile validation includes
-the three animation clips, their rig digest and joint counts, and the mounted
-runtime animation bank. The D3D11 smoke additionally proves that a real mounted
+the build-specific complete animation-slot count for every level, numeric slot
+keys, rig digest, joint counts, and the mounted runtime animation bank. The
+D3D11 smoke additionally proves that a real mounted
 Bolt Crate is submitted while visible, receives the neutral primary attack,
 grants its drop, and is absent from the next rendered frame. The map still lacks
 animated and specialized object families, finished attack presentation,

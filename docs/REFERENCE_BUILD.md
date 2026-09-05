@@ -677,20 +677,43 @@ finite bounds X `[-0.391791, 0.376465]`, Y `[-0.465786, 0.388369]`, and Z
 separate until the original VU0 policy is proven; no epsilon or identity repair
 is substituted.
 
-The matching player-control audit identifies three grounded locomotion slots:
-slot 0 is idle (10 frames, phase rate `0.125`), slot 3 is walk (33 frames,
-phase rate `0.25`), and slot 4 is run (23 frames, phase rate `0.5`). A non-zero
+The matching player-control audit identifies three grounded locomotion cycles:
+slot 0 is stationary (10 frames, phase rate `0.125`), while slots 3 (33 frames,
+phase rate `0.25`) and 4 (23 frames, phase rate `0.5`) are slower and faster
+movement cycles. These descriptions do not establish three discrete gameplay
+states; the original analog-magnitude selection and blending still have to be
+recovered. A non-zero
 sequence word at `+0x18` overrides the per-frame phase rate; zero retains the
 current frame's rate. The source player increments phase once per PAL 50 Hz
 update and wraps these sequences on a cycle boundary. Trigger words are audio
 events, not melee-hit notifications. No jump, fall, landing, or wrench semantic
 mapping is claimed by this evidence.
 
-OpenRC's current neutral profile therefore publishes only those three confirmed
-looping clips. The runtime converts 50 source updates to its 60 fixed ticks with
-an integer accumulator and holds the last grounded pose while airborne. This
-timing and selection policy is deterministic and package-only; it does not
-embed the source slot table in the runtime.
+The PAL executable's pad update at `0x2182b0..0x218330` independently proves
+the scalar input response for all four DualShock packet axes. Bytes `+2..+5`
+map in order to state floats `+0x100..+0x10c`. Each subtracts center `127`,
+uses zero while `abs(delta) < 48`, otherwise computes
+`(abs(delta) - 48) / 76`, clamps values above one, and negates the result when
+the raw byte is below `127`. Consequently raw `79..175` is the effective zero
+range (including a source negative zero at `79`), `78/176` produce the first
+non-zero `-1/76` and `+1/76`, and `0/255` clamp to `-1/+1`. The later code at
+`0x2186c4..0x2186e8` computes length and angle from state `+0x108/+0x10c`.
+That establishes normalization and a paired stick vector, but does not yet
+prove the downstream slow-walk or animation-selection thresholds. A complete
+scan of direct references derived from the pad-state base found 36 accesses;
+the only axis reads outside the normalizer occur in `0x205c70`, which updates
+indexed input buffers rather than the player state. The `0.9` and `0.25`
+constants following the paired length/angle calculation belong to its
+30-sample gesture history and are therefore not relabeled as locomotion
+thresholds. The missing consumer must be sought in runtime-loaded level/class
+code or another indirect dispatch path rather than guessed from those values.
+
+OpenRC's current neutral profile publishes every occupied per-level sequence
+under a numeric source-slot key; Veldin has 134. The temporary preview selects
+slots 0, 3, and 4 while the original state machine is still being recovered.
+The runtime converts 50 source updates to its 60 fixed ticks with an integer
+accumulator and holds the last grounded pose while airborne. This temporary
+selection policy is deterministic and package-only.
 
 The regular packet decoder validates signed TOPS-relative VIF UNPACKs for
 fixed-12 texture coordinates, V4-8 strip indices, and optional V4-32 AD-GIF

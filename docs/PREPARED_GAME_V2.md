@@ -207,16 +207,18 @@ source-format dispatch in the native runtime. See
 
 ### Current player-animation adapter policy
 
-The compiler preserves the full source sequence table for diagnostics but
-publishes only mappings with clean-room-confirmed locomotion semantics. The V1
-native profile emits three looping clips under `actors/animations`: idle uses
-source slot 0, walk uses slot 3, and run uses slot 4. Runtime code sees only the
-semantic keys `actors/ratchet/idle`, `actors/ratchet/walk`, and
-`actors/ratchet/run`; source offsets, packed records, and slot numbers do not
-cross the compiler boundary.
+The compiler publishes every occupied per-level Ratchet sequence under
+`actors/animations`, addressed by the numeric key
+`actors/ratchet/source-sequence/NNN`. Veldin has 134 such clips; the exact
+native profile records and validates the build-specific count for all 19
+levels. Source offsets and packed records still stop at the compiler boundary,
+but slot identity remains explicit so the original player state machine can be
+connected without first guessing semantic names.
 
 Each clip records the exact `actors/ratchet/rig` content digest, 111 poses per
-frame, and its integer 50 Hz PAL source cadence. Playback advances those source
+frame, and its integer 50 Hz PAL source cadence. The temporary presentation
+path selects slots 0, 3, and 4; that is a preview compatibility policy, not a
+final idle/walk/run classification. Playback advances those source
 updates on the 60 Hz fixed gameplay clock with an integer accumulator, samples
 shortest-hemisphere quaternion interpolation, and composes hierarchy plus
 inverse bind. Authored zero scales remain finite singular palettes and are

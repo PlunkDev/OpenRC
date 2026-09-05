@@ -194,6 +194,26 @@ void test_tick_order_snapshot_and_deterministic_hash() {
          "semantic zero values produced different player hashes");
 }
 
+void test_partial_analog_magnitude_reaches_character_motion() {
+  using namespace openrc::game;
+
+  const auto world = empty_world();
+  PlayerSimulationV1 partial(player_profile(-100.0), checkpoint());
+  PlayerSimulationV1 full(player_profile(-100.0), checkpoint());
+  constexpr std::int16_t kPartialAxis = 16'384;
+  for (std::uint64_t tick = 0U; tick < 30U; ++tick) {
+    static_cast<void>(
+        partial.fixed_update(world, command(tick, kPartialAxis, 0)));
+    static_cast<void>(
+        full.fixed_update(world, command(tick, kGameInputAxisMagnitudeV1, 0)));
+  }
+
+  const auto partial_x = partial.snapshot().character.feet_position.x;
+  const auto full_x = full.snapshot().character.feet_position.x;
+  expect(partial_x > 0.0 && partial_x < full_x,
+         "partial analog travel did not produce a slower nonzero movement");
+}
+
 void test_validation_and_reset_overflow_atomicity() {
   using namespace openrc::game;
 
@@ -234,6 +254,7 @@ int main() {
     test_absolute_death_height_reset();
     test_manual_and_checkpoint_activation_reset();
     test_tick_order_snapshot_and_deterministic_hash();
+    test_partial_analog_magnitude_reaches_character_motion();
     test_validation_and_reset_overflow_atomicity();
     std::cout << "player_simulation_tests: ok\n";
     return 0;
