@@ -14,14 +14,18 @@
 namespace {
 
 constexpr openrc::RacGameplayBankLimitsV1 kLimits{0x10000U};
-constexpr std::uint32_t kBankBytes = 0x510U;
+constexpr std::uint32_t kBankBytes = 0x590U;
 constexpr std::uint32_t kLevelSettingsOffset = 0xb0U;
 constexpr std::uint32_t kMobyClassesOffset = 0x1c0U;
 constexpr std::uint32_t kMobyInstancesOffset = 0x1d0U;
-constexpr std::uint32_t kTieClassesOffset = 0x2c0U;
-constexpr std::uint32_t kTieInstancesOffset = 0x2d0U;
-constexpr std::uint32_t kShrubClassesOffset = 0x3d0U;
-constexpr std::uint32_t kShrubInstancesOffset = 0x3e0U;
+constexpr std::uint32_t kPvarTableOffset = 0x2d0U;
+constexpr std::uint32_t kPvarDataOffset = 0x2e0U;
+constexpr std::uint32_t kPvarMobyLinksOffset = 0x300U;
+constexpr std::uint32_t kPvarRelativePointersOffset = 0x310U;
+constexpr std::uint32_t kTieClassesOffset = 0x340U;
+constexpr std::uint32_t kTieInstancesOffset = 0x350U;
+constexpr std::uint32_t kShrubClassesOffset = 0x450U;
+constexpr std::uint32_t kShrubInstancesOffset = 0x460U;
 constexpr std::array<std::uint32_t, openrc::kRacGameplayBlockCountV1>
     kPhysicalPointerSlots{
         0x88U, 0x00U, 0x10U, 0x14U, 0x18U, 0x1cU, 0x20U, 0x24U, 0x28U,
@@ -64,7 +68,9 @@ void write_matrix(std::vector<std::byte>& bytes,
         if (index == 1U) {
             block_offset += 0x50U;
         } else if (index == 15U) {
-            block_offset += 0x90U;
+            block_offset += 0x100U;
+        } else if (index == 17U) {
+            block_offset += 0x20U;
         } else if (index == 23U) {
             block_offset += 0x100U;
         } else if (index == 25U) {
@@ -105,7 +111,7 @@ void write_matrix(std::vector<std::byte>& bytes,
     write_le32(bytes, kMobyClassesOffset + 4U, 0x123U);
     write_le32(bytes, kMobyClassesOffset + 8U, 0x456U);
 
-    write_le32(bytes, kMobyInstancesOffset, 1U);
+    write_le32(bytes, kMobyInstancesOffset, 2U);
     write_le32(bytes, kMobyInstancesOffset + 4U, 3U);
     write_le32(bytes,
                kMobyInstancesOffset + 0x10U,
@@ -130,10 +136,51 @@ void write_matrix(std::vector<std::byte>& bytes,
     write_le32(bytes, kMobyInstancesOffset + 0x58U, 7U);
     write_le32(bytes, kMobyInstancesOffset + 0x60U,
                std::bit_cast<std::uint32_t>(4.0F));
-    write_le32(bytes, kMobyInstancesOffset + 0x68U, 9U);
+    write_le32(bytes, kMobyInstancesOffset + 0x68U, 0U);
     write_le32(bytes, kMobyInstancesOffset + 0x6cU, 10U);
     write_le32(bytes, kMobyInstancesOffset + 0x70U, 0x11223344U);
     write_le32(bytes, kMobyInstancesOffset + 0x80U, 11U);
+
+    const auto second_moby =
+        kMobyInstancesOffset + 0x10U +
+        openrc::kRacGameplayMobyRecordBytesV1;
+    write_le32(bytes,
+               second_moby,
+               openrc::kRacGameplayMobyRecordBytesV1);
+    write_le32(bytes, second_moby + 0x18U, 0x123U);
+    write_le32(bytes,
+               second_moby + 0x1cU,
+               std::bit_cast<std::uint32_t>(1.0F));
+    write_le32(bytes,
+               second_moby + 0x30U,
+               std::bit_cast<std::uint32_t>(11.0F));
+    write_le32(bytes,
+               second_moby + 0x34U,
+               std::bit_cast<std::uint32_t>(21.0F));
+    write_le32(bytes,
+               second_moby + 0x38U,
+               std::bit_cast<std::uint32_t>(31.0F));
+    write_le32(bytes, second_moby + 0x58U, 1U);
+
+    write_le32(bytes, kPvarTableOffset + 0x00U, 0U);
+    write_le32(bytes, kPvarTableOffset + 0x04U, 0x10U);
+    write_le32(bytes, kPvarTableOffset + 0x08U, 0x10U);
+    write_le32(bytes, kPvarTableOffset + 0x0cU, 0x10U);
+    write_le32(bytes, kPvarDataOffset + 0x00U, 1U);
+    write_le32(bytes, kPvarDataOffset + 0x04U, 8U);
+    write_le32(bytes, kPvarDataOffset + 0x08U, 0x11223344U);
+    write_le32(bytes, kPvarDataOffset + 0x0cU, 0x55667788U);
+    write_le32(bytes, kPvarDataOffset + 0x10U, 0xaabbccddU);
+    write_le32(bytes, kPvarDataOffset + 0x14U, 0x10203040U);
+
+    write_le32(bytes, kPvarMobyLinksOffset + 0x00U, 0U);
+    write_le32(bytes, kPvarMobyLinksOffset + 0x04U, 0U);
+    write_le32(bytes, kPvarMobyLinksOffset + 0x08U, 0xffffffffU);
+    write_le32(bytes, kPvarMobyLinksOffset + 0x0cU, 0xffffffffU);
+    write_le32(bytes, kPvarRelativePointersOffset + 0x00U, 0U);
+    write_le32(bytes, kPvarRelativePointersOffset + 0x04U, 4U);
+    write_le32(bytes, kPvarRelativePointersOffset + 0x08U, 0xffffffffU);
+    write_le32(bytes, kPvarRelativePointersOffset + 0x0cU, 0xffffffffU);
 
     write_le32(bytes, kTieClassesOffset, 2U);
     write_le32(bytes, kTieClassesOffset + 4U, 0x7e4U);
@@ -187,9 +234,13 @@ void test_valid_bank() {
                result.moby_class_count == 2U &&
                result.moby_class_ids ==
                    std::vector<std::uint32_t>{0x123U, 0x456U} &&
-               result.static_moby_count == 1U &&
+               result.static_moby_count == 2U &&
                result.spawnable_moby_count == 3U &&
-               result.static_mobies.size() == 1U &&
+               result.static_mobies.size() == 2U &&
+               result.pvar_count == 2U &&
+               result.pvar_entries.size() == 2U &&
+               result.pvar_moby_link_fixup_count == 1U &&
+               result.pvar_relative_pointer_fixup_count == 1U &&
                result.tie_class_count == 2U &&
                result.tie_class_ids ==
                    std::vector<std::uint32_t>{0x7e4U, 0x7e5U} &&
@@ -229,12 +280,50 @@ void test_valid_bank() {
                moby.position == std::array<float, 3>{10.0F, 20.0F, 30.0F} &&
                moby.rotation == std::array<float, 3>{0.1F, 0.2F, 0.3F} &&
                moby.group_index == 7 && moby.rooted_distance == 4.0F &&
-               moby.pvar_index == 9 && moby.occlusion == 10 &&
+               moby.pvar_index == 0 &&
+               moby.pvar_data_range ==
+                   openrc::RacGameplayRangeV1{kPvarDataOffset, 0x10U} &&
+               moby.occlusion == 10 &&
                moby.mode_bits == 0x11223344U && moby.light_index == 11,
            "RAC gameplay moby-instance placement metadata is wrong");
+    const auto& first_pvar = result.pvar_entries.front();
+    expect(result.pvar_table_records_range ==
+                   openrc::RacGameplayRangeV1{kPvarTableOffset, 0x10U} &&
+               result.pvar_data_used_range ==
+                   openrc::RacGameplayRangeV1{kPvarDataOffset, 0x20U} &&
+               first_pvar.index == 0U &&
+               first_pvar.owner_kind ==
+                   openrc::RacGameplayPvarOwnerKindV1::moby &&
+               first_pvar.owner_instance_index == 0U &&
+               first_pvar.table_record_range ==
+                   openrc::RacGameplayRangeV1{kPvarTableOffset, 0x08U} &&
+               first_pvar.data_range ==
+                   openrc::RacGameplayRangeV1{kPvarDataOffset, 0x10U} &&
+               first_pvar.moby_link_fixups.size() == 1U &&
+               first_pvar.relative_pointer_fixups.size() == 1U &&
+               first_pvar.moby_link_fixups.front().record_range ==
+                   openrc::RacGameplayRangeV1{kPvarMobyLinksOffset, 0x08U} &&
+               first_pvar.moby_link_fixups.front().field_range ==
+                   openrc::RacGameplayRangeV1{kPvarDataOffset, 0x04U} &&
+               first_pvar.moby_link_fixups.front().raw_value == 1U &&
+               first_pvar.relative_pointer_fixups.front().record_range ==
+                   openrc::RacGameplayRangeV1{
+                       kPvarRelativePointersOffset, 0x08U} &&
+               first_pvar.relative_pointer_fixups.front().field_offset == 4U &&
+               first_pvar.relative_pointer_fixups.front().field_range ==
+                   openrc::RacGameplayRangeV1{kPvarDataOffset + 4U, 0x04U} &&
+               first_pvar.relative_pointer_fixups.front().raw_value == 8U &&
+               result.pvar_entries[1U].owner_instance_index == 1U &&
+               result.pvar_entries[1U].data_range ==
+                   openrc::RacGameplayRangeV1{kPvarDataOffset + 0x10U,
+                                              0x10U} &&
+               result.pvar_entries[1U].moby_link_fixups.empty() &&
+               result.pvar_entries[1U].relative_pointer_fixups.empty(),
+           "RAC gameplay PVar ownership, ranges, or fixups are wrong");
     const auto& tie = result.tie_instances.front();
     expect(tie.record_range ==
-                   openrc::RacGameplayRangeV1{0x2e0U, 0xe0U} &&
+                   openrc::RacGameplayRangeV1{kTieInstancesOffset + 0x10U,
+                                              0xe0U} &&
                tie.class_id == 0x7e4U && tie.matrix[0U] == 0.5F &&
                tie.matrix[5U] == 0.5F && tie.matrix[10U] == 0.5F &&
                tie.matrix[12U] == 105.0F && tie.matrix[13U] == 203.0F &&
@@ -246,7 +335,8 @@ void test_valid_bank() {
            "RAC gameplay TIE-instance metadata is wrong");
     const auto& shrub = result.shrub_instances.front();
     expect(shrub.record_range ==
-                   openrc::RacGameplayRangeV1{0x3f0U, 0x70U} &&
+                   openrc::RacGameplayRangeV1{kShrubInstancesOffset + 0x10U,
+                                              0x70U} &&
                shrub.class_id == 0x1d1U && shrub.matrix[0U] == 0.65F &&
                shrub.matrix[5U] == 0.65F && shrub.matrix[10U] == 0.65F &&
                shrub.matrix[12U] == 172.0F && shrub.matrix[13U] == 167.0F &&
@@ -274,7 +364,7 @@ void test_valid_bank() {
                result.blocks[14U].range ==
                    openrc::RacGameplayRangeV1{kMobyClassesOffset, 0x10U} &&
                result.blocks[15U].range ==
-                   openrc::RacGameplayRangeV1{kMobyInstancesOffset, 0x90U} &&
+                   openrc::RacGameplayRangeV1{kMobyInstancesOffset, 0x100U} &&
                result.blocks[22U].range ==
                    openrc::RacGameplayRangeV1{kTieClassesOffset, 0x10U} &&
                result.blocks[23U].range ==
@@ -295,25 +385,36 @@ void test_valid_bank() {
 
 void test_limits() {
     const auto bytes = make_bank();
-    for (const auto limits :
-         {openrc::RacGameplayBankLimitsV1{0U},
-          openrc::RacGameplayBankLimitsV1{kBankBytes - 1U},
-          openrc::RacGameplayBankLimitsV1{kBankBytes, 1U, 65'536U},
-          openrc::RacGameplayBankLimitsV1{kBankBytes, 65'536U, 0U},
-          openrc::RacGameplayBankLimitsV1{
-              kBankBytes, 65'536U, 65'536U, 1U},
-          openrc::RacGameplayBankLimitsV1{
-              kBankBytes, 65'536U, 65'536U, 65'536U, 0U},
-          openrc::RacGameplayBankLimitsV1{
-              kBankBytes, 65'536U, 65'536U, 65'536U, 65'536U, 1U},
-          openrc::RacGameplayBankLimitsV1{
-              kBankBytes,
-              65'536U,
-              65'536U,
-              65'536U,
-              65'536U,
-              65'536U,
-              0U}}) {
+    std::vector<openrc::RacGameplayBankLimitsV1> rejected_limits{
+        openrc::RacGameplayBankLimitsV1{0U},
+        openrc::RacGameplayBankLimitsV1{kBankBytes - 1U},
+        openrc::RacGameplayBankLimitsV1{kBankBytes, 1U, 65'536U},
+        openrc::RacGameplayBankLimitsV1{kBankBytes, 65'536U, 0U},
+        openrc::RacGameplayBankLimitsV1{
+            kBankBytes, 65'536U, 65'536U, 1U},
+        openrc::RacGameplayBankLimitsV1{
+            kBankBytes, 65'536U, 65'536U, 65'536U, 0U},
+        openrc::RacGameplayBankLimitsV1{
+            kBankBytes, 65'536U, 65'536U, 65'536U, 65'536U, 1U},
+        openrc::RacGameplayBankLimitsV1{
+            kBankBytes,
+            65'536U,
+            65'536U,
+            65'536U,
+            65'536U,
+            65'536U,
+            0U}};
+    auto no_pvar_entries = kLimits;
+    no_pvar_entries.max_pvar_entries = 0U;
+    rejected_limits.push_back(no_pvar_entries);
+    auto no_moby_fixups = kLimits;
+    no_moby_fixups.max_pvar_moby_link_fixups = 0U;
+    rejected_limits.push_back(no_moby_fixups);
+    auto no_relative_fixups = kLimits;
+    no_relative_fixups.max_pvar_relative_pointer_fixups = 0U;
+    rejected_limits.push_back(no_relative_fixups);
+
+    for (const auto& limits : rejected_limits) {
         try {
             (void)openrc::parse_rac_gameplay_bank_v1(bytes, limits);
         } catch (const openrc::RacGameplayBankError&) {
@@ -387,8 +488,107 @@ void test_structural_rejections() {
         },
         "a non-finite RAC1 moby position was accepted");
     expect_rejected(
-        [](auto& bytes) { bytes[kMobyInstancesOffset + 0x88U] = std::byte{1}; },
-        "non-zero moby alignment padding was accepted");
+        [](auto& bytes) {
+            write_le32(bytes,
+                       kMobyInstancesOffset + 0x10U +
+                           openrc::kRacGameplayMobyRecordBytesV1,
+                       0x70U);
+        },
+        "a wrong second RAC1 moby record size was accepted");
+
+    const auto second_moby =
+        kMobyInstancesOffset + 0x10U +
+        openrc::kRacGameplayMobyRecordBytesV1;
+    expect_rejected(
+        [second_moby](auto& bytes) {
+            write_le32(bytes, second_moby + 0x58U, 0xfffffffeU);
+        },
+        "a PVar owner index below -1 was accepted");
+    expect_rejected(
+        [second_moby](auto& bytes) {
+            write_le32(bytes, second_moby + 0x58U, 0U);
+        },
+        "a duplicate PVar owner index was accepted");
+    expect_rejected(
+        [second_moby](auto& bytes) {
+            write_le32(bytes, second_moby + 0x58U, 2U);
+        },
+        "a sparse PVar owner index set was accepted");
+    expect_rejected(
+        [](auto& bytes) {
+            write_le32(bytes, kPvarTableOffset + 0x08U, 0U);
+        },
+        "overlapping PVar data ranges were accepted");
+    expect_rejected(
+        [](auto& bytes) {
+            write_le32(bytes, kPvarTableOffset + 0x0cU, 0U);
+        },
+        "a zero-sized PVar data range was accepted");
+    expect_rejected(
+        [](auto& bytes) {
+            write_le32(bytes, kPvarTableOffset + 0x0cU, 8U);
+        },
+        "an unaligned PVar data range was accepted");
+    expect_rejected(
+        [](auto& bytes) {
+            write_le32(bytes, kPvarTableOffset + 0x0cU, 0x30U);
+        },
+        "a PVar data range leaving its block was accepted");
+    expect_rejected(
+        [second_moby](auto& bytes) {
+            write_le32(bytes, second_moby + 0x58U, 0xffffffffU);
+        },
+        "non-zero PVar table padding was accepted");
+    expect_rejected(
+        [second_moby](auto& bytes) {
+            write_le32(bytes, second_moby + 0x58U, 0xffffffffU);
+            write_le32(bytes, kPvarTableOffset + 0x08U, 0U);
+            write_le32(bytes, kPvarTableOffset + 0x0cU, 0U);
+        },
+        "non-zero bytes after the used PVar data were accepted");
+    expect_rejected(
+        [](auto& bytes) {
+            write_le32(bytes, kPvarMobyLinksOffset, 2U);
+        },
+        "a PVar fixup with an invalid owner index was accepted");
+    expect_rejected(
+        [](auto& bytes) {
+            write_le32(bytes, kPvarMobyLinksOffset + 4U, 2U);
+        },
+        "an unaligned PVar fixup field was accepted");
+    expect_rejected(
+        [](auto& bytes) {
+            write_le32(bytes, kPvarMobyLinksOffset + 4U, 0x10U);
+        },
+        "a PVar fixup field leaving its owner was accepted");
+    expect_rejected(
+        [](auto& bytes) { write_le32(bytes, kPvarDataOffset, 5U); },
+        "an out-of-range PVar Moby link was accepted");
+    expect_rejected(
+        [](auto& bytes) {
+            write_le32(bytes, kPvarDataOffset + 4U, 0x10U);
+        },
+        "an out-of-range relative PVar pointer was accepted");
+    expect_rejected(
+        [](auto& bytes) { write_le32(bytes, kPvarDataOffset + 4U, 2U); },
+        "an unaligned relative PVar pointer was accepted");
+    expect_rejected(
+        [](auto& bytes) {
+            write_le32(bytes, kPvarRelativePointersOffset + 4U, 0U);
+        },
+        "overlapping PVar fixup fields were accepted");
+    expect_rejected(
+        [](auto& bytes) {
+            write_le32(bytes, kPvarMobyLinksOffset + 0x0cU, 0U);
+        },
+        "an invalid PVar fixup terminator was accepted");
+    expect_rejected(
+        [](auto& bytes) {
+            write_le32(bytes, kPvarMobyLinksOffset + 0x08U, 1U);
+            write_le32(bytes, kPvarMobyLinksOffset + 0x0cU, 0U);
+            write_le32(bytes, kPvarDataOffset + 0x10U, 0U);
+        },
+        "a PVar fixup block without a terminator was accepted");
 
     expect_rejected(
         [](auto& bytes) { write_le32(bytes, kTieClassesOffset, 0xffffffffU); },

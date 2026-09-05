@@ -9,6 +9,7 @@
 #include <limits>
 #include <span>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -21,6 +22,10 @@ constexpr std::uint32_t kRacLevelSettingsBytes = 0x50U;
 constexpr std::uint32_t kMobyBlockHeaderBytes = 0x10U;
 constexpr std::uint32_t kEnvironmentInstanceBlockHeaderBytes = 0x10U;
 constexpr std::uint32_t kEnvironmentInstanceMatrixOffset = 0x10U;
+constexpr std::uint32_t kCameraRecordBytes = 0x20U;
+constexpr std::uint32_t kCameraPvarIndexOffset = 0x1cU;
+constexpr std::uint32_t kSoundInstanceRecordBytes = 0x90U;
+constexpr std::uint32_t kSoundInstancePvarIndexOffset = 0x08U;
 
 struct BlockDescriptionV1 {
     RacGameplayBlockKindV1 kind;
@@ -291,6 +296,295 @@ template <typename InstanceV1>
     return result;
 }
 
+struct PvarOwnerV1 {
+    RacGameplayPvarOwnerKindV1 kind = RacGameplayPvarOwnerKindV1::moby;
+    std::uint32_t instance_index = 0U;
+};
+
+using PvarOwnersV1 = std::unordered_map<std::uint32_t, PvarOwnerV1>;
+
+void add_pvar_owner(PvarOwnersV1& owners,
+                    const std::int32_t source_index,
+                    const PvarOwnerV1 owner,
+                    const RacGameplayBankLimitsV1 limits) {
+    if (source_index == -1) {
+        return;
+    }
+    if (source_index < 0 ||
+        static_cast<std::uint32_t>(source_index) >= limits.max_pvar_entries ||
+        !owners.emplace(static_cast<std::uint32_t>(source_index), owner)
+             .second) {
+        fail("RacGameplayBankV1 has an invalid or duplicate PVar owner index");
+    }
+}
+
+void collect_table_pvar_owners(
+    const std::span<const std::byte> bytes,
+    const RacGameplayBlockV1& block,
+    const std::uint32_t record_bytes,
+    const std::uint32_t pvar_index_offset,
+    const RacGameplayPvarOwnerKindV1 owner_kind,
+    const char* const description,
+    PvarOwnersV1& owners,
+    const RacGameplayBankLimitsV1 limits) {
+    if (block.range.size < kEnvironmentInstanceBlockHeaderBytes) {
+        fail(std::string("RacGameplayBankV1 has a truncated ") + description);
+    }
+    const auto block_offset = static_cast<std::size_t>(block.range.offset);
+    const auto signed_count = read_le_i32(bytes, block_offset);
+    if (signed_count < 0 || read_le32(bytes, block_offset + 4U) != 0U ||
+        read_le32(bytes, block_offset + 8U) != 0U ||
+        read_le32(bytes, block_offset + 12U) != 0U ||
+        pvar_index_offset > record_bytes ||
+        record_bytes - pvar_index_offset < sizeof(std::uint32_t)) {
+        fail(std::string("RacGameplayBankV1 has an invalid ") + description);
+    }
+    const auto count = static_cast<std::uint32_t>(signed_count);
+    const auto logical_bytes = checked_table_bytes(
+        count, kEnvironmentInstanceBlockHeaderBytes, record_bytes, description);
+    if (logical_bytes > block.range.size) {
+        fail(std::string("RacGameplayBankV1 has a truncated ") + description);
+    }
+    for (std::uint32_t index = 0U; index < count; ++index) {
+        const auto record_offset =
+            block_offset + kEnvironmentInstanceBlockHeaderBytes +
+            static_cast<std::size_t>(index) * record_bytes;
+        add_pvar_owner(owners,
+                       read_le_i32(bytes, record_offset + pvar_index_offset),
+                       PvarOwnerV1{owner_kind, index},
+                       limits);
+    }
+    validate_zero_tail(bytes, block, logical_bytes, description);
+}
+
+[[nodiscard]] std::uint32_t parse_pvar_fixups(
+    const std::span<const std::byte> bytes,
+    const RacGameplayBlockV1& block,
+    const RacGameplayPvarFixupKindV1 kind,
+    const std::uint64_t limit,
+    const std::uint64_t total_moby_count,
+    std::unordered_set<std::uint64_t>& occupied_fields,
+    std::vector<RacGameplayPvarEntryV1>& entries) {
+    if (block.range.size < kRacGameplayPvarFixupRecordBytesV1) {
+        fail("RacGameplayBankV1 has a truncated PVar fixup block");
+    }
+
+    const auto block_offset = static_cast<std::size_t>(block.range.offset);
+    const auto block_size = static_cast<std::size_t>(block.range.size);
+    std::uint64_t count = 0U;
+    for (std::size_t relative_offset = 0U;
+         relative_offset + kRacGameplayPvarFixupRecordBytesV1 <= block_size;
+         relative_offset += kRacGameplayPvarFixupRecordBytesV1) {
+        const auto record_offset = block_offset + relative_offset;
+        const auto source_pvar_index = read_le_i32(bytes, record_offset);
+        const auto field_offset = read_le32(bytes, record_offset + 4U);
+        if (source_pvar_index < 0) {
+            if (source_pvar_index != -1 ||
+                field_offset != std::numeric_limits<std::uint32_t>::max()) {
+                fail("RacGameplayBankV1 has an invalid PVar fixup terminator");
+            }
+            validate_zero_tail(
+                bytes,
+                block,
+                relative_offset + kRacGameplayPvarFixupRecordBytesV1,
+                "the PVar fixup list");
+            return static_cast<std::uint32_t>(count);
+        }
+        if (count >= limit ||
+            count >= std::numeric_limits<std::uint32_t>::max()) {
+            fail("RacGameplayBankV1 PVar fixup count exceeds its caller limit");
+        }
+        const auto pvar_index = static_cast<std::uint32_t>(source_pvar_index);
+        if (pvar_index >= entries.size()) {
+            fail("A RacGameplayBankV1 PVar fixup has an invalid owner index");
+        }
+        auto& entry = entries[pvar_index];
+        if ((field_offset & (kRacGameplayPvarPointerBytesV1 - 1U)) != 0U ||
+            field_offset > entry.data_range.size ||
+            entry.data_range.size - field_offset <
+                kRacGameplayPvarPointerBytesV1) {
+            fail("A RacGameplayBankV1 PVar fixup field leaves its owner range");
+        }
+        const auto field_key =
+            (static_cast<std::uint64_t>(pvar_index) << 32U) | field_offset;
+        if (!occupied_fields.insert(field_key).second) {
+            fail("RacGameplayBankV1 has overlapping PVar fixup fields");
+        }
+        const auto absolute_field_offset = entry.data_range.offset + field_offset;
+        const auto raw_value =
+            read_le32(bytes, static_cast<std::size_t>(absolute_field_offset));
+        if (kind == RacGameplayPvarFixupKindV1::moby_link) {
+            const auto target = std::bit_cast<std::int32_t>(raw_value);
+            if (target < 0 ||
+                static_cast<std::uint64_t>(target) >= total_moby_count) {
+                fail("A RacGameplayBankV1 PVar Moby link has an invalid target");
+            }
+        } else {
+            if ((raw_value & (kRacGameplayPvarPointerBytesV1 - 1U)) != 0U ||
+                raw_value >= entry.data_range.size) {
+                fail("A RacGameplayBankV1 relative PVar pointer has an "
+                     "invalid target");
+            }
+        }
+
+        RacGameplayPvarFixupV1 fixup;
+        fixup.kind = kind;
+        fixup.record_range = {
+            record_offset, kRacGameplayPvarFixupRecordBytesV1};
+        fixup.pvar_index = pvar_index;
+        fixup.field_offset = field_offset;
+        fixup.field_range = {
+            absolute_field_offset, kRacGameplayPvarPointerBytesV1};
+        fixup.raw_value = raw_value;
+        if (kind == RacGameplayPvarFixupKindV1::moby_link) {
+            entry.moby_link_fixups.push_back(fixup);
+        } else {
+            entry.relative_pointer_fixups.push_back(fixup);
+        }
+        ++count;
+    }
+    fail("RacGameplayBankV1 PVar fixup block has no terminator");
+}
+
+void parse_pvars(const std::span<const std::byte> bytes,
+                 RacGameplayBankV1& result,
+                 const RacGameplayBankLimitsV1 limits) {
+    PvarOwnersV1 owners;
+    owners.reserve(std::min<std::uint64_t>(
+        limits.max_pvar_entries, result.static_mobies.size() + 1024U));
+    for (std::size_t index = 0U; index < result.static_mobies.size(); ++index) {
+        add_pvar_owner(owners,
+                       result.static_mobies[index].pvar_index,
+                       PvarOwnerV1{RacGameplayPvarOwnerKindV1::moby,
+                                   static_cast<std::uint32_t>(index)},
+                       limits);
+    }
+    collect_table_pvar_owners(
+        bytes,
+        require_block(result, RacGameplayBlockKindV1::cameras, "camera block"),
+        kCameraRecordBytes,
+        kCameraPvarIndexOffset,
+        RacGameplayPvarOwnerKindV1::camera,
+        "camera PVar-owner block",
+        owners,
+        limits);
+    collect_table_pvar_owners(
+        bytes,
+        require_block(result,
+                      RacGameplayBlockKindV1::sound_instances,
+                      "sound-instance block"),
+        kSoundInstanceRecordBytes,
+        kSoundInstancePvarIndexOffset,
+        RacGameplayPvarOwnerKindV1::sound,
+        "sound-instance PVar-owner block",
+        owners,
+        limits);
+
+    std::uint32_t pvar_count = 0U;
+    if (!owners.empty()) {
+        const auto maximum_index = std::max_element(
+            owners.begin(),
+            owners.end(),
+            [](const auto& left, const auto& right) {
+                return left.first < right.first;
+            })->first;
+        if (maximum_index == std::numeric_limits<std::uint32_t>::max()) {
+            fail("RacGameplayBankV1 PVar owner index overflows its table count");
+        }
+        pvar_count = maximum_index + 1U;
+        if (owners.size() != pvar_count) {
+            fail("RacGameplayBankV1 PVar owner indices are not dense");
+        }
+    }
+
+    const auto& table = require_block(
+        result, RacGameplayBlockKindV1::pvar_table, "PVar table block");
+    const auto table_bytes =
+        static_cast<std::uint64_t>(pvar_count) *
+        kRacGameplayPvarTableRecordBytesV1;
+    validate_zero_tail(bytes, table, table_bytes, "the PVar table");
+    result.pvar_count = pvar_count;
+    result.pvar_table_records_range = {table.range.offset, table_bytes};
+
+    const auto& data = require_block(
+        result, RacGameplayBlockKindV1::pvar_data, "PVar data block");
+    result.pvar_entries.reserve(pvar_count);
+    std::uint64_t expected_data_offset = 0U;
+    for (std::uint32_t index = 0U; index < pvar_count; ++index) {
+        const auto record_offset =
+            static_cast<std::size_t>(table.range.offset) +
+            static_cast<std::size_t>(index) *
+                kRacGameplayPvarTableRecordBytesV1;
+        const auto signed_data_offset = read_le_i32(bytes, record_offset);
+        const auto signed_data_size = read_le_i32(bytes, record_offset + 4U);
+        if (signed_data_offset < 0 || signed_data_size <= 0) {
+            fail("RacGameplayBankV1 has an invalid PVar data range");
+        }
+        const auto data_offset =
+            static_cast<std::uint32_t>(signed_data_offset);
+        const auto data_size = static_cast<std::uint32_t>(signed_data_size);
+        if ((data_offset & (kRacGameplayBlockAlignmentV1 - 1U)) != 0U ||
+            (data_size & (kRacGameplayBlockAlignmentV1 - 1U)) != 0U ||
+            data_offset != expected_data_offset ||
+            data_offset > data.range.size ||
+            data_size > data.range.size - data_offset) {
+            fail("RacGameplayBankV1 has overlapping or non-canonical PVar "
+                 "data ranges");
+        }
+        const auto owner = owners.find(index);
+        if (owner == owners.end()) {
+            fail("RacGameplayBankV1 PVar table entry has no instance owner");
+        }
+        RacGameplayPvarEntryV1 entry;
+        entry.index = index;
+        entry.owner_kind = owner->second.kind;
+        entry.owner_instance_index = owner->second.instance_index;
+        entry.table_record_range = {
+            record_offset, kRacGameplayPvarTableRecordBytesV1};
+        entry.data_range = {data.range.offset + data_offset, data_size};
+        result.pvar_entries.push_back(std::move(entry));
+        expected_data_offset =
+            static_cast<std::uint64_t>(data_offset) + data_size;
+    }
+    validate_zero_tail(bytes, data, expected_data_offset, "the PVar data");
+    result.pvar_data_used_range = {data.range.offset, expected_data_offset};
+
+    for (auto& instance : result.static_mobies) {
+        if (instance.pvar_index >= 0) {
+            const auto index = static_cast<std::uint32_t>(instance.pvar_index);
+            if (index >= result.pvar_entries.size()) {
+                fail("A RacGameplayBankV1 Moby PVar index leaves its table");
+            }
+            instance.pvar_data_range = result.pvar_entries[index].data_range;
+        }
+    }
+
+    std::unordered_set<std::uint64_t> occupied_fields;
+    const auto total_moby_count =
+        static_cast<std::uint64_t>(result.static_moby_count) +
+        result.spawnable_moby_count;
+    result.pvar_moby_link_fixup_count = parse_pvar_fixups(
+        bytes,
+        require_block(result,
+                      RacGameplayBlockKindV1::pvar_moby_links,
+                      "Moby-link PVar fixup block"),
+        RacGameplayPvarFixupKindV1::moby_link,
+        limits.max_pvar_moby_link_fixups,
+        total_moby_count,
+        occupied_fields,
+        result.pvar_entries);
+    result.pvar_relative_pointer_fixup_count = parse_pvar_fixups(
+        bytes,
+        require_block(result,
+                      RacGameplayBlockKindV1::pvar_relative_pointers,
+                      "relative-pointer PVar fixup block"),
+        RacGameplayPvarFixupKindV1::relative_pointer,
+        limits.max_pvar_relative_pointer_fixups,
+        total_moby_count,
+        occupied_fields,
+        result.pvar_entries);
+}
+
 void validate_semantic_anchors(const std::span<const std::byte> bytes,
                                RacGameplayBankV1& result,
                                const RacGameplayBankLimitsV1 limits) {
@@ -532,6 +826,7 @@ void validate_semantic_anchors(const std::span<const std::byte> bytes,
     validate_zero_tail(bytes, mobies, moby_bytes, "the moby-instance list");
     result.static_moby_count = raw_static_count;
     result.spawnable_moby_count = raw_spawnable_count;
+    parse_pvars(bytes, result, limits);
 }
 
 } // namespace
@@ -562,7 +857,9 @@ parse_rac_gameplay_bank_v1(const std::span<const std::byte> bytes,
     if (limits.max_input_bytes == 0U || limits.max_moby_classes == 0U ||
         limits.max_static_mobies == 0U || limits.max_tie_classes == 0U ||
         limits.max_tie_instances == 0U || limits.max_shrub_classes == 0U ||
-        limits.max_shrub_instances == 0U) {
+        limits.max_shrub_instances == 0U || limits.max_pvar_entries == 0U ||
+        limits.max_pvar_moby_link_fixups == 0U ||
+        limits.max_pvar_relative_pointer_fixups == 0U) {
         fail("RacGameplayBankV1 caller limits must all be non-zero");
     }
     if (bytes.size() > limits.max_input_bytes) {

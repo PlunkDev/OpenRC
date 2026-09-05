@@ -24,6 +24,8 @@ constexpr std::uint32_t kGameplayBytes = 0x510U;
 constexpr std::uint32_t kLevelSettingsOffset = 0xb0U;
 constexpr std::uint32_t kMobyClassesOffset = 0x1c0U;
 constexpr std::uint32_t kMobyInstancesOffset = 0x1d0U;
+constexpr std::uint32_t kPvarMobyLinksOffset = 0x280U;
+constexpr std::uint32_t kPvarRelativePointersOffset = 0x290U;
 constexpr std::array<std::uint32_t, openrc::kRacGameplayBlockCountV1>
     kPhysicalPointerSlots{
         0x88U, 0x00U, 0x10U, 0x14U, 0x18U, 0x1cU, 0x20U, 0x24U, 0x28U,
@@ -263,6 +265,11 @@ void write_i32(std::vector<std::byte> &bytes, const std::size_t offset,
             std::bit_cast<std::uint32_t>(0.2F));
   write_u32(bytes, player + 0x44U,
             std::bit_cast<std::uint32_t>(0.625F));
+  write_i32(bytes, player + 0x58U, -1);
+  write_i32(bytes, kPvarMobyLinksOffset, -1);
+  write_i32(bytes, kPvarMobyLinksOffset + 4U, -1);
+  write_i32(bytes, kPvarRelativePointersOffset, -1);
+  write_i32(bytes, kPvarRelativePointersOffset + 4U, -1);
   return bytes;
 }
 

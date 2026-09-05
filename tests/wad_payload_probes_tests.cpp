@@ -341,6 +341,11 @@ void write_scene_entry(
         openrc::kRacGameplayMobyRecordBytesV1);
     write_le32(bytes, kRacGameplayMobyInstancesOffset + 0x28U, 0x123U);
     write_le32(bytes, kRacGameplayMobyInstancesOffset + 0x2cU, 0x3f800000U);
+    write_le32(bytes, kRacGameplayMobyInstancesOffset + 0x68U, 0xffffffffU);
+    write_le32(bytes, 0x280U, 0xffffffffU);
+    write_le32(bytes, 0x284U, 0xffffffffU);
+    write_le32(bytes, 0x290U, 0xffffffffU);
+    write_le32(bytes, 0x294U, 0xffffffffU);
     return bytes;
 }
 

@@ -18,6 +18,9 @@ inline constexpr std::uint32_t kRacGameplayBlockCountV1 = 36U;
 inline constexpr std::uint32_t kRacGameplayMobyRecordBytesV1 = 0x78U;
 inline constexpr std::uint32_t kRacGameplayTieRecordBytesV1 = 0xe0U;
 inline constexpr std::uint32_t kRacGameplayShrubRecordBytesV1 = 0x70U;
+inline constexpr std::uint32_t kRacGameplayPvarTableRecordBytesV1 = 0x08U;
+inline constexpr std::uint32_t kRacGameplayPvarFixupRecordBytesV1 = 0x08U;
+inline constexpr std::uint32_t kRacGameplayPvarPointerBytesV1 = 0x04U;
 
 // Values follow the on-disc header slots. The physical block order is
 // deliberately different and is reconstructed by the parser.
@@ -68,6 +71,9 @@ struct RacGameplayBankLimitsV1 {
     std::uint64_t max_tie_instances = 65'536U;
     std::uint64_t max_shrub_classes = 65'536U;
     std::uint64_t max_shrub_instances = 65'536U;
+    std::uint64_t max_pvar_entries = 65'536U;
+    std::uint64_t max_pvar_moby_link_fixups = 1'048'576U;
+    std::uint64_t max_pvar_relative_pointer_fixups = 1'048'576U;
 };
 
 struct RacGameplayRangeV1 {
@@ -81,6 +87,45 @@ struct RacGameplayBlockV1 {
     RacGameplayBlockKindV1 kind = RacGameplayBlockKindV1::level_settings;
     std::uint32_t header_pointer_offset = 0U;
     RacGameplayRangeV1 range;
+};
+
+// PVar ownership is part of the serialized RAC1 table contract. The owner
+// index is table-local to its family: a static-Moby index, camera index, or
+// sound-instance index. No class-specific meaning is assigned to PVar bytes.
+enum class RacGameplayPvarOwnerKindV1 : std::uint8_t {
+    moby = 0U,
+    camera,
+    sound,
+};
+
+enum class RacGameplayPvarFixupKindV1 : std::uint8_t {
+    moby_link = 0U,
+    relative_pointer,
+};
+
+struct RacGameplayPvarFixupV1 {
+    RacGameplayPvarFixupKindV1 kind =
+        RacGameplayPvarFixupKindV1::moby_link;
+    RacGameplayRangeV1 record_range;
+    std::uint32_t pvar_index = 0U;
+    std::uint32_t field_offset = 0U;
+    RacGameplayRangeV1 field_range;
+    // For a moby-link fixup this is a non-negative Moby instance index. For a
+    // relative-pointer fixup this is a byte offset inside the same PVar.
+    std::uint32_t raw_value = 0U;
+};
+
+struct RacGameplayPvarEntryV1 {
+    std::uint32_t index = 0U;
+    RacGameplayPvarOwnerKindV1 owner_kind =
+        RacGameplayPvarOwnerKindV1::moby;
+    std::uint32_t owner_instance_index = 0U;
+    RacGameplayRangeV1 table_record_range;
+    // Absolute range in the complete decoded gameplay bank. This preserves
+    // every opaque class-specific byte without exposing a source pointer.
+    RacGameplayRangeV1 data_range;
+    std::vector<RacGameplayPvarFixupV1> moby_link_fixups;
+    std::vector<RacGameplayPvarFixupV1> relative_pointer_fixups;
 };
 
 // The fixed 0x50-byte RAC1 level-settings record. Every source word remains
@@ -129,6 +174,9 @@ struct RacGameplayMobyInstanceV1 {
     std::uint32_t rooted_distance_bits = 0U;
     float rooted_distance = 0.0F;
     std::int32_t pvar_index = 0;
+    // Empty only when pvar_index is -1. Otherwise this is the same bounded
+    // source range exposed by pvar_entries[pvar_index].
+    RacGameplayRangeV1 pvar_data_range;
     std::int32_t occlusion = 0;
     std::uint32_t mode_bits = 0U;
     std::int32_t light_index = 0;
@@ -170,6 +218,15 @@ struct RacGameplayBankV1 {
     std::uint32_t spawnable_moby_count = 0U;
     std::vector<RacGameplayMobyInstanceV1> static_mobies;
 
+    std::uint32_t pvar_count = 0U;
+    RacGameplayRangeV1 pvar_table_records_range;
+    RacGameplayRangeV1 pvar_data_used_range;
+    std::uint32_t pvar_moby_link_fixup_count = 0U;
+    std::uint32_t pvar_relative_pointer_fixup_count = 0U;
+    // Indexed directly by the source pvar_index. Each entry indexes its
+    // bounded opaque source bytes and owns both validated fixup lists.
+    std::vector<RacGameplayPvarEntryV1> pvar_entries;
+
     std::uint32_t tie_class_count = 0U;
     std::vector<std::uint32_t> tie_class_ids;
     std::uint32_t tie_instance_count = 0U;
@@ -197,7 +254,9 @@ find_rac_gameplay_block_v1(const RacGameplayBankV1& bank,
 // The fixed pointer directory and its physical ordering are validated, while
 // every section remains a zero-copy range. Moby, TIE, and shrub class lists
 // and fixed-size instance records provide strict semantic anchors for format
-// probing. Moby placement fields and complete TIE/shrub transform matrices
+// probing. The PVar table, opaque per-owner byte ranges, Moby-link fixups, and
+// relative-pointer fixups are bounded without assigning class-specific field
+// semantics. Moby placement fields and complete TIE/shrub transform matrices
 // are decoded while all TIE/shrub record words remain available verbatim.
 [[nodiscard]] RacGameplayBankV1
 parse_rac_gameplay_bank_v1(std::span<const std::byte> bytes,
