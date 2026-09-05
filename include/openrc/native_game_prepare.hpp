@@ -16,10 +16,14 @@ inline constexpr std::string_view kNativeGameIdV1 = "openrc-rac-2002";
 inline constexpr std::string_view kNativeGameBuildIdV1 = "SCES-50916-PAL-v2.00";
 inline constexpr std::string_view kNativeGameCompilerIdV1 =
     "openrc-asset-compiler";
+// The profile suffix is intentionally part of publication identity: packages
+// from the earlier collision/bootstrap/render-only compiler must be rebuilt.
 #ifdef OPENRC_VERSION
-inline constexpr std::string_view kNativeGameCompilerVersionV1 = OPENRC_VERSION;
+inline constexpr std::string_view kNativeGameCompilerVersionV1 =
+    OPENRC_VERSION "-native-five-resource-v1";
 #else
-inline constexpr std::string_view kNativeGameCompilerVersionV1 = "0.1.0-dev";
+inline constexpr std::string_view kNativeGameCompilerVersionV1 =
+    "0.1.0-dev-native-five-resource-v1";
 #endif
 inline constexpr std::uint64_t kNativeGameLevelPackageMaxBytesV1 =
     UINT64_C(768) * 1024U * 1024U;
@@ -58,6 +62,8 @@ enum class NativeGamePreparationPhaseV1 : std::uint32_t {
   publishing_staged = 10U,
   publishing_commit = 11U,
   reusing_existing_publication = 12U,
+  compiling_player_actor = 13U,
+  compiling_entity_scene = 14U,
 };
 
 struct NativeGamePreparationProgressV1 {

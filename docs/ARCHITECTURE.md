@@ -5,8 +5,9 @@
 1. The repository contains only original OpenRC source, tests, and metadata.
 2. The user's disc image is read locally and is never modified.
 3. Platform-independent code lives in `openrc_core`.
-4. Reverse-engineering tools and the eventual runtime share one description of
-   disc builds, symbols, executable overlays, and asset formats.
+4. Reverse-engineering tools and the asset compiler share one bounded
+   description of source disc builds and PS2 formats; the end-user runtime
+   receives only neutral, versioned OpenRC resources.
 5. PCSX2 may be used as a behavioral reference during development, but it is not
    part of the target runtime.
 
@@ -30,7 +31,11 @@ openrc_core
 ├── versioned PreparedGameV2/LevelPackageV1 resource and mod-overlay containers
 ├── exact-Q6 CollisionWorldV1 compilation, canonical I/O, rebuilt grid, and bounded queries
 ├── neutral LevelBootstrapV1 spawn/death-plane compilation and binary I/O
-├── planet-agnostic collision/bootstrap LevelPackageV1 foundation compilation
+├── neutral RenderSceneV1 textures/materials/meshes/instances and bounded binary I/O
+├── neutral ActorLibraryV1 rigs/skinned models/materials plus canonical content digests
+├── neutral EntitySceneV1 definitions and typed transform/render/actor/player bindings
+├── bounded bind-pose palette construction and CPU linear-blend actor skinning
+├── planet-agnostic five-resource LevelPackageV1 compilation and cross-resource validation
 ├── hardened PreparedGameV2 filesystem loading and transactional publication
 ├── deterministic fixed-step/input replay boundary and planet-agnostic world/session
 ├── deterministic character controller, checkpoints, respawn, and player simulation
@@ -70,6 +75,7 @@ openrc-cli
 ├── authoritative per-level collision/tree/surface diagnostics
 ├── single-level foundation package compilation and package-only movement smoke
 ├── all-level PreparedGameV2 foundation publication and published-root smoke
+├── all-level five-resource native-game publication and content smoke
 ├── static high-LOD Moby and TIE placement/bounds diagnostics
 ├── scene-animation and subtitle diagnostics
 ├── scene-block/VIF/VU/GS, 2FIP, MapArt, PS2D, VAGp, and SBlk diagnostics
@@ -92,6 +98,8 @@ openrc-runtime
 ├── exact ISO-to-prepared-ELF SHA-256 binding before scene access
 ├── package-only PreparedGameV2 level/resource mounting
 ├── fixed-step movement, collision, jump/reset, and third-person camera
+├── semantic player-slot → entity → actor-model → rig resolution
+├── textured Ratchet high-LOD bind-pose CPU skinning at the player transform
 ├── emitted GS-triangle conversion with raster-context coordinates
 ├── recovered-level 3D tfrag material batches with bounded debug orbit controls
 ├── explicit world-to-SceneBlock ×1024 Moby/TIE conversion and bounded merge
@@ -118,8 +126,8 @@ runnable package.
 
 ```text
 compiler/
-├── neutral RenderScene/GameplayScene/ActorRig and remaining resource schemas
-├── deterministic render/entity/actor compilation for every supported level
+├── animation clips and remaining gameplay/camera resource schemas
+├── deterministic animation/interaction compilation for every supported level
 └── compatibility-aware package rebuild and cache migration
 
 tools/
@@ -131,7 +139,7 @@ tools/
 runtime/
 ├── explicit ordered package-overlay selection
 ├── level-manager expansion and gameplay entities
-├── generic actor-rig and animation integration
+├── generic actor animation selection, evaluation, and blending
 ├── renderer fidelity and remaining specialized scene families
 ├── audio
 ├── game memory model
@@ -143,11 +151,28 @@ The package-based end-user boundary does not own an ISO parser. Raw disc, ELF,
 VIF, VU, GIF, and GS formats terminate at the compiler boundary; package
 loaders consume only versioned neutral OpenRC resources in normal world units.
 The graphical `openrc-runtime` has crossed that boundary through its explicit
-`--prepared-root` path and can load collision, bootstrap, and `RenderSceneV1`
-without the source ISO or boot ELF. The Launcher now drives the shared all-level
-compiler once, remembers the exact content-addressed installation, validates
-Veldin before launch, and passes only the prepared root and level ID to Play.
-The ISO/ELF route remains an explicit developer diagnostic path.
+`--prepared-root` path. The current compiler publishes exactly five resources
+per level: `world/collision`, `world/bootstrap`, `world/render-scene`,
+`actors/library`, and `world/entities`. The runtime mounts those neutral
+schemas, resolves player presentation through semantic keys, and never sees a
+RAC class ID, WAD offset, PS2 packet, source ISO, or boot ELF. The Launcher
+drives the shared all-level compiler once, remembers the exact
+content-addressed installation, validates Veldin before launch, and passes only
+the prepared root and level ID to Play. The ISO/ELF route remains an explicit
+developer diagnostic path.
+
+This boundary is intentionally reusable beyond Veldin. Numeric IDs are scoped
+to canonical tables, while cross-resource relationships use stable semantic
+keys such as actor model, rig, and archetype identities. Later planets and
+explicit mod overlays can therefore add or replace neutral assets without
+teaching the runtime RAC1 serialization rules.
+
+The current player presentation exercises that design with Ratchet's decoded
+high-LOD textures, bind-space mesh, hierarchy, inverse binds, and skin weights.
+The CPU pose path composes the bind palette and follows the deterministic
+player/camera simulation, but no animation clip resource or playback state is
+connected yet. Interactive entity behaviors, weapons, enemies, menus, and the
+original camera remain later runtime/compiler layers.
 
 ## Native-code strategy decision
 
@@ -327,9 +352,13 @@ every package identity, size, digest, relative path, and nested resource before
 writing. A verified sibling staging tree is promoted with same-parent renames;
 replacement retains and restores the previous destination on cancellation or
 failure. It neither opens an ISO nor discovers overlay files. The current CLI
-compiler supplies all 19 collision/bootstrap/render-scene packages to this
-publisher. Both the CLI and Launcher invoke the same compiler service, and the
-graphical runtime mounts the published result directly.
+compiler supplies all 19 five-resource level packages—collision, bootstrap,
+render scene, actor library, and entity scene—to this publisher. Actor/entity
+mounting is accepted only as a complete pair, and the runtime additionally
+validates level identity plus all player-slot, actor-model, rig, render-instance,
+and transform relationships before presenting content. Both the CLI and
+Launcher invoke the same compiler service, and the graphical runtime mounts
+the published result directly.
 
 ## Configuration and generated data
 

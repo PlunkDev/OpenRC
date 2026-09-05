@@ -480,7 +480,16 @@ void require_publication_root_outside_source(
             std::cout << "The existing native game matches the sources; "
                          "reusing it.\n";
             break;
+        case openrc::NativeGamePreparationPhaseV1::compiling_player_actor:
+            std::cout << level_prefix()
+                      << "compiling the reusable player actor...\n";
+            break;
+        case openrc::NativeGamePreparationPhaseV1::compiling_entity_scene:
+            std::cout << level_prefix()
+                      << "compiling neutral player entity bindings...\n";
+            break;
         }
+        std::cout.flush();
         return std::cout.good();
     } catch (...) {
         return false;

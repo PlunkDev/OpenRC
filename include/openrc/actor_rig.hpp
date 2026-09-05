@@ -16,7 +16,11 @@ inline constexpr std::size_t kActorMaximumSkinInfluencesV1 = 3U;
 // 3-by-3 part is not required to be orthogonal: authored bind data may contain
 // scale or shear and consumers must preserve it.
 struct ActorAffineTransformV1 {
-  std::array<float, kActorAffineRowsV1 * kActorAffineColumnsV1> values{};
+  std::array<float, kActorAffineRowsV1 * kActorAffineColumnsV1> values{
+      1.0F, 0.0F, 0.0F, 0.0F,
+      0.0F, 1.0F, 0.0F, 0.0F,
+      0.0F, 0.0F, 1.0F, 0.0F,
+  };
 
   [[nodiscard]] float at(const std::size_t row,
                          const std::size_t column) const {

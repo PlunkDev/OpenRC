@@ -29,6 +29,12 @@ struct RacLevelMobyModelV1 {
   std::uint8_t joint_count = 0U;
   std::array<std::uint8_t, 16U> texture_slots{};
   std::uint8_t used_texture_slot_count = 0U;
+  // Complete bounded RAC source retained only in the compiler-facing asset
+  // view. Neutral packages never serialize these bytes or the source parser
+  // metadata; keeping them here lets independent compiler passes build actor,
+  // collision, or future semantic resources without reopening the ISO.
+  RacMobyClassV1 source_class;
+  std::vector<std::byte> source_bytes;
   RacMobyModelGeometryV1 high_lod;
 };
 

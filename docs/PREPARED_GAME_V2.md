@@ -125,8 +125,8 @@ byte payload[payload_bytes]
 ```
 
 `type_id` is open-ended and independently versioned, for example
-`openrc.render-scene`, `openrc.collision-mesh`, `openrc.gameplay-scene`,
-`openrc.actor-rig`, or a mod-owned namespace. This allows neutral resource
+`openrc.render-scene`, `openrc.collision-world`, `openrc.actor-library`,
+`openrc.entity-scene`, or a mod-owned namespace. This allows neutral resource
 schemas to evolve without changing the package container.
 
 Known flags are:
@@ -153,6 +153,39 @@ Provenance is sorted by kind, locator, range, and digest. Direct source ranges
 must be non-empty and hashed. A generated compiler-pass record may name an
 empty range with a zero digest. Every overlay operation must include at least
 one `mod_resource` provenance record.
+
+## Current native-game resource profile
+
+The current all-level asset compiler emits exactly five upsert resources in
+every base `LevelPackageV1`:
+
+| Resource ID | Type ID | Schema | Runtime role |
+| --- | --- | ---: | --- |
+| `actors/library` | `openrc.actor-library` | 1 | semantic rigs and render-ready skinned actor models |
+| `world/bootstrap` | `openrc.level-bootstrap` | 1 | authored spawn points and absolute death plane |
+| `world/collision` | `openrc.collision-world` | 1 | exact-Q6 native collision geometry and search grid |
+| `world/entities` | `openrc.entity-scene` | 1 | stable entity definitions and typed component bindings |
+| `world/render-scene` | `openrc.render-scene` | 1 | static textures, materials, meshes, and instances |
+
+This is an asset-compiler profile, not a special Veldin container version.
+The same resource IDs and neutral schemas are used for all 19 supported level
+packages. LevelPackageV1 still permits other independently versioned resource
+types and explicit overlays.
+
+The runtime compatibility loader requires bootstrap, collision, and render
+scene. It accepts both actor library and entity scene as one feature pair so
+older three-resource development packages remain readable; a package exposing
+only one half is rejected. Publications produced by the current compiler always
+contain both. It also cross-validates the level ID and every semantic
+entity-to-model-to-rig relationship before gameplay receives the content.
+
+RAC class IDs, WAD and ELF offsets, VIF/VU/GIF/GS commands, and PS2 texture
+layouts are compiler-only inputs. They are not fields in these five runtime
+resources. Cross-resource references use semantic keys, while dense numeric IDs
+remain local to a canonical resource table. This lets later planets and mod
+overlays reuse or replace actor/entity assets without embedding source-format
+dispatch in the native runtime. See [ActorLibraryV1](ACTOR_LIBRARY_V1.md) and
+[EntitySceneV1](ENTITY_SCENE_V1.md) for those public contracts.
 
 ## Determinism and overlays
 

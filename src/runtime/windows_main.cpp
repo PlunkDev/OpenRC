@@ -4,6 +4,7 @@
 #include "openrc/prepared_game_v2_fs.hpp"
 #include "openrc/runtime_gameplay.hpp"
 #include "openrc/runtime_level_content.hpp"
+#include "openrc/runtime_player_actor.hpp"
 #include "openrc/third_person_camera.hpp"
 
 #ifndef NOMINMAX
@@ -75,6 +76,7 @@ struct WindowState {
     POINT previous_pointer{};
     bool orbit_drag_active = false;
     bool native_content = false;
+    bool gameplay_actor = false;
 };
 
 constexpr std::uint64_t kMaximumRuntimeRenderScenePayloadBytes =
@@ -291,7 +293,9 @@ void refresh_window_title(const HWND window, const WindowState& state) {
         return;
     }
     const auto suffix = state.gameplay
-                            ? L" - playable prototype (debug player marker)"
+                             ? (state.gameplay_actor
+                                    ? L" - playable prototype (native player model)"
+                                    : L" - playable prototype (debug player marker)")
                         : state.native_content
                             ? L" - native package"
                             : (state.renderer->is_3d_view()
@@ -993,9 +997,24 @@ int WINAPI wWinMain(
             state.base_title);
         try {
             if (native_content) {
-                state.renderer =
-                    std::make_unique<openrc::runtime::D3d11Renderer>(
-                        window, native_content->render_scene);
+                const auto player_actor =
+                    openrc::game::resolve_runtime_player_actor_v1(
+                        *native_content, 0U);
+                if (player_actor) {
+                    state.gameplay_actor = true;
+                    const auto& library = *native_content->actor_library;
+                    state.renderer =
+                        std::make_unique<openrc::runtime::D3d11Renderer>(
+                            window,
+                            native_content->render_scene,
+                            library.rigs[player_actor->actor_rig_index].rig,
+                            library.models[player_actor->actor_model_index],
+                            player_actor->model_to_entity);
+                } else {
+                    state.renderer =
+                        std::make_unique<openrc::runtime::D3d11Renderer>(
+                            window, native_content->render_scene);
+                }
                 state.gameplay = std::make_unique<
                     openrc::game::RuntimeGameplaySessionV1>(
                         std::move(native_content->foundation));

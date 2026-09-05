@@ -1,0 +1,85 @@
+#include "openrc/runtime_entity_scene.hpp"
+
+#include <cstdint>
+#include <optional>
+#include <string>
+
+namespace openrc::game {
+namespace {
+
+[[noreturn]] void fail(const std::string &message) {
+  throw RuntimeEntitySceneError(message);
+}
+
+[[nodiscard]] const LevelPackageResourceV1 *find_entity_scene_resource(
+    const ResolvedLevelPackageV1 &package,
+    const std::uint64_t maximum_payload_bytes) {
+  const LevelPackageResourceV1 *found = nullptr;
+  for (const auto &resource : package.resources) {
+    if (resource.resource_id != kEntitySceneResourceIdV1) {
+      continue;
+    }
+    if (found != nullptr) {
+      fail("ResolvedLevelPackageV1 repeats optional resource " +
+           std::string(kEntitySceneResourceIdV1));
+    }
+    found = &resource;
+  }
+
+  if (found == nullptr) {
+    return nullptr;
+  }
+  if (found->type_id != kEntitySceneResourceTypeIdV1 ||
+      found->schema_version != kEntitySceneResourceSchemaVersionV1) {
+    fail("Optional resource " + std::string(kEntitySceneResourceIdV1) +
+         " has an incompatible type or schema");
+  }
+  if (found->operation != LevelPackageResourceOperationV1::upsert) {
+    fail("Optional resource " + std::string(kEntitySceneResourceIdV1) +
+         " is not a resolved upsert");
+  }
+  if (found->payload.size() > maximum_payload_bytes) {
+    fail("Optional resource " + std::string(kEntitySceneResourceIdV1) +
+         " exceeds its runtime payload limit");
+  }
+  if (is_zero_prepared_digest_v1(found->payload_sha256) ||
+      prepared_content_sha256_v1(found->payload) != found->payload_sha256) {
+    fail("Optional resource " + std::string(kEntitySceneResourceIdV1) +
+         " has a missing or stale resolved payload digest");
+  }
+  return found;
+}
+
+} // namespace
+
+std::optional<EntitySceneV1> load_optional_runtime_entity_scene_v1(
+    const ResolvedLevelPackageV1 &package,
+    const std::uint32_t required_content_api_version,
+    const EntitySceneIoLimitsV1 limits) {
+  if (required_content_api_version == 0U) {
+    fail("Runtime entity-scene content API policy must be explicit");
+  }
+  if (package.content_api_version != required_content_api_version) {
+    fail("ResolvedLevelPackageV1 uses an incompatible content API version");
+  }
+
+  const auto *resource =
+      find_entity_scene_resource(package, limits.max_encoded_bytes);
+  if (resource == nullptr) {
+    return std::nullopt;
+  }
+
+  EntitySceneV1 scene;
+  try {
+    scene = decode_entity_scene_v1(resource->payload, limits);
+  } catch (const EntitySceneIoError &error) {
+    fail("Invalid runtime entity-scene resource: " +
+         std::string(error.what()));
+  }
+  if (scene.level_id != package.level_id) {
+    fail("ResolvedLevelPackageV1 level ID disagrees with EntitySceneV1");
+  }
+  return scene;
+}
+
+} // namespace openrc::game

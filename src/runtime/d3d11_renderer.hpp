@@ -13,6 +13,9 @@
 #include <span>
 
 namespace openrc {
+struct ActorAffineTransformV1;
+struct ActorModelV1;
+struct ActorRigV1;
 struct CollisionVectorV1;
 struct RacLevelMobyTextureV1;
 struct RenderSceneV1;
@@ -56,6 +59,15 @@ public:
     // Prepared-package runtime path. It consumes only the neutral render
     // resource and does not require an ISO, ELF, or RAC decoder structures.
     D3d11Renderer(HWND window, const openrc::RenderSceneV1& scene);
+    // Prepared actor path. Player ownership is resolved by the runtime before
+    // entering the renderer; this overload receives only neutral rig/model
+    // data and the entity-local model transform.
+    D3d11Renderer(
+        HWND window,
+        const openrc::RenderSceneV1& scene,
+        const openrc::ActorRigV1& player_rig,
+        const openrc::ActorModelV1& player_model,
+        const openrc::ActorAffineTransformV1& model_to_entity);
     D3d11Renderer(HWND window, const SceneGeometryV1& geometry);
     D3d11Renderer(HWND window,
                   const SceneGeometryV1& raster_geometry,

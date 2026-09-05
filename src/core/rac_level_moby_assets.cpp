@@ -438,12 +438,15 @@ RacLevelMobyAssetsV1 load_rac_level_moby_assets_v1(
         result.models.size() >= result.models.max_size()) {
       fail("The RAC1 level Moby model count exceeds its output limit");
     }
+    std::vector<std::byte> source_bytes(model_bytes.begin(), model_bytes.end());
     result.models.push_back(RacLevelMobyModelV1{
         class_id,
         RacLevelMobyModelSourceV1::local_level_core,
         model.joint_count,
         entry.texture_slots,
         entry.used_texture_slot_count,
+        std::move(model),
+        std::move(source_bytes),
         std::move(high_geometry)});
     ++result.local_model_count;
     result.local_model_bytes += entry.asset_range.size;
@@ -464,7 +467,7 @@ RacLevelMobyAssetsV1 load_rac_level_moby_assets_v1(
     }
     const auto remaining = limits.max_total_shared_decoded_bytes -
                            result.shared_decoded_bytes;
-    const auto decoded = decode_wad_bytes(
+    auto decoded = decode_wad_bytes(
         wad_bytes, std::min(remaining, limits.max_decoded_wad_bytes));
     result.shared_decoded_bytes += decoded.bytes.size();
     RacMobyClassV1 model;
@@ -493,6 +496,8 @@ RacLevelMobyAssetsV1 load_rac_level_moby_assets_v1(
         model.joint_count,
         class_entry->second->texture_slots,
         class_entry->second->used_texture_slot_count,
+        std::move(model),
+        std::move(decoded.bytes),
         std::move(high_geometry)});
     ++result.shared_model_count;
   }

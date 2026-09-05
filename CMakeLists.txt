@@ -19,6 +19,9 @@ option(
 set(OPENRC_PUBLIC_EXECUTABLE_TARGETS)
 
 add_library(openrc_core STATIC
+    src/core/actor_library.cpp
+    src/core/actor_library_io.cpp
+    src/core/actor_pose.cpp
     src/core/boundary_table.cpp
     src/core/character_controller.cpp
     src/core/collision_world.cpp
@@ -30,6 +33,8 @@ add_library(openrc_core STATIC
     src/core/dvp_vu_execute.cpp
     src/core/ee_r5900_boundary.cpp
     src/core/elf.cpp
+    src/core/entity_scene.cpp
+    src/core/entity_scene_io.cpp
     src/core/fixed_step.cpp
     src/core/game_input.cpp
     src/core/game_world.cpp
@@ -37,6 +42,8 @@ add_library(openrc_core STATIC
     src/core/hash.cpp
     src/core/iso9660.cpp
     src/core/launcher_plan.cpp
+    src/core/level_actor_library_compile.cpp
+    src/core/level_entity_scene_compile.cpp
     src/core/level_render_scene_compile.cpp
     src/core/level_bootstrap.cpp
     src/core/localized_subtitle_bank.cpp
@@ -51,6 +58,7 @@ add_library(openrc_core STATIC
     src/core/ps_adpcm.cpp
     src/core/ps2_save_bundle.cpp
     src/core/rac_gameplay_bank.cpp
+    src/core/rac_actor_library_compile.cpp
     src/core/rac_level_bootstrap_compile.cpp
     src/core/rac_level_collision.cpp
     src/core/rac_level_collision_compile.cpp
@@ -68,6 +76,9 @@ add_library(openrc_core STATIC
     src/core/runtime_level_content.cpp
     src/core/runtime_level_foundation.cpp
     src/core/runtime_gameplay.cpp
+    src/core/runtime_actor_library.cpp
+    src/core/runtime_entity_scene.cpp
+    src/core/runtime_player_actor.cpp
     src/core/runtime_render_scene.cpp
     src/core/scene_animation_bank.cpp
     src/core/scene_block_directory.cpp
@@ -530,6 +541,62 @@ if(OPENRC_BUILD_TESTS)
     endif()
 
     add_executable(
+        openrc-level-actor-library-compile-tests
+        tests/level_actor_library_compile_tests.cpp
+    )
+    target_link_libraries(
+        openrc-level-actor-library-compile-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-level-actor-library-compile-tests
+        PRIVATE
+        cxx_std_20
+    )
+    if(MSVC)
+        target_compile_options(
+            openrc-level-actor-library-compile-tests
+            PRIVATE
+            /W4 /permissive- /utf-8
+        )
+    else()
+        target_compile_options(
+            openrc-level-actor-library-compile-tests
+            PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+    endif()
+
+    add_executable(
+        openrc-level-entity-scene-compile-tests
+        tests/level_entity_scene_compile_tests.cpp
+    )
+    target_link_libraries(
+        openrc-level-entity-scene-compile-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-level-entity-scene-compile-tests
+        PRIVATE
+        cxx_std_20
+    )
+    if(MSVC)
+        target_compile_options(
+            openrc-level-entity-scene-compile-tests
+            PRIVATE
+            /W4 /permissive- /utf-8
+        )
+    else()
+        target_compile_options(
+            openrc-level-entity-scene-compile-tests
+            PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+    endif()
+
+    add_executable(
         openrc-rac-level-foundation-compile-tests
         tests/rac_level_foundation_compile_tests.cpp
     )
@@ -575,6 +642,174 @@ if(OPENRC_BUILD_TESTS)
     )
 
     add_executable(
+        openrc-entity-scene-tests
+        tests/entity_scene_tests.cpp
+    )
+    target_link_libraries(
+        openrc-entity-scene-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-entity-scene-tests
+        PRIVATE
+        cxx_std_20
+    )
+    if(MSVC)
+        target_compile_options(
+            openrc-entity-scene-tests
+            PRIVATE
+            /W4 /permissive- /utf-8
+        )
+    else()
+        target_compile_options(
+            openrc-entity-scene-tests
+            PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+    endif()
+
+    add_executable(
+        openrc-actor-library-tests
+        tests/actor_library_tests.cpp
+    )
+    target_link_libraries(
+        openrc-actor-library-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-actor-library-tests
+        PRIVATE
+        cxx_std_20
+    )
+    if(MSVC)
+        target_compile_options(
+            openrc-actor-library-tests
+            PRIVATE
+            /W4 /permissive- /utf-8
+        )
+    else()
+        target_compile_options(
+            openrc-actor-library-tests
+            PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+    endif()
+
+    add_executable(
+        openrc-actor-pose-tests
+        tests/actor_pose_tests.cpp
+    )
+    target_link_libraries(
+        openrc-actor-pose-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-actor-pose-tests
+        PRIVATE
+        cxx_std_20
+    )
+    if(MSVC)
+        target_compile_options(
+            openrc-actor-pose-tests
+            PRIVATE
+            /W4 /permissive- /utf-8
+        )
+    else()
+        target_compile_options(
+            openrc-actor-pose-tests
+            PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+    endif()
+
+    add_executable(
+        openrc-rac-actor-library-compile-tests
+        tests/rac_actor_library_compile_tests.cpp
+    )
+    target_link_libraries(
+        openrc-rac-actor-library-compile-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-rac-actor-library-compile-tests
+        PRIVATE
+        cxx_std_20
+    )
+    if(MSVC)
+        target_compile_options(
+            openrc-rac-actor-library-compile-tests
+            PRIVATE
+            /W4 /permissive- /utf-8
+        )
+    else()
+        target_compile_options(
+            openrc-rac-actor-library-compile-tests
+            PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+    endif()
+
+    add_executable(
+        openrc-runtime-actor-library-tests
+        tests/runtime_actor_library_tests.cpp
+    )
+    target_link_libraries(
+        openrc-runtime-actor-library-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-runtime-actor-library-tests
+        PRIVATE
+        cxx_std_20
+    )
+    if(MSVC)
+        target_compile_options(
+            openrc-runtime-actor-library-tests
+            PRIVATE
+            /W4 /permissive- /utf-8
+        )
+    else()
+        target_compile_options(
+            openrc-runtime-actor-library-tests
+            PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+    endif()
+
+    add_executable(
+        openrc-runtime-entity-scene-tests
+        tests/runtime_entity_scene_tests.cpp
+    )
+    target_link_libraries(
+        openrc-runtime-entity-scene-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-runtime-entity-scene-tests
+        PRIVATE
+        cxx_std_20
+    )
+    if(MSVC)
+        target_compile_options(
+            openrc-runtime-entity-scene-tests
+            PRIVATE
+            /W4 /permissive- /utf-8
+        )
+    else()
+        target_compile_options(
+            openrc-runtime-entity-scene-tests
+            PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+    endif()
+
+    add_executable(
         openrc-runtime-render-scene-tests
         tests/runtime_render_scene_tests.cpp
     )
@@ -603,6 +838,34 @@ if(OPENRC_BUILD_TESTS)
         PRIVATE
         cxx_std_20
     )
+
+    add_executable(
+        openrc-runtime-player-actor-tests
+        tests/runtime_player_actor_tests.cpp
+    )
+    target_link_libraries(
+        openrc-runtime-player-actor-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-runtime-player-actor-tests
+        PRIVATE
+        cxx_std_20
+    )
+    if(MSVC)
+        target_compile_options(
+            openrc-runtime-player-actor-tests
+            PRIVATE
+            /W4 /permissive- /utf-8
+        )
+    else()
+        target_compile_options(
+            openrc-runtime-player-actor-tests
+            PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+    endif()
 
     add_executable(
         openrc-rac-moby-bind-pose-tests
@@ -1141,11 +1404,20 @@ if(OPENRC_BUILD_TESTS)
     add_test(NAME prepared-game-v2-publish COMMAND openrc-prepared-game-v2-publish-tests)
     add_test(NAME level-bootstrap COMMAND openrc-level-bootstrap-tests)
     add_test(NAME level-render-scene-compile COMMAND openrc-level-render-scene-compile-tests)
+    add_test(NAME level-actor-library-compile COMMAND openrc-level-actor-library-compile-tests)
+    add_test(NAME level-entity-scene-compile COMMAND openrc-level-entity-scene-compile-tests)
     add_test(NAME rac-level-foundation-compile COMMAND openrc-rac-level-foundation-compile-tests)
     add_test(NAME runtime-level-foundation COMMAND openrc-runtime-level-foundation-tests)
     add_test(NAME render-scene-io COMMAND openrc-render-scene-io-tests)
+    add_test(NAME entity-scene COMMAND openrc-entity-scene-tests)
+    add_test(NAME actor-library COMMAND openrc-actor-library-tests)
+    add_test(NAME actor-pose COMMAND openrc-actor-pose-tests)
+    add_test(NAME rac-actor-library-compile COMMAND openrc-rac-actor-library-compile-tests)
+    add_test(NAME runtime-actor-library COMMAND openrc-runtime-actor-library-tests)
+    add_test(NAME runtime-entity-scene COMMAND openrc-runtime-entity-scene-tests)
     add_test(NAME runtime-render-scene COMMAND openrc-runtime-render-scene-tests)
     add_test(NAME runtime-level-content COMMAND openrc-runtime-level-content-tests)
+    add_test(NAME runtime-player-actor COMMAND openrc-runtime-player-actor-tests)
     add_test(NAME rac-moby-bind-pose COMMAND openrc-rac-moby-bind-pose-tests)
     add_test(NAME render-scene-d3d-data COMMAND openrc-render-scene-d3d-data-tests)
     add_test(NAME level-scene-recovery COMMAND openrc-level-scene-recovery-tests)
@@ -1353,35 +1625,32 @@ endif()
 # static and audited after every link. OPENRC_STATIC_MINGW_RUNTIME extends the
 # same static and post-link audit policy to test/developer executables.
 if(MINGW)
-    get_filename_component(
-        openrc_compiler_directory
-        "${CMAKE_CXX_COMPILER}"
-        DIRECTORY
+    # This verifier must not depend on the very compiler-support DLLs it is
+    # checking for. It is a console-only build tool, deliberately isolated
+    # from the application libraries and statically linked on MinGW.
+    add_executable(openrc-portable-executable-audit EXCLUDE_FROM_ALL
+        src/launcher/portable_executable_audit_main.cpp
+        src/launcher/portable_executable.cpp
     )
-    find_program(
-        OPENRC_LLVM_READOBJ_EXECUTABLE
-        NAMES llvm-readobj llvm-readobj.exe
-        HINTS "${openrc_compiler_directory}"
-        NO_DEFAULT_PATH
+    target_compile_features(
+        openrc-portable-executable-audit
+        PRIVATE
+        cxx_std_20
     )
-    if(OPENRC_LLVM_READOBJ_EXECUTABLE)
-        set(openrc_pe_inspector "${OPENRC_LLVM_READOBJ_EXECUTABLE}")
-        set(openrc_pe_inspector_mode "llvm-readobj")
-    elseif(CMAKE_OBJDUMP)
-        set(openrc_pe_inspector "${CMAKE_OBJDUMP}")
-        set(openrc_pe_inspector_mode "objdump")
-    else()
-        message(FATAL_ERROR
-            "A PE inspector is required to verify OpenRC executables")
-    endif()
-
-    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-        set(openrc_expected_pe_machine "amd64")
-    elseif(CMAKE_SIZEOF_VOID_P EQUAL 4)
-        set(openrc_expected_pe_machine "i386")
-    else()
-        message(FATAL_ERROR "Unsupported MinGW pointer size")
-    endif()
+    target_compile_options(
+        openrc-portable-executable-audit
+        PRIVATE
+        -Wall -Wextra -Wpedantic
+    )
+    target_link_options(openrc-portable-executable-audit PRIVATE -static)
+    add_custom_command(
+        TARGET openrc-portable-executable-audit
+        POST_BUILD
+        COMMAND "$<TARGET_FILE:openrc-portable-executable-audit>"
+            "$<TARGET_FILE:openrc-portable-executable-audit>"
+        COMMENT "Verifying portable imports for the portable auditor"
+        VERBATIM
+    )
 
     get_property(
         openrc_directory_targets
@@ -1390,6 +1659,9 @@ if(MINGW)
     )
     set(openrc_audited_executable_targets)
     foreach(openrc_target IN LISTS openrc_directory_targets)
+        if(openrc_target STREQUAL "openrc-portable-executable-audit")
+            continue()
+        endif()
         get_target_property(openrc_target_type "${openrc_target}" TYPE)
         if(openrc_target_type STREQUAL "EXECUTABLE")
             if(OPENRC_STATIC_MINGW_RUNTIME OR
@@ -1402,15 +1674,18 @@ if(MINGW)
 
     list(REMOVE_DUPLICATES openrc_audited_executable_targets)
     foreach(openrc_target IN LISTS openrc_audited_executable_targets)
+        # TARGET_FILE establishes a target-level dependency as well; the
+        # explicit edge documents the bootstrap relationship and keeps it
+        # unambiguous across generators.
+        add_dependencies(
+            "${openrc_target}"
+            openrc-portable-executable-audit
+        )
         add_custom_command(
             TARGET "${openrc_target}"
             POST_BUILD
-            COMMAND "${CMAKE_COMMAND}"
-                "-DOPENRC_EXECUTABLE=$<TARGET_FILE:${openrc_target}>"
-                "-DOPENRC_PE_INSPECTOR=${openrc_pe_inspector}"
-                "-DOPENRC_PE_INSPECTOR_MODE=${openrc_pe_inspector_mode}"
-                "-DOPENRC_EXPECTED_PE_MACHINE=${openrc_expected_pe_machine}"
-                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifyPortableExecutable.cmake"
+            COMMAND "$<TARGET_FILE:openrc-portable-executable-audit>"
+                "$<TARGET_FILE:${openrc_target}>"
             COMMENT "Verifying portable imports for ${openrc_target}"
             VERBATIM
         )

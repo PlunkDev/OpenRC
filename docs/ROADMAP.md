@@ -86,10 +86,12 @@ finish line indefinitely.
 - [ ] inventory EE/VU-to-GIF/GS PATH, DMA, and MMIO boundaries
 
 For the first playable slice, the remaining Stage 1 work is narrowed to the
-EE/VU and payload families directly used by Ratchet's skeleton/animations,
-spawn/checkpoints, camera, one weapon, one enemy, and their scripted events.
-Broad audio, IOP, call-graph, and unrelated unknown-payload coverage remains
-important for later fidelity, but does not block movement on Veldin.
+EE/VU and payload families directly used by Ratchet's animations, the original
+camera, one weapon, one enemy, and their scripted events. Ratchet's high-LOD
+bind geometry, rig, exact skin weights, texture set, spawn, and checkpoint
+inputs have already crossed the neutral package boundary. Broad audio, IOP,
+call-graph, and unrelated unknown-payload coverage remains important for later
+fidelity, but does not block movement on Veldin.
 
 ## Stage 2 — Native level viewer
 
@@ -125,8 +127,10 @@ important for later fidelity, but does not block movement on Veldin.
 - [x] parse the authoritative RAC1 world/hero collision tree, preserve exact
   packed geometry and surface bytes, and validate the same parser on all 19
   PAL v2.00 levels
-- [ ] parse and classify remaining terrain, metal/bangle geometry, skeletal
-  bind poses, and animation transforms
+- [x] recover Ratchet's high-LOD bind-pose geometry, hierarchy, inverse binds,
+  exact bounded skin weights, material slots, and base textures
+- [ ] parse and classify remaining terrain, metal/bangle geometry, and actor
+  animation transforms
 - [ ] decode and render the remaining shrub, animated-Moby, and specialized
   Veldin asset families as one complete textured scene in the native window
 - [ ] compare geometry and transforms with reference captures
@@ -151,15 +155,23 @@ important for later fidelity, but does not block movement on Veldin.
 - [x] expose CLI package-only and published-root headless movement smoke paths
 - [x] define canonical `RenderSceneV1` texture/material/mesh/instance data,
   bounded binary I/O, and a source-independent native D3D11 staging path
-- [x] compile and transactionally publish collision, bootstrap, and recovered
-  textured static scene resources for all 19 levels
+- [x] compile and transactionally publish five neutral resources for all 19
+  levels: collision, bootstrap, recovered textured render scene, actor library,
+  and entity scene
 - [x] mount and render a PreparedGameV2 level in the graphical runtime without
   reopening the source ISO or boot ELF
-- [ ] load Ratchet's bind pose, skeleton, and animations through a generic
-  actor-rig pipeline
+- [x] define canonical, bounded `ActorLibraryV1` and `EntitySceneV1` schemas
+  with semantic keys, deterministic digests, binary I/O, package attachment,
+  and cross-resource validation
+- [x] load Ratchet's textured high-LOD bind model and rig through the generic
+  actor-library path, resolve it through player/entity semantic bindings, and
+  CPU-skin it at the simulated player transform
+- [ ] decode, package, select, and play Ratchet's animations through the
+  generic actor pipeline
 - [x] connect Win32 keyboard input and a deterministic third-person camera to
   package-only fixed-step movement in the graphical runtime
-- [ ] package actor, entity, and reconstructed camera data
+- [x] package actor and entity data independently of RAC/PS2 source layouts
+- [ ] reconstruct and package the original camera behavior
 - [x] switch Launcher Prepare/Play to one-time all-level PreparedGameV2
   compilation and package-only runtime launch, persisting the exact native
   installation independently of the ISO
@@ -167,6 +179,11 @@ important for later fidelity, but does not block movement on Veldin.
 - [ ] load and save isolated test state
 - [ ] make package-only gameplay smoke on Veldin and at least one second planet
   a checked regression using the same published-package code path
+
+The five-resource package and moving Ratchet bind pose are infrastructure
+milestones, not a declaration that Veldin is finished. Animation playback,
+interactive entities, one weapon/enemy loop, original camera behavior, menus,
+and full scene-family coverage remain open.
 
 ## Stage 4 — Game-complete runtime
 

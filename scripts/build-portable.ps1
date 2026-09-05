@@ -9,7 +9,7 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $toolsRoot = Join-Path $projectRoot 'local\tools'
 $buildRoot = Join-Path $projectRoot 'build-portable-cmake'
 $packageRoot = Join-Path $projectRoot 'build-portable'
-$verifyScript = Join-Path $projectRoot 'cmake\VerifyPortableExecutable.cmake'
+$portableAudit = Join-Path $buildRoot 'openrc-portable-executable-audit.exe'
 
 $compilerCandidates = @(Get-ChildItem -Path $toolsRoot -Recurse -File `
     -Filter 'x86_64-w64-mingw32-clang++.exe' | Sort-Object FullName)
@@ -29,13 +29,10 @@ if ($cmakeCandidates.Count -ne 1) {
 $compiler = $compilerCandidates[0].FullName
 $toolchainBin = Split-Path -Parent $compiler
 $make = Join-Path $toolchainBin 'mingw32-make.exe'
-$readObject = Join-Path $toolchainBin 'llvm-readobj.exe'
 $cmake = $cmakeCandidates[0].FullName
 
-if (-not (Test-Path -LiteralPath $make -PathType Leaf) -or
-    -not (Test-Path -LiteralPath $readObject -PathType Leaf) -or
-    -not (Test-Path -LiteralPath $verifyScript -PathType Leaf)) {
-    throw 'The selected portable toolchain or PE verification script is incomplete.'
+if (-not (Test-Path -LiteralPath $make -PathType Leaf)) {
+    throw 'The selected portable toolchain is incomplete.'
 }
 
 function Assert-ProjectChildPath {
@@ -63,12 +60,11 @@ function Assert-PortableExecutable {
         [string]$Path
     )
 
-    $metadataLines = & $cmake `
-        ('-DOPENRC_EXECUTABLE=' + $Path) `
-        ('-DOPENRC_PE_INSPECTOR=' + $readObject) `
-        '-DOPENRC_PE_INSPECTOR_MODE=llvm-readobj' `
-        '-DOPENRC_EXPECTED_PE_MACHINE=amd64' `
-        -P $verifyScript 2>&1
+    if (-not (Test-Path -LiteralPath $portableAudit -PathType Leaf)) {
+        throw ('The static portable executable auditor is missing: ' +
+            $portableAudit)
+    }
+    $metadataLines = & $portableAudit $Path 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw ('Portable executable verification failed: ' + $Path +
             [System.Environment]::NewLine + ($metadataLines -join [System.Environment]::NewLine))
@@ -87,6 +83,8 @@ if ($LASTEXITCODE -ne 0) { throw 'CMake configuration failed.' }
 
 & $cmake --build $buildRoot --parallel
 if ($LASTEXITCODE -ne 0) { throw 'OpenRC build failed.' }
+
+Assert-PortableExecutable -Path $portableAudit
 
 & $cmake --build $buildRoot --target test
 if ($LASTEXITCODE -ne 0) { throw 'OpenRC tests failed.' }

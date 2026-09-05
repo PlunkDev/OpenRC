@@ -207,6 +207,10 @@ void set_report(const std::wstring& text) {
         return L"Activating the native installation";
     case Phase::reusing_existing_publication:
         return L"Reusing the verified native installation";
+    case Phase::compiling_player_actor:
+        return L"Compiling the reusable player actor";
+    case Phase::compiling_entity_scene:
+        return L"Compiling neutral player entity bindings";
     }
     return L"Preparing the native game";
 }
