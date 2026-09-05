@@ -103,6 +103,12 @@ public:
   [[nodiscard]] CameraRelativeMovementV1
   map_movement(std::int16_t move_x, std::int16_t move_y) const;
 
+  // Source-response movement already lives in the unit-circle domain. This
+  // overload avoids an int16 round trip before the runtime applies an exact
+  // source-authored target speed.
+  [[nodiscard]] CameraRelativeMovementV1 map_unit_movement(double move_x,
+                                                           double move_y) const;
+
   [[nodiscard]] const ThirdPersonCameraProfileV1 &profile() const noexcept;
   [[nodiscard]] const ThirdPersonCameraStateV1 &state() const noexcept;
 

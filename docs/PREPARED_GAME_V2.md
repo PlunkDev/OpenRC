@@ -216,16 +216,17 @@ but slot identity remains explicit so the original player state machine can be
 connected without first guessing semantic names.
 
 Each clip records the exact `actors/ratchet/rig` content digest, 111 poses per
-frame, and its integer 50 Hz PAL source cadence. The temporary presentation
-path selects slots 0, 3, and 4; that is a preview compatibility policy, not a
-final idle/walk/run classification. Playback advances those source
+frame, and its integer 50 Hz PAL source cadence. The recovered grounded subset
+identifies slot 0 as state-0 idle and slots 3/4 as the slow/full substates of
+ordinary grounded state 2. Playback advances those source
 updates on the 60 Hz fixed gameplay clock with an integer accumulator, samples
 shortest-hemisphere quaternion interpolation, and composes hierarchy plus
 inverse bind. Authored zero scales remain finite singular palettes and are
 rendered through the position-only skinning path; no epsilon repair or invented
-normal transform is serialized. Airborne gameplay holds the last grounded pose
-until jump/fall/landing mappings are proven. The wrench action likewise does
-not select an unverified clip.
+normal transform is serialized. Slots 3/4 use the source's strict
+`>2.35`/`<1.90` actual-pace hysteresis and source-frame remap. Airborne gameplay
+holds the last grounded pose until jump/fall/landing mappings are proven. The
+wrench action likewise does not select an unverified clip.
 
 ### Current collectible adapter policy
 

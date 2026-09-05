@@ -227,10 +227,13 @@ entity-scene, actor-library, and actor-animation keys, CPU-skins his textured
 high-LOD mesh, and places it at the deterministic player transform. The
 compiler now preserves every occupied Ratchet sequence slot under a numeric
 `actors/ratchet/source-sequence/NNN` key (134 clips on Veldin), rather than
-publishing guessed gameplay names. The temporary preview still selects slots
-0, 3, and 4 while the original state machine is recovered; those selections
-must not be read as final idle/walk/run semantics. Their PAL 50 Hz timing
-advances on the 60 Hz fixed simulation with an integer accumulator. Airborne
+publishing guessed gameplay names. The recovered ordinary grounded states now
+identify slot 0 as idle, slot 3 as slow movement, and slot 4 as full movement.
+Slots 3 and 4 switch from actual horizontal pace with strict `> 2.35` and
+`< 1.90` hysteresis and preserve the source frame through the recovered
+cross-clip remap. Their PAL 50 Hz timing advances on the 60 Hz fixed simulation
+with an integer accumulator. The complete state-0/state-2 entry and stop guards
+are not connected yet. Airborne
 movement deliberately holds the last sampled grounded pose until its source
 sequence mapping is proven; the primary action likewise has prototype gameplay
 timing and a melee hit volume but not the source wrench model, animation, or
@@ -240,9 +243,15 @@ full signed stick magnitude, so partial left-stick travel reaches simulation
 instead of becoming a digital press. No guessed dead zone or speed curve is
 applied by the platform adapter. After that replay boundary, the runtime uses
 the recovered DualShock byte response: center 127, dead-zone magnitude 48,
-then `(abs(delta) - 48) / 76` clamped to one. Recovering how that magnitude
-selects Ratchet's exact speed and locomotion transitions remains part of the
-player state-machine reconstruction.
+then `(abs(delta) - 48) / 76` clamped to one. The standard grounded player
+path then reproduces the source's automatic two-pace choice: any non-zero
+radial magnitude below `0.82` selects the `0.9` slow coefficient, while
+`0.82` and above selects `5.7`. There is no separate run button. Keyboard
+movement represents full stick travel, while a controller can therefore make
+Ratchet walk slowly with a light tilt. The unquantized source response and
+selected pace remain attached to every fixed gameplay tick. State-specific
+speed exceptions, the source acceleration/turning modifiers, and the complete
+movement-state transitions remain part of the player-state reconstruction.
 
 The current eight-resource profile is verified end to end for the supported
 PAL v2.00 image: fresh compilation and exact validation cover all 19 levels,
@@ -399,8 +408,8 @@ is an explicit OpenRC policy, not a recovered per-placement value. The current
 eight-resource profile additionally maps static Moby class 500 to neutral Bolt
 Crates with one health and one Bolt drop as explicit OpenRC policy. All-level
 preparation/reuse, package-only Veldin gameplay, and D3D11 visible-to-destroyed
-crate smoke have passed. Ratchet's confirmed idle/walk/run animation is now
-packaged and played; wrench and airborne animation, original pickup and
+crate smoke have passed. Ratchet's confirmed idle/slow/full grounded animation
+is now packaged and played; wrench and airborne animation, original pickup and
 destruction presentation, enemies, menus, and the remaining gameplay systems
 are still in progress.
 

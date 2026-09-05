@@ -245,6 +245,53 @@ void test_slope_limit() {
          "a slope above the configured limit was treated as walkable ground");
 }
 
+void test_explicit_target_horizontal_speed() {
+  using namespace openrc::game;
+
+  MeshBuilder builder;
+  builder.floor(-10.0, 10.0, -10.0, 10.0, 0.0);
+  const auto world = std::move(builder).build();
+
+  auto exact_profile = profile();
+  exact_profile.maximum_ground_speed = 5.7;
+  CharacterControllerStateV1 initial_state;
+  initial_state.feet_position = {0.0, 0.0, 1.0};
+  CharacterControllerV1 character(exact_profile, initial_state);
+  settle(character, world);
+
+  const CharacterMotionV1 slow_motion{0.3, 0.4, false, 0.9};
+  static_cast<void>(character.fixed_update(world, slow_motion, 1.0 / 60.0));
+  expect_near(character.state().velocity.x, 0.54, 1.0e-12,
+              "an explicit speed did not use the normalized X direction");
+  expect_near(character.state().velocity.y, 0.72, 1.0e-12,
+              "an explicit speed did not use the normalized Y direction");
+  expect_near(
+      std::hypot(character.state().velocity.x, character.state().velocity.y),
+      0.9, 1.0e-12,
+      "the controller did not preserve the exact requested target");
+
+  const auto before_invalid = character.state();
+  const auto expect_invalid_speed = [&](const CharacterMotionV1 motion,
+                                        const std::string &message) {
+    expect_character_error(
+        [&] {
+          static_cast<void>(character.fixed_update(world, motion, 1.0 / 60.0));
+        },
+        message);
+    expect(character.state() == before_invalid,
+           "a rejected explicit speed partially mutated character state");
+  };
+  expect_invalid_speed(
+      {1.0, 0.0, false, std::numeric_limits<double>::quiet_NaN()},
+      "a non-finite explicit target speed was accepted");
+  expect_invalid_speed({1.0, 0.0, false, -0.01},
+                       "a negative explicit target speed was accepted");
+  expect_invalid_speed({1.0, 0.0, false, 5.700001},
+                       "an explicit target above the profile was accepted");
+  expect_invalid_speed({0.0, 0.0, false, 0.9},
+                       "a positive target without a direction was accepted");
+}
+
 void test_validation_hash_and_failure_atomicity() {
   using namespace openrc::game;
 
@@ -297,6 +344,7 @@ int main() {
     test_wall_slide();
     test_step_up();
     test_slope_limit();
+    test_explicit_target_horizontal_speed();
     test_validation_hash_and_failure_atomicity();
     std::cout << "character_controller_tests: ok\n";
     return 0;

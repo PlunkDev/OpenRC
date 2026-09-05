@@ -3,6 +3,7 @@
 #include "openrc/fixed_step.hpp"
 #include "openrc/game_world.hpp"
 #include "openrc/player_combat.hpp"
+#include "openrc/rac_player_locomotion.hpp"
 #include "openrc/runtime_gameplay_scene.hpp"
 #include "openrc/runtime_level_foundation.hpp"
 
@@ -98,23 +99,30 @@ struct RuntimeGameplaySessionOptionsV1 {
 };
 
 struct RuntimeMovementAxesV1 {
-  std::int16_t move_x = 0;
-  std::int16_t move_y = 0;
+  double move_x = 0.0;
+  double move_y = 0.0;
 
   [[nodiscard]] bool operator==(const RuntimeMovementAxesV1 &) const = default;
 };
 
-// The callback converts device/camera-relative movement into canonical world
-// XY. It runs exactly once per emitted fixed tick, immediately before the
-// player step, and receives the same explicit delta used by player simulation.
-// This lets a separately owned camera advance from look axes without copying
-// the runtime's tick-rate policy. An empty mapper preserves the command's
-// already-world-space movement axes.
+// The callback rotates source-response movement into canonical world XY. It
+// runs exactly once per emitted fixed tick, immediately before the player
+// step, and receives the same explicit delta used by player simulation. The
+// input command has already passed through the recovered source pad response;
+// source_movement retains its double-precision radial magnitude. A mapper may
+// rotate that vector but must preserve its length. An empty mapper keeps the
+// source response in world space.
 using RuntimeMovementMapperV1 = std::function<RuntimeMovementAxesV1(
-    const GameInputCommandV1 &raw_input, double fixed_delta_seconds)>;
+    const GameInputCommandV1 &source_response_input,
+    RuntimeMovementAxesV1 source_movement, double fixed_delta_seconds)>;
 
 struct RuntimeGameplayTickV1 {
   GameInputCommandV1 input;
+  // Unquantized descriptor derived from the recovered source pad response.
+  // Presentation/state systems may consume its magnitude and pace directly;
+  // target_ground_speed affects physics only when the pre-tick player state
+  // is grounded.
+  RacPlayerGroundMovementV1 source_standard_ground_movement;
   PlayerSimulationStepV1 player;
   // Post-tick state for deterministic presentation systems. Keeping it per
   // tick prevents catch-up frames from losing a landing, reset, or locomotion

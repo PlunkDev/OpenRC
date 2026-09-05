@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -78,8 +79,8 @@ void expect_runtime_animation_error(Callback &&callback,
   openrc::ActorAnimationBankV1 result;
   result.clips = {
       make_clip(0U, "actors/player/idle", rig, 0.0F, cadence_counter),
-      make_clip(1U, "actors/player/walk", rig, 10.0F, cadence_counter),
-      make_clip(2U, "actors/player/run", rig, 20.0F, cadence_counter),
+      make_clip(1U, "actors/player/slow", rig, 10.0F, cadence_counter),
+      make_clip(2U, "actors/player/full", rig, 20.0F, cadence_counter),
   };
   return result;
 }
@@ -87,8 +88,10 @@ void expect_runtime_animation_error(Callback &&callback,
 [[nodiscard]] openrc::game::RuntimePlayerAnimationProfileV1 profile() {
   return {
       "actors/player/idle",
-      "actors/player/walk",
-      "actors/player/run",
+      "actors/player/slow",
+      "actors/player/full",
+      // Compatibility-only values: recovered moving animation thresholds are
+      // fixed at 2.35/1.90 and these old preview fields are ignored.
       0.25,
       2.0,
       60U,
@@ -108,7 +111,7 @@ void expect_runtime_animation_error(Callback &&callback,
   return result;
 }
 
-void test_locomotion_thresholds_and_restart() {
+void test_slow_full_hysteresis_and_phase_remap() {
   using openrc::game::RuntimePlayerAnimationV1;
 
   const auto rig = make_rig_asset();
@@ -120,47 +123,61 @@ void test_locomotion_thresholds_and_restart() {
              animation.playback().runtime_ticks_per_second == 0U,
          "runtime player animation did not start from idle phase zero");
 
-  animation.fixed_update(player(0.15, 0.20));
+  animation.fixed_update(player(0.0, 0.0));
   expect(animation.active_clip_key() == "actors/player/idle",
-         "the exact idle-speed threshold did not select idle");
+         "a stopped player did not retain the honest idle fallback");
 
-  animation.fixed_update(player(0.250001, 0.0));
-  expect(animation.active_clip_key() == "actors/player/walk" &&
+  animation.fixed_update(player(3.0, 0.0));
+  expect(animation.active_clip_key() == "actors/player/slow" &&
              animation.playback().clip_id == 1U &&
              animation.playback().frame_index == 0U &&
              animation.playback().phase == 0.0 &&
              animation.playback().completed_cycles == 0U &&
              animation.playback().source_update_accumulator == 50U,
-         "crossing the idle threshold did not restart walk at phase zero");
+         "state-2 entry did not begin with the slot-3 slow clip");
   expect_near(animation.palette().global_joint_transforms[0U].values[3U],
-              10.0, "the restarted walk clip did not sample frame zero");
+              10.0, "the selected slow clip did not sample frame zero");
 
-  animation.fixed_update(player(1.999999, 0.0));
-  expect(animation.active_clip_key() == "actors/player/walk" &&
+  animation.fixed_update(
+      player(openrc::game::kRuntimePlayerSlowToFullHorizontalSpeedV1, 0.0));
+  expect(animation.active_clip_key() == "actors/player/slow" &&
              animation.playback().phase == 0.5,
-         "a speed below the run threshold did not remain in walk");
+         "equality at 2.35 did not retain the slow clip");
 
-  animation.fixed_update(player(1.2, 1.6));
-  expect(animation.active_clip_key() == "actors/player/run" &&
+  animation.fixed_update(player(std::nextafter(
+      openrc::game::kRuntimePlayerSlowToFullHorizontalSpeedV1,
+      std::numeric_limits<double>::infinity()), 0.0));
+  expect(animation.active_clip_key() == "actors/player/full" &&
              animation.playback().clip_id == 2U &&
-             animation.playback().frame_index == 0U &&
-             animation.playback().phase == 0.0 &&
+             animation.playback().frame_index == 1U &&
+             animation.playback().phase == 0.5 &&
              animation.playback().completed_cycles == 0U &&
-             animation.playback().source_update_accumulator == 50U,
-         "the exact run-speed threshold did not restart run at phase zero");
+             animation.playback().source_update_accumulator == 30U,
+         "crossing 2.35 did not use the original slow-to-full frame remap");
   expect_near(animation.palette().global_joint_transforms[0U].values[3U],
-              20.0, "the restarted run clip did not sample frame zero");
+              21.0, "the remapped full clip did not sample its mapped phase");
 
-  animation.fixed_update(player(1.2, 1.6));
-  expect(animation.playback().phase == 0.5,
-         "the selected run clip did not subsequently advance");
-  animation.fixed_update(player(1.2, 1.6, true, 1U));
-  expect(animation.active_clip_key() == "actors/player/run" &&
+  animation.fixed_update(
+      player(openrc::game::kRuntimePlayerFullToSlowHorizontalSpeedV1, 0.0));
+  expect(animation.active_clip_key() == "actors/player/full",
+         "equality at 1.90 did not retain the full clip");
+
+  animation.fixed_update(player(std::nextafter(
+      openrc::game::kRuntimePlayerFullToSlowHorizontalSpeedV1, 0.0), 0.0));
+  expect(animation.active_clip_key() == "actors/player/slow" &&
+             animation.playback().clip_id == 1U &&
+             animation.playback().frame_index == 1U &&
+             animation.playback().phase == 0.5 &&
+             animation.playback().source_update_accumulator == 10U,
+         "crossing below 1.90 did not use the original full-to-slow remap");
+
+  animation.fixed_update(player(3.0, 0.0, true, 1U));
+  expect(animation.active_clip_key() == "actors/player/slow" &&
              animation.playback().frame_index == 0U &&
              animation.playback().phase == 0.0 &&
              animation.playback().completed_cycles == 0U &&
              animation.playback().source_update_accumulator == 50U,
-         "a player reset did not restart the selected clip at phase zero");
+         "a player reset did not re-enter state-2 through the slow clip");
 }
 
 void test_airborne_holds_last_grounded_pose() {
@@ -171,16 +188,16 @@ void test_airborne_holds_last_grounded_pose() {
 
   animation.fixed_update(player(1.0, 0.0));
   animation.fixed_update(player(1.0, 0.0));
-  expect(animation.active_clip_key() == "actors/player/walk" &&
+  expect(animation.active_clip_key() == "actors/player/slow" &&
              animation.playback().phase == 0.5,
-         "the airborne fixture did not establish an advanced walk pose");
+         "the airborne fixture did not establish an advanced slow pose");
   const auto held_playback = animation.playback();
   const auto held_palette = animation.palette();
 
   for (std::uint32_t tick = 0U; tick < 12U; ++tick) {
     animation.fixed_update(player(8.0, -3.0, false));
   }
-  expect(animation.active_clip_key() == "actors/player/walk" &&
+  expect(animation.active_clip_key() == "actors/player/slow" &&
              animation.playback() == held_playback &&
              animation.palette() == held_palette,
          "airborne updates changed the last grounded animation pose");
@@ -250,20 +267,11 @@ void test_singular_palette_is_preserved() {
   }
 }
 
-void test_profile_threshold_validation() {
+void test_profile_validation() {
   const auto rig = make_rig_asset();
   const auto bank = make_bank(rig);
 
   auto invalid = profile();
-  invalid.run_min_horizontal_speed = invalid.idle_max_horizontal_speed;
-  expect_runtime_animation_error(
-      [&] {
-        static_cast<void>(openrc::game::RuntimePlayerAnimationV1(
-            bank, rig, invalid, kLimits));
-      },
-      "runtime player animation accepted overlapping speed thresholds");
-
-  invalid = profile();
   invalid.fixed_ticks_per_second = 0U;
   expect_runtime_animation_error(
       [&] {
@@ -304,12 +312,12 @@ void test_playback_limit_preflight() {
 
 int main() {
   try {
-    test_locomotion_thresholds_and_restart();
+    test_slow_full_hysteresis_and_phase_remap();
     test_airborne_holds_last_grounded_pose();
     test_pal_source_cadence_over_sixty_hertz_runtime();
     test_rig_binding_mismatches_fail_closed();
     test_singular_palette_is_preserved();
-    test_profile_threshold_validation();
+    test_profile_validation();
     test_playback_limit_preflight();
     std::cout << "runtime_player_animation_tests: ok\n";
     return 0;

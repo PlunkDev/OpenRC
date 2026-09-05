@@ -171,6 +171,21 @@ PlayerSimulationV1::PlayerSimulationV1(
 PlayerSimulationStepV1
 PlayerSimulationV1::fixed_update(const CollisionWorldV1 &collision_world,
                                  const GameInputCommandV1 &input) {
+  CharacterMotionV1 motion;
+  motion.move_x = axis_to_unit(input.axes.move_x);
+  motion.move_y = axis_to_unit(input.axes.move_y);
+  const auto movement_length = std::hypot(motion.move_x, motion.move_y);
+  if (movement_length > 1.0) {
+    motion.move_x /= movement_length;
+    motion.move_y /= movement_length;
+  }
+  return fixed_update(collision_world, input, motion);
+}
+
+PlayerSimulationStepV1
+PlayerSimulationV1::fixed_update(const CollisionWorldV1 &collision_world,
+                                 const GameInputCommandV1 &input,
+                                 CharacterMotionV1 motion) {
   try {
     validate_game_input_command_v1(input);
   } catch (const GameInputError &error) {
@@ -194,14 +209,7 @@ PlayerSimulationV1::fixed_update(const CollisionWorldV1 &collision_world,
     return result;
   }
 
-  CharacterMotionV1 motion;
-  motion.move_x = axis_to_unit(input.axes.move_x);
-  motion.move_y = axis_to_unit(input.axes.move_y);
   const auto movement_length = std::hypot(motion.move_x, motion.move_y);
-  if (movement_length > 1.0) {
-    motion.move_x /= movement_length;
-    motion.move_y /= movement_length;
-  }
   motion.jump_pressed =
       (input.pressed_buttons & game_button_mask_v1(GameButtonV1::jump)) != 0U;
 

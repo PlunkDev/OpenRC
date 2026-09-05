@@ -31,6 +31,7 @@
 #include "openrc/rac_moby_class.hpp"
 #include "openrc/rac_moby_model_geometry.hpp"
 #include "openrc/rac_moby_packet_geometry.hpp"
+#include "openrc/rac_player_locomotion.hpp"
 #include "openrc/rac_ratchet_sequence.hpp"
 #include "openrc/runtime_gameplay.hpp"
 #include "openrc/runtime_level_content.hpp"
@@ -729,7 +730,8 @@ make_cli_player_simulation_profile(const double death_height_world) {
     character.ground_probe_distance = 0.30;
     character.step_height = 0.55;
     character.maximum_slope_degrees = 50.0;
-    character.maximum_ground_speed = 6.0;
+    character.maximum_ground_speed =
+        openrc::game::kRacPlayerStandardFastGroundSpeedV1;
     character.ground_acceleration = 30.0;
     character.ground_deceleration = 40.0;
     character.air_acceleration = 10.0;

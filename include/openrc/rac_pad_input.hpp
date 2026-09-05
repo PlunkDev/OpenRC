@@ -10,6 +10,15 @@ inline constexpr std::uint8_t kRacPadAxisCenterV1 = 127U;
 inline constexpr std::uint8_t kRacPadAxisDeadZoneV1 = 48U;
 inline constexpr std::uint8_t kRacPadAxisResponseDivisorV1 = 76U;
 
+struct RacPadAxesResponseV1 {
+  float move_x = 0.0F;
+  float move_y = 0.0F;
+  float look_x = 0.0F;
+  float look_y = 0.0F;
+
+  [[nodiscard]] bool operator==(const RacPadAxesResponseV1 &) const = default;
+};
+
 // Exact scalar response recovered from SCES-50916 PAL v2.00 at
 // 0x2182b0..0x218330. The caller owns protocol ordering: packet bytes +2..+5
 // are written to four consecutive floats at state +0x100..+0x10c.
@@ -26,6 +35,12 @@ quantize_game_input_axis_to_rac_pad_v1(std::int16_t axis) noexcept;
 // final representation conversion from [-1, 1] to [-32767, 32767].
 [[nodiscard]] std::int16_t
 apply_rac_pad_axis_response_v1(std::int16_t axis) noexcept;
+
+// Samples all four deterministic signed axes onto the source DualShock byte
+// lattice and keeps the source float results. Gameplay consumers should use
+// this form when another int16 round trip would discard recovered policy.
+[[nodiscard]] RacPadAxesResponseV1
+decode_rac_pad_axes_response_v1(GameInputAxesV1 axes) noexcept;
 
 [[nodiscard]] GameInputAxesV1
 apply_rac_pad_axes_response_v1(GameInputAxesV1 axes) noexcept;

@@ -1,5 +1,6 @@
 #include "openrc/game_input.hpp"
 #include "openrc/rac_pad_input.hpp"
+#include "openrc/rac_player_locomotion.hpp"
 
 #include <cmath>
 #include <cstdint>
@@ -159,11 +160,62 @@ void test_signed_controller_bridge_and_four_axis_response() {
          "the signed controller bridge missed the DualShock byte endpoints");
   const auto filtered =
       apply_rac_pad_axes_response_v1({12'000, 16'384, -32'767, 32'767});
+  const auto exact =
+      decode_rac_pad_axes_response_v1({12'000, 16'384, -32'767, 32'767});
   expect(filtered.move_x == 0 && filtered.move_y > 0 &&
              filtered.move_y < kGameInputAxisMagnitudeV1 &&
              filtered.look_x == -kGameInputAxisMagnitudeV1 &&
              filtered.look_y == kGameInputAxisMagnitudeV1,
          "the recovered RAC pad response did not preserve partial/full axes");
+  expect(exact.move_x == 0.0F && exact.move_y > 0.0F &&
+             exact.move_y < 1.0F && exact.look_x == -1.0F &&
+             exact.look_y == 1.0F,
+         "the floating RAC pad response lost source-domain magnitudes");
+}
+
+void test_recovered_standard_ground_pace_selection() {
+  using namespace openrc::game;
+
+  const auto stationary =
+      map_rac_player_standard_ground_movement_v1(0, 0);
+  expect(stationary == RacPlayerGroundMovementV1{},
+         "neutral source input did not remain stationary");
+
+  // The source comparison is strict: equality belongs to the fast side.
+  const auto slow = map_rac_player_standard_ground_movement_v1(
+      std::nextafter(kRacPlayerStandardFastPaceThresholdV1, 0.0F), 0.0F);
+  const auto fast = map_rac_player_standard_ground_movement_v1(
+      kRacPlayerStandardFastPaceThresholdV1, 0.0F);
+  expect(slow.pace == RacPlayerGroundPaceV1::slow &&
+             slow.target_ground_speed ==
+                 kRacPlayerStandardSlowGroundSpeedV1 &&
+             slow.source_input_magnitude <
+                 kRacPlayerStandardFastPaceThresholdV1 &&
+             slow.direction_x == 1.0 && slow.direction_y == 0.0,
+         "a filtered stick magnitude below 0.82 did not select source slow "
+         "movement");
+  expect(fast.pace == RacPlayerGroundPaceV1::fast &&
+             fast.target_ground_speed ==
+                 kRacPlayerStandardFastGroundSpeedV1 &&
+             fast.source_input_magnitude >=
+                 kRacPlayerStandardFastPaceThresholdV1 &&
+             fast.direction_x == 1.0 && fast.direction_y == 0.0,
+         "the exact 0.82 magnitude did not select source fast movement");
+
+  const auto diagonal = map_rac_player_standard_ground_movement_v1(
+      1.0F, 1.0F);
+  const auto diagonal_length =
+      std::hypot(diagonal.direction_x, diagonal.direction_y);
+  expect(diagonal.pace == RacPlayerGroundPaceV1::fast &&
+             diagonal.source_input_magnitude == 1.0F &&
+             std::abs(diagonal_length - 1.0) < 1.0e-6,
+         "source fast movement did not retain diagonal direction in the "
+         "unit circle");
+
+  const auto rejected = map_rac_player_standard_ground_movement_v1(
+      std::numeric_limits<float>::quiet_NaN(), 0.5F);
+  expect(rejected == RacPlayerGroundMovementV1{},
+         "a non-finite source movement vector did not fail closed");
 }
 
 } // namespace
@@ -177,6 +229,7 @@ int main() {
     test_platform_axis_canonicalization_preserves_analog_magnitude();
     test_recovered_rac_pad_byte_response();
     test_signed_controller_bridge_and_four_axis_response();
+    test_recovered_standard_ground_pace_selection();
     std::cout << "game_input_tests: ok\n";
     return 0;
   } catch (const std::exception &error) {

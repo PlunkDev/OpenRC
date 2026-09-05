@@ -56,6 +56,10 @@ struct CharacterMotionV1 {
   double move_x = 0.0;
   double move_y = 0.0;
   bool jump_pressed = false;
+  // When present, move_x/move_y provide direction only and this value is the
+  // requested horizontal-speed target. The controller still applies its
+  // configured ground/air acceleration policy while approaching that target.
+  std::optional<double> target_horizontal_speed = std::nullopt;
 
   [[nodiscard]] bool operator==(const CharacterMotionV1 &) const = default;
 };

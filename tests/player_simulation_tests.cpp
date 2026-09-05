@@ -21,6 +21,13 @@ void expect(const bool condition, const std::string &message) {
   }
 }
 
+void expect_near(const double actual, const double expected,
+                 const double tolerance, const std::string &message) {
+  if (std::abs(actual - expected) > tolerance) {
+    throw std::runtime_error(message);
+  }
+}
+
 template <typename Callback>
 void expect_player_error(Callback &&callback, const std::string &message) {
   try {
@@ -214,6 +221,76 @@ void test_partial_analog_magnitude_reaches_character_motion() {
          "partial analog travel did not produce a slower nonzero movement");
 }
 
+void test_explicit_motion_override_and_jump_authority() {
+  using namespace openrc::game;
+
+  auto exact_profile = player_profile(-100.0);
+  exact_profile.character.maximum_ground_speed = 5.7;
+  const auto world = floor_world();
+  PlayerSimulationV1 player(exact_profile, checkpoint());
+  std::uint64_t tick = 0U;
+  while (!player.snapshot().character.grounded && tick < 120U) {
+    static_cast<void>(player.fixed_update(world, command(tick)));
+    ++tick;
+  }
+  expect(player.snapshot().character.grounded,
+         "the explicit-motion test player did not reach the floor");
+
+  const CharacterMotionV1 supplied_jump{0.3, 0.4, true, 0.9};
+  static_cast<void>(player.fixed_update(world, command(tick), supplied_jump));
+  ++tick;
+  const auto slow_walk = player.snapshot();
+  expect_near(slow_walk.character.velocity.x, 0.54, 1.0e-12,
+              "the player override lost the exact target X velocity");
+  expect_near(slow_walk.character.velocity.y, 0.72, 1.0e-12,
+              "the player override lost the exact target Y velocity");
+  expect(slow_walk.character.grounded && slow_walk.character.velocity.z == 0.0,
+         "a supplied jump flag bypassed the authoritative input buttons");
+
+  const CharacterMotionV1 supplied_no_jump{0.3, 0.4, false, 0.9};
+  static_cast<void>(player.fixed_update(
+      world, command(tick, 0, 0, game_button_mask_v1(GameButtonV1::jump)),
+      supplied_no_jump));
+  expect(!player.snapshot().character.grounded &&
+             player.snapshot().character.velocity.z > 0.0,
+         "the authoritative jump button did not override supplied motion");
+}
+
+void test_explicit_motion_invalid_speed_is_atomic() {
+  using namespace openrc::game;
+
+  auto exact_profile = player_profile(-100.0);
+  exact_profile.character.maximum_ground_speed = 5.7;
+  const auto world = empty_world();
+  PlayerSimulationV1 player(exact_profile, checkpoint());
+  const auto before = player.snapshot();
+
+  const auto expect_invalid_motion = [&](const CharacterMotionV1 motion,
+                                         const std::string &message) {
+    expect_player_error(
+        [&] {
+          static_cast<void>(player.fixed_update(world, command(0U), motion));
+        },
+        message);
+    expect(player.snapshot() == before,
+           "a rejected motion override partially mutated player state");
+  };
+  expect_invalid_motion(
+      {1.0, 0.0, false, std::numeric_limits<double>::infinity()},
+      "a player override accepted a non-finite target speed");
+  expect_invalid_motion({1.0, 0.0, false, -0.01},
+                        "a player override accepted a negative target speed");
+  expect_invalid_motion({1.0, 0.0, false, 5.700001},
+                        "a player override accepted an excessive target speed");
+  expect_invalid_motion({0.0, 0.0, false, 0.9},
+                        "a player override accepted speed without direction");
+
+  static_cast<void>(
+      player.fixed_update(world, command(0U), {1.0, 0.0, false, 0.9}));
+  expect(player.snapshot().next_tick_index == 1U,
+         "a rejected override consumed the fixed-tick sequence");
+}
+
 void test_validation_and_reset_overflow_atomicity() {
   using namespace openrc::game;
 
@@ -255,6 +332,8 @@ int main() {
     test_manual_and_checkpoint_activation_reset();
     test_tick_order_snapshot_and_deterministic_hash();
     test_partial_analog_magnitude_reaches_character_motion();
+    test_explicit_motion_override_and_jump_authority();
+    test_explicit_motion_invalid_speed_is_atomic();
     test_validation_and_reset_overflow_atomicity();
     std::cout << "player_simulation_tests: ok\n";
     return 0;

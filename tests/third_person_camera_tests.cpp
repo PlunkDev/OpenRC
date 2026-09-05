@@ -98,6 +98,13 @@ void test_camera_relative_movement_at_cardinal_yaws() {
           static_cast<double>(kGameInputAxisMagnitudeV1),
       0.0,
       "camera-relative movement expanded partial analog travel to full speed");
+
+  constexpr double kSourcePrecisionX = 0.123456789012345;
+  constexpr double kSourcePrecisionY = 0.234567890123456;
+  const auto precise =
+      subject.map_unit_movement(kSourcePrecisionX, kSourcePrecisionY);
+  expect_movement(precise, kSourcePrecisionY, -kSourcePrecisionX,
+                  "camera mapping requantized source-response movement");
 }
 
 void test_pitch_distance_clamps_and_elapsed_time() {
@@ -230,6 +237,15 @@ void test_invalid_profiles_states_and_updates_are_rejected() {
             subject.view({std::numeric_limits<double>::infinity(), 0.0, 0.0}));
       },
       "a non-finite camera focus was accepted");
+  expect_camera_error(
+      [&] {
+        static_cast<void>(subject.map_unit_movement(
+            std::numeric_limits<double>::quiet_NaN(), 0.0));
+      },
+      "non-finite source-response movement was accepted");
+  expect_camera_error(
+      [&] { static_cast<void>(subject.map_unit_movement(1.01, 0.0)); },
+      "source-response movement outside the unit domain was accepted");
   expect(subject.state() == before,
          "a rejected camera operation partially changed its state");
 }

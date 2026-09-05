@@ -79,6 +79,9 @@ public:
   [[nodiscard]] PlayerSimulationStepV1
   fixed_update(const CollisionWorldV1 &collision_world,
                const GameInputCommandV1 &input);
+  [[nodiscard]] PlayerSimulationStepV1
+  fixed_update(const CollisionWorldV1 &collision_world,
+               const GameInputCommandV1 &input, CharacterMotionV1 motion);
 
   void set_checkpoint(PlayerCheckpointV1 checkpoint, bool reset_immediately);
   void reset_to_checkpoint(PlayerResetReasonV1 reason);

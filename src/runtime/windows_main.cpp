@@ -2,7 +2,6 @@
 #include "windows_gamepad.hpp"
 
 #include "openrc/prepared_game_v2_fs.hpp"
-#include "openrc/rac_pad_input.hpp"
 #include "openrc/runtime_gameplay.hpp"
 #include "openrc/runtime_level_content.hpp"
 #include "openrc/runtime_player_actor.hpp"
@@ -820,20 +819,6 @@ void resize_gameplay_camera(
         state, state.gameplay->player().snapshot());
 }
 
-[[nodiscard]] std::int16_t quantize_gameplay_axis(const double value) {
-    if (!std::isfinite(value)) {
-        throw std::runtime_error(
-            "The gameplay camera produced a non-finite movement axis");
-    }
-    const auto scaled = std::clamp(value, -1.0, 1.0) *
-                        openrc::game::kGameInputAxisMagnitudeV1;
-    const auto rounded = std::llround(scaled);
-    return static_cast<std::int16_t>(std::clamp<long long>(
-        rounded,
-        -openrc::game::kGameInputAxisMagnitudeV1,
-        openrc::game::kGameInputAxisMagnitudeV1));
-}
-
 [[nodiscard]] bool gameplay_frame_will_emit_tick(
     const WindowState& state,
     const std::uint64_t elapsed_nanoseconds) {
@@ -876,17 +861,16 @@ void advance_gameplay_frame(
     auto next_camera = *state.gameplay_camera;
     const openrc::game::RuntimeMovementMapperV1 movement_mapper =
         [&next_camera](const openrc::game::GameInputCommandV1& input,
+                       const openrc::game::RuntimeMovementAxesV1 movement,
                        const double fixed_delta_seconds) {
-            const auto source_axes =
-                openrc::game::apply_rac_pad_axes_response_v1(input.axes);
             next_camera.fixed_update(
-                {source_axes.look_x, source_axes.look_y, 0},
+                {input.axes.look_x, input.axes.look_y, 0},
                 fixed_delta_seconds);
-            const auto movement = next_camera.map_movement(
-                source_axes.move_x, source_axes.move_y);
+            const auto world_movement = next_camera.map_unit_movement(
+                movement.move_x, movement.move_y);
             return openrc::game::RuntimeMovementAxesV1{
-                quantize_gameplay_axis(movement.move_x),
-                quantize_gameplay_axis(movement.move_y),
+                world_movement.move_x,
+                world_movement.move_y,
             };
         };
     const auto frame = state.gameplay->advance_frame(

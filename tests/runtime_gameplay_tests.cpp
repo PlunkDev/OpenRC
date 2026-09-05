@@ -1,5 +1,8 @@
 #include "openrc/runtime_gameplay.hpp"
 
+#include "openrc/rac_pad_input.hpp"
+#include "openrc/rac_player_locomotion.hpp"
+
 #include <cmath>
 #include <cstdint>
 #include <functional>
@@ -21,6 +24,13 @@ constexpr auto kEntityGameplayLimits =
 
 void expect(const bool condition, const std::string &message) {
   if (!condition) {
+    throw std::runtime_error(message);
+  }
+}
+
+void expect_near(const double actual, const double expected,
+                 const double tolerance, const std::string &message) {
+  if (std::abs(actual - expected) > tolerance) {
     throw std::runtime_error(message);
   }
 }
@@ -311,13 +321,14 @@ void test_per_tick_movement_mapping_and_atomic_failure() {
   std::uint32_t mapper_calls = 0U;
   const RuntimeMovementMapperV1 rotate_to_y =
       [&mapper_calls](const GameInputCommandV1 &input,
+                      const RuntimeMovementAxesV1 source_movement,
                       const double fixed_delta_seconds) {
         expect(input.tick_index == mapper_calls,
                "movement mapper observed an unexpected fixed-tick index");
         expect(fixed_delta_seconds == 1.0 / 60.0,
                "movement mapper received a different delta than the player");
         ++mapper_calls;
-        return RuntimeMovementAxesV1{0, input.axes.move_x};
+        return RuntimeMovementAxesV1{0.0, source_movement.move_x};
       };
   const auto frame = runtime.advance_frame(50'000'000U, sample, rotate_to_y);
   expect(frame.ticks.size() == 3U && mapper_calls == 3U,
@@ -341,8 +352,9 @@ void test_per_tick_movement_mapping_and_atomic_failure() {
 
   const auto before_failure = runtime.snapshot();
   const RuntimeMovementMapperV1 invalid_mapper = [](const GameInputCommandV1 &,
+                                                    const RuntimeMovementAxesV1,
                                                     const double) {
-    return RuntimeMovementAxesV1{std::numeric_limits<std::int16_t>::min(), 0};
+    return RuntimeMovementAxesV1{std::numeric_limits<double>::quiet_NaN(), 0.0};
   };
   expect_gameplay_error(
       [&] {
@@ -351,6 +363,125 @@ void test_per_tick_movement_mapping_and_atomic_failure() {
       "invalid mapped movement entered the replay stream");
   expect(runtime.snapshot() == before_failure,
          "a failed mapped frame partially mutated gameplay state");
+}
+
+[[nodiscard]] openrc::game::RuntimeGameplaySessionOptionsV1
+exact_motion_test_options() {
+  auto options = openrc::game::RuntimeGameplaySessionOptionsV1{};
+  options.profile.character.ground_acceleration = 1'000.0;
+  options.profile.character.ground_deceleration = 1'000.0;
+  options.profile.character.air_acceleration = 1'000.0;
+  return options;
+}
+
+void settle_runtime_player_on_floor(
+    openrc::game::RuntimeGameplaySessionV1 &runtime) {
+  for (std::uint32_t tick = 0U;
+       tick < 8U && !runtime.snapshot().player.character.grounded; ++tick) {
+    static_cast<void>(runtime.advance_frame(16'666'667U));
+  }
+  expect(runtime.snapshot().player.character.grounded,
+         "the exact locomotion test player did not settle on the floor");
+}
+
+void test_source_ground_paces_are_exact_without_a_frontend_mapper() {
+  using namespace openrc::game;
+
+  // These canonical axes land on adjacent source byte samples: 62/76 is
+  // below the strict 0.82 boundary and 63/76 is above it.
+  constexpr std::int16_t kBelowFastThreshold = 28'159;
+  constexpr std::int16_t kAboveFastThreshold = 28'415;
+  const auto below_axes = decode_rac_pad_axes_response_v1(
+      movement_sample(kBelowFastThreshold, 0).axes);
+  const auto above_axes = decode_rac_pad_axes_response_v1(
+      movement_sample(kAboveFastThreshold, 0).axes);
+  expect(below_axes.move_x < kRacPlayerStandardFastPaceThresholdV1 &&
+             above_axes.move_x >= kRacPlayerStandardFastPaceThresholdV1,
+         "the threshold fixture does not straddle the recovered 0.82 rule");
+
+  RuntimeGameplaySessionV1 runtime(foundation(), exact_motion_test_options());
+  settle_runtime_player_on_floor(runtime);
+
+  const auto slow = runtime.advance_frame(
+      16'666'667U, movement_sample(kBelowFastThreshold, 0));
+  expect(slow.ticks.size() == 1U &&
+             slow.ticks[0U].input.axes.move_x ==
+                 apply_rac_pad_axis_response_v1(kBelowFastThreshold),
+         "headless runtime did not record the recovered pad response");
+  expect(
+      slow.ticks[0U].source_standard_ground_movement.pace ==
+              RacPlayerGroundPaceV1::slow &&
+          slow.ticks[0U]
+                  .source_standard_ground_movement.source_input_magnitude ==
+              below_axes.move_x &&
+          slow.ticks[0U].source_standard_ground_movement.target_ground_speed ==
+              kRacPlayerStandardSlowGroundSpeedV1,
+      "the tick lost its unquantized source locomotion descriptor");
+  expect_near(
+      std::hypot(slow.snapshot.player.character.velocity.x,
+                 slow.snapshot.player.character.velocity.y),
+      static_cast<double>(kRacPlayerStandardSlowGroundSpeedV1), 1.0e-12,
+      "light grounded analog did not reach the exact 0.9 source target");
+
+  const auto fast = runtime.advance_frame(
+      16'666'667U, movement_sample(kAboveFastThreshold, 0));
+  expect_near(
+      std::hypot(fast.snapshot.player.character.velocity.x,
+                 fast.snapshot.player.character.velocity.y),
+      static_cast<double>(kRacPlayerStandardFastGroundSpeedV1), 1.0e-12,
+      "grounded analog above 0.82 did not reach the exact 5.7 source target");
+  expect(fast.ticks[0U].source_standard_ground_movement.pace ==
+             RacPlayerGroundPaceV1::fast,
+         "the tick did not expose the fast source locomotion pace");
+}
+
+void test_ground_pace_survives_double_precision_camera_rotation() {
+  using namespace openrc::game;
+
+  RuntimeGameplaySessionV1 runtime(foundation(), exact_motion_test_options());
+  settle_runtime_player_on_floor(runtime);
+  constexpr std::int16_t kAboveFastThreshold = 28'415;
+  const RuntimeMovementMapperV1 quarter_turn =
+      [](const GameInputCommandV1 &, const RuntimeMovementAxesV1 source,
+         const double) {
+        return RuntimeMovementAxesV1{-source.move_y, source.move_x};
+      };
+  const auto frame = runtime.advance_frame(
+      16'666'667U, movement_sample(kAboveFastThreshold, 0), quarter_turn);
+  const auto &velocity = frame.snapshot.player.character.velocity;
+  expect_near(velocity.x, 0.0, 1.0e-12,
+              "camera rotation left horizontal speed on source X");
+  expect_near(velocity.y,
+              static_cast<double>(kRacPlayerStandardFastGroundSpeedV1), 1.0e-12,
+              "camera rotation lost the exact grounded target speed");
+  expect(frame.ticks.size() == 1U && frame.ticks[0U].input.axes.move_x == 0 &&
+             frame.ticks[0U].input.axes.move_y ==
+                 apply_rac_pad_axis_response_v1(kAboveFastThreshold),
+         "the replay command did not retain rotated source-stick magnitude");
+}
+
+void test_airborne_input_remains_proportional_to_source_response() {
+  using namespace openrc::game;
+
+  constexpr std::int16_t kLightAxis = 13'000;
+  const auto source_axes =
+      decode_rac_pad_axes_response_v1(movement_sample(kLightAxis, 0).axes);
+  expect(source_axes.move_x > 0.0F &&
+             source_axes.move_x < kRacPlayerStandardFastPaceThresholdV1,
+         "the airborne fixture is not a light nonzero source input");
+
+  RuntimeGameplaySessionV1 runtime(
+      foundation(7U, 10U, {0.0, 0.0, 2.0}, -100.0, empty_world()),
+      exact_motion_test_options());
+  const auto frame =
+      runtime.advance_frame(16'666'667U, movement_sample(kLightAxis, 0));
+  const auto expected_speed = static_cast<double>(source_axes.move_x) *
+                              runtime.profile().character.maximum_ground_speed;
+  expect(!frame.snapshot.player.character.grounded,
+         "the airborne proportional-input fixture unexpectedly grounded");
+  expect_near(frame.snapshot.player.character.velocity.x, expected_speed,
+              1.0e-12,
+              "airborne input was incorrectly replaced by a ground pace");
 }
 
 void test_staged_frame_snapshot_matches_committed_state() {
@@ -809,6 +940,9 @@ int main() {
     test_spawn_session_and_production_profile();
     test_determinism_across_frame_partitions();
     test_per_tick_movement_mapping_and_atomic_failure();
+    test_source_ground_paces_are_exact_without_a_frontend_mapper();
+    test_ground_pace_survives_double_precision_camera_rotation();
+    test_airborne_input_remains_proportional_to_source_response();
     test_staged_frame_snapshot_matches_committed_state();
     test_snapshot_preserves_pending_edges();
     test_checkpoint_collision_envelope_is_bounded();

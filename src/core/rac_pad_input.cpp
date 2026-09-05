@@ -45,14 +45,30 @@ std::int16_t apply_rac_pad_axis_response_v1(const std::int16_t axis) noexcept {
   return canonical_game_input_axis_v1(static_cast<std::int32_t>(scaled));
 }
 
+RacPadAxesResponseV1
+decode_rac_pad_axes_response_v1(const GameInputAxesV1 axes) noexcept {
+  return {
+      decode_rac_pad_axis_v1(
+          quantize_game_input_axis_to_rac_pad_v1(axes.move_x)),
+      decode_rac_pad_axis_v1(
+          quantize_game_input_axis_to_rac_pad_v1(axes.move_y)),
+      decode_rac_pad_axis_v1(
+          quantize_game_input_axis_to_rac_pad_v1(axes.look_x)),
+      decode_rac_pad_axis_v1(
+          quantize_game_input_axis_to_rac_pad_v1(axes.look_y)),
+  };
+}
+
 GameInputAxesV1
 apply_rac_pad_axes_response_v1(const GameInputAxesV1 axes) noexcept {
-  return {
-      apply_rac_pad_axis_response_v1(axes.move_x),
-      apply_rac_pad_axis_response_v1(axes.move_y),
-      apply_rac_pad_axis_response_v1(axes.look_x),
-      apply_rac_pad_axis_response_v1(axes.look_y),
+  const auto response = decode_rac_pad_axes_response_v1(axes);
+  const auto quantize = [](const float value) noexcept {
+    const auto scaled = std::lround(static_cast<double>(value) *
+                                    kGameInputAxisMagnitudeV1);
+    return canonical_game_input_axis_v1(static_cast<std::int32_t>(scaled));
   };
+  return {quantize(response.move_x), quantize(response.move_y),
+          quantize(response.look_x), quantize(response.look_y)};
 }
 
 } // namespace openrc::game

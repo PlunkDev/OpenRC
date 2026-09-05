@@ -625,10 +625,23 @@ CharacterControllerV1::fixed_update(const CollisionWorldV1 &collision_world,
     throw CharacterControllerError(
         "A character movement input exceeds the unit circle");
   }
+  if (motion.target_horizontal_speed &&
+      (!std::isfinite(*motion.target_horizontal_speed) ||
+       *motion.target_horizontal_speed < 0.0 ||
+       *motion.target_horizontal_speed > profile_.maximum_ground_speed)) {
+    throw CharacterControllerError(
+        "A character target horizontal speed is outside its profile");
+  }
+  if (motion.target_horizontal_speed && *motion.target_horizontal_speed > 0.0 &&
+      input_length == 0.0) {
+    throw CharacterControllerError(
+        "A positive character target horizontal speed requires a direction");
+  }
   if (input_length > 1.0) {
     motion.move_x /= input_length;
     motion.move_y /= input_length;
   }
+  const auto direction_length = std::hypot(motion.move_x, motion.move_y);
 
   CharacterStepResultV1 result;
   auto state = state_;
@@ -661,12 +674,23 @@ CharacterControllerV1::fixed_update(const CollisionWorldV1 &collision_world,
     state.ground_normal = {0.0, 0.0, 1.0};
   }
 
-  const Vec3 target_velocity{
+  auto target_velocity = Vec3{
       motion.move_x * profile_.maximum_ground_speed,
       motion.move_y * profile_.maximum_ground_speed,
       state.velocity.z,
   };
-  const auto has_movement = input_length > kGeometryEpsilon;
+  auto has_movement = input_length > kGeometryEpsilon;
+  if (motion.target_horizontal_speed) {
+    target_velocity.x = 0.0;
+    target_velocity.y = 0.0;
+    if (*motion.target_horizontal_speed > 0.0) {
+      target_velocity.x =
+          motion.move_x / direction_length * *motion.target_horizontal_speed;
+      target_velocity.y =
+          motion.move_y / direction_length * *motion.target_horizontal_speed;
+    }
+    has_movement = *motion.target_horizontal_speed > 0.0;
+  }
   const auto acceleration = state.grounded
                                 ? (has_movement ? profile_.ground_acceleration
                                                 : profile_.ground_deceleration)

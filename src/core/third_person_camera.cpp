@@ -245,12 +245,26 @@ ThirdPersonCameraV1::map_movement(const std::int16_t move_x,
                                   const std::int16_t move_y) const {
   validate_axis(move_x, "A camera-relative move-X axis is outside its domain");
   validate_axis(move_y, "A camera-relative move-Y axis is outside its domain");
-  if (move_x == 0 && move_y == 0) {
+  return map_unit_movement(axis_to_unit(move_x), axis_to_unit(move_y));
+}
+
+CameraRelativeMovementV1
+ThirdPersonCameraV1::map_unit_movement(const double move_x,
+                                       const double move_y) const {
+  if (!std::isfinite(move_x) || !std::isfinite(move_y)) {
+    throw ThirdPersonCameraError(
+        "Camera-relative movement contains a non-finite axis");
+  }
+  if (move_x < -1.0 || move_x > 1.0 || move_y < -1.0 || move_y > 1.0) {
+    throw ThirdPersonCameraError(
+        "A camera-relative movement axis is outside its unit domain");
+  }
+  if (move_x == 0.0 && move_y == 0.0) {
     return {};
   }
 
-  auto local_x = axis_to_unit(move_x);
-  auto local_y = axis_to_unit(move_y);
+  auto local_x = move_x;
+  auto local_y = move_y;
   const auto local_length = std::hypot(local_x, local_y);
   if (local_length > 1.0) {
     local_x /= local_length;

@@ -677,17 +677,21 @@ finite bounds X `[-0.391791, 0.376465]`, Y `[-0.465786, 0.388369]`, and Z
 separate until the original VU0 policy is proven; no epsilon or identity repair
 is substituted.
 
-The matching player-control audit identifies three grounded locomotion cycles:
-slot 0 is stationary (10 frames, phase rate `0.125`), while slots 3 (33 frames,
-phase rate `0.25`) and 4 (23 frames, phase rate `0.5`) are slower and faster
-movement cycles. These descriptions do not establish three discrete gameplay
-states; the original analog-magnitude selection and blending still have to be
-recovered. A non-zero
+The animation decoder establishes that slot 0 has 10 frames at phase rate
+`0.125`, slot 3 has 33 frames at `0.25`, and slot 4 has 23 frames at `0.5`.
+The loaded Veldin overlay's three player dispatch tables then identify state 0
+as idle and state 2 as ordinary grounded movement. State-2 initialization at
+`0x223a60` selects slot `3 + substate`, initially slot 3. Helper `0x2293e8`
+keeps that substate in `0..1`: actual pace strictly above `2.35 * dt` changes
+slot 3 to 4, actual pace strictly below `1.90 * dt` changes slot 4 to 3, and
+equality retains the current slot. The switch maps the integer source frame as
+`(floor(old_frame * new_count / old_count) + offset) % new_count`, with offset
+1 for 3-to-4 and 5 for 4-to-3, then clears fractional phase. A non-zero
 sequence word at `+0x18` overrides the per-frame phase rate; zero retains the
 current frame's rate. The source player increments phase once per PAL 50 Hz
 update and wraps these sequences on a cycle boundary. Trigger words are audio
-events, not melee-hit notifications. No jump, fall, landing, or wrench semantic
-mapping is claimed by this evidence.
+events, not melee-hit notifications. No jump, fall, landing, crouch, damage,
+death, or wrench semantic mapping is claimed by this evidence.
 
 The PAL executable's pad update at `0x2182b0..0x218330` independently proves
 the scalar input response for all four DualShock packet axes. Bytes `+2..+5`
@@ -696,24 +700,32 @@ uses zero while `abs(delta) < 48`, otherwise computes
 `(abs(delta) - 48) / 76`, clamps values above one, and negates the result when
 the raw byte is below `127`. Consequently raw `79..175` is the effective zero
 range (including a source negative zero at `79`), `78/176` produce the first
-non-zero `-1/76` and `+1/76`, and `0/255` clamp to `-1/+1`. The later code at
-`0x2186c4..0x2186e8` computes length and angle from state `+0x108/+0x10c`.
-That establishes normalization and a paired stick vector, but does not yet
-prove the downstream slow-walk or animation-selection thresholds. A complete
-scan of direct references derived from the pad-state base found 36 accesses;
-the only axis reads outside the normalizer occur in `0x205c70`, which updates
-indexed input buffers rather than the player state. The `0.9` and `0.25`
-constants following the paired length/angle calculation belong to its
-30-sample gesture history and are therefore not relabeled as locomotion
-thresholds. The missing consumer must be sought in runtime-loaded level/class
-code or another indirect dispatch path rather than guessed from those values.
+non-zero `-1/76` and `+1/76`, and `0/255` clamp to `-1/+1`.
+
+The level overlay copies left-stick X/Y from pad state `+0x108/+0x10c` at
+`0x211d64..0x211d68`. Function `0x211f80` computes and clamps the radial
+magnitude, preserving it through `0x212280`. The standard player wrapper at
+`0x2122a0..0x2123ac` then performs the missing pace selection. For `m == 0`
+the result stays zero. Its strict `c.lt.s` comparison at `0x21232c` selects
+`0.9` when `0 < m < 0.82` and `5.7` when `m >= 0.82`, then multiplies that
+coefficient by the global frame step at `0x15ee6c`. This is an automatic
+slow/fast choice, not a run button, and the exact `0.82` boundary belongs to
+the fast side. State 63 instead uses `max(3.5*m, 2.0)` before the frame step;
+state 115 scales the standard result by `0.8` and enforces a `2.5` minimum.
+Only the standard grounded pace and its slot-3/slot-4 actual-speed hysteresis
+are connected in the current runtime; the two state-specific exceptions wait
+for their state semantics. State 0 enters state 2 only on strict previous-sample
+`m > 0.22`; state 2 opens its guarded stop path on strict previous-sample
+`m < 0.17`. The runtime preserves current source magnitude per tick, but does
+not yet claim the remaining contact/vertical guards or exact one-tick-lagged
+state transition behavior.
 
 OpenRC's current neutral profile publishes every occupied per-level sequence
-under a numeric source-slot key; Veldin has 134. The temporary preview selects
-slots 0, 3, and 4 while the original state machine is still being recovered.
-The runtime converts 50 source updates to its 60 fixed ticks with an integer
-accumulator and holds the last grounded pose while airborne. This temporary
-selection policy is deterministic and package-only.
+under a numeric source-slot key; Veldin has 134. The runtime connects the
+proven slot-0 and state-2 slot-3/slot-4 subset, converts 50 source updates to
+its 60 fixed ticks with an integer accumulator, and holds the last grounded
+pose while airborne. The unsupported player states remain explicit rather
+than being assigned guessed clips.
 
 The regular packet decoder validates signed TOPS-relative VIF UNPACKs for
 fixed-12 texture coordinates, V4-8 strip indices, and optional V4-32 AD-GIF

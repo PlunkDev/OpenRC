@@ -199,7 +199,10 @@ decoders remain compiler/diagnostic-side evidence feeding neutral packages.
   crate/wrench/locomotion path
 - [x] decode and package every occupied per-level Ratchet animation slot under
   numeric source keys (134 on Veldin), with exact rig binding and PAL 50 Hz
-  source cadence; retain slots 0, 3, and 4 only as temporary preview selections
+  source cadence
+- [x] connect proven grounded state 0/2 animation slots 0/3/4, strict
+  `>2.35`/`<1.90` actual-pace hysteresis, and the original cross-slot frame
+  remap without inventing a run button
 - [ ] identify and connect Ratchet's airborne, landing, wrench, and remaining
   gameplay animation mappings from the original state machine without guessing
   source slots
@@ -207,8 +210,10 @@ decoders remain compiler/diagnostic-side evidence feeding neutral packages.
   at the deterministic input boundary
 - [x] reproduce the original four-axis DualShock centering and dead-zone
   response (`127`, `48`, `/76`, clamped) after the replay boundary
-- [ ] connect the recovered analog magnitude to the original slow-walk speed
-  response and locomotion-transition behavior from the player state machine
+- [x] connect the standard grounded analog pace policy (`m < 0.82` -> `0.9`,
+  `m >= 0.82` -> `5.7`) with automatic light-tilt walking and no run button
+- [ ] connect exact state-0/state-2 entry/stop guards, source pace smoothing,
+  turning/collision modifiers, and state-specific movement exceptions
 - [x] connect Win32 keyboard input and a deterministic third-person camera to
   package-only fixed-step movement in the graphical runtime
 - [x] package actor and entity data independently of RAC/PS2 source layouts
@@ -225,9 +230,9 @@ decoders remain compiler/diagnostic-side evidence feeding neutral packages.
 The eight-resource collectible, crate/wrench, and source-animation profile is
 verified on fresh prepared data across all 19 levels, including deterministic
 reuse, package-only Veldin gameplay, exact animation-to-rig validation, and
-visible-to-destroyed D3D11 smoke. The complete source animation banks are
-available, but gameplay-state meanings and transitions are not yet connected.
-This does not declare Veldin finished: airborne and wrench animation, original
+visible-to-destroyed D3D11 smoke. The complete source animation banks and the
+ordinary grounded 0/3/4 subset are connected, but the broader player state
+machine is not. This does not declare Veldin finished: airborne and wrench animation, original
 pickup and destruction presentation, broader interactive entities, one
 weapon/enemy loop, original camera behavior, menus, and full scene-family
 coverage remain open.

@@ -194,25 +194,38 @@ high-LOD textures, bind-space mesh, hierarchy, inverse binds, and skin weights.
 The compiler decodes every regular Ratchet frame into neutral local joint
 transforms, preserving authored zero scale rather than repairing it, then
 packages every occupied per-level sequence under a numeric source-slot key
-bound to the exact rig digest. The temporary preview selects slots 0, 3, and 4
-without declaring final idle/walk/run semantics. The generic player uses
+bound to the exact rig digest. Clean-room tracing of the player overlay now
+identifies state 0 with slot 0 and ordinary grounded state 2 with slot 3/4
+slow/full substates. The generic player uses
 an integer cadence accumulator to advance PAL 50 Hz source updates on the 60 Hz
 fixed simulation, interpolates and composes the palette, and sends it to the
 renderer independently of the actor's world transform. A separate
 position-only skinning path handles finite singular palettes for the current
-unlit renderer. Airborne ticks hold the last grounded palette until their
-source mapping is proven; no jump, fall, crouch, landing, or wrench sequence is
-guessed. Original analog-stick magnitude, dead zones, and locomotion
-transitions are recovered with the player state machine rather than inferred
-from keyboard input. The Win32 adapter now polls XInput through runtime symbol
+unlit renderer. Moving clips switch only when actual horizontal pace crosses
+the strict source thresholds `> 2.35` or `< 1.90`, and use the recovered
+source-frame remap instead of restarting at frame zero. Airborne ticks hold the
+last grounded palette until their source mapping is proven; no jump, fall,
+crouch, landing, or wrench sequence is guessed. The Win32 adapter polls XInput
+through runtime symbol
 lookup, avoiding a new shipped DLL, and passes symmetric signed stick values
 through unchanged except for canonicalizing the unmatched `-32768` endpoint.
 That adapter intentionally owns no dead-zone or speed-response policy.
 After the deterministic/replay boundary, the RAC-specific input layer samples
 the signed device domain onto the original eight-bit DualShock lattice and
 executes the recovered four-axis response (`center=127`, `dead-zone=48`,
-`divisor=76`). This keeps source-game policy out of Windows input while exact
-locomotion consumers and thresholds continue to be recovered.
+`divisor=76`). A separate RAC player-locomotion layer then normalizes the
+left-stick direction and applies the standard source pace policy: zero stays
+zero, a non-zero radial magnitude below `0.82` targets `0.9`, and `0.82` or
+above targets `5.7`. The core carries that target separately from direction,
+so camera-relative rotation cannot quantize `0.9` into an approximation.
+Every fixed tick also exposes the unquantized source magnitude and selected
+pace for later source-state consumers. XInput therefore retains light-tilt
+walking while keyboard movement acts as full travel, and headless/package-only
+execution uses the same rule. Keeping pad sampling, source pace selection,
+camera-relative rotation, and generic collision motion separate makes the
+same recovered policy reusable on later planets. Exact state entry/exit,
+pace smoothing, turning/collision modifiers, and state-specific movement
+exceptions remain pending.
 The generic interaction paths cover collectibles and a neutral
 wrench-to-Bolt-Crate damage/destruction/drop loop. Finished attack and
 destruction presentation, broader entity behaviors, enemies, menus, and the

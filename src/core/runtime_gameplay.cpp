@@ -1,5 +1,8 @@
 #include "openrc/runtime_gameplay.hpp"
 
+#include "openrc/rac_pad_input.hpp"
+#include "openrc/rac_player_locomotion.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <exception>
@@ -203,31 +206,98 @@ void load_entity_gameplay_content(EntityGameplayRuntimeV1 &runtime,
   }
 }
 
-[[nodiscard]] GameInputCommandV1
-map_movement_for_tick(GameInputCommandV1 command,
-                      const double fixed_delta_seconds,
-                      const RuntimeMovementMapperV1 &movement_mapper) {
-  if (!movement_mapper) {
-    return command;
+[[nodiscard]] std::int16_t quantize_unit_axis(const double value) noexcept {
+  const auto scaled = std::clamp(value, -1.0, 1.0) *
+                      static_cast<double>(kGameInputAxisMagnitudeV1);
+  return canonical_game_input_axis_v1(
+      static_cast<std::int32_t>(std::lround(scaled)));
+}
+
+[[nodiscard]] RuntimeMovementAxesV1
+canonical_source_movement(const RacPadAxesResponseV1 &source_axes) noexcept {
+  RuntimeMovementAxesV1 result{source_axes.move_x, source_axes.move_y};
+  const auto length = std::hypot(result.move_x, result.move_y);
+  if (length > 1.0) {
+    result.move_x /= length;
+    result.move_y /= length;
+  }
+  return result;
+}
+
+struct RuntimeTickMovementV1 {
+  GameInputCommandV1 command;
+  CharacterMotionV1 player_motion;
+  RacPlayerGroundMovementV1 source_standard_ground_movement;
+};
+
+[[nodiscard]] RuntimeTickMovementV1
+prepare_movement_for_tick(GameInputCommandV1 command,
+                          const bool player_was_grounded,
+                          const double fixed_delta_seconds,
+                          const RuntimeMovementMapperV1 &movement_mapper) {
+  const auto source_axes = decode_rac_pad_axes_response_v1(command.axes);
+  const auto source_movement = canonical_source_movement(source_axes);
+  const auto source_standard_ground_movement =
+      map_rac_player_standard_ground_movement_v1(source_axes.move_x,
+                                                 source_axes.move_y);
+
+  // Keep the deterministic command useful for replay/debugging: it records
+  // the recovered source response (and, below, its world-space rotation), not
+  // the platform's pre-response stick value.
+  command.axes = {
+      quantize_unit_axis(source_movement.move_x),
+      quantize_unit_axis(source_movement.move_y),
+      quantize_unit_axis(source_axes.look_x),
+      quantize_unit_axis(source_axes.look_y),
+  };
+
+  auto mapped_movement = source_movement;
+  if (movement_mapper) {
+    try {
+      mapped_movement =
+          movement_mapper(command, source_movement, fixed_delta_seconds);
+    } catch (const std::exception &error) {
+      fail("Runtime movement mapper failed: " + std::string(error.what()));
+    } catch (...) {
+      fail("Runtime movement mapper failed with an unknown exception");
+    }
   }
 
-  RuntimeMovementAxesV1 mapped;
-  try {
-    mapped = movement_mapper(command, fixed_delta_seconds);
-  } catch (const std::exception &error) {
-    fail("Runtime movement mapper failed: " + std::string(error.what()));
-  } catch (...) {
-    fail("Runtime movement mapper failed with an unknown exception");
+  if (!std::isfinite(mapped_movement.move_x) ||
+      !std::isfinite(mapped_movement.move_y)) {
+    fail("Runtime movement mapper returned a non-finite axis");
   }
-  command.axes.move_x = mapped.move_x;
-  command.axes.move_y = mapped.move_y;
+  const auto source_length =
+      std::hypot(source_movement.move_x, source_movement.move_y);
+  const auto mapped_length =
+      std::hypot(mapped_movement.move_x, mapped_movement.move_y);
+  constexpr double kRotationLengthTolerance = 1.0e-9;
+  if (mapped_length > 1.0 + kRotationLengthTolerance ||
+      std::abs(mapped_length - source_length) > kRotationLengthTolerance) {
+    fail("Runtime movement mapper changed the source movement magnitude");
+  }
+
+  command.axes.move_x = quantize_unit_axis(mapped_movement.move_x);
+  command.axes.move_y = quantize_unit_axis(mapped_movement.move_y);
   try {
     validate_game_input_command_v1(command);
   } catch (const GameInputError &error) {
-    fail("Runtime movement mapper returned invalid quantized axes: " +
+    fail("Runtime movement mapping produced an invalid command: " +
          std::string(error.what()));
   }
-  return command;
+
+  CharacterMotionV1 player_motion;
+  player_motion.move_x = mapped_movement.move_x;
+  player_motion.move_y = mapped_movement.move_y;
+  if (player_was_grounded) {
+    player_motion.target_horizontal_speed = static_cast<double>(
+        source_standard_ground_movement.target_ground_speed);
+    if (mapped_length > 0.0) {
+      player_motion.move_x /= mapped_length;
+      player_motion.move_y /= mapped_length;
+    }
+  }
+  return {std::move(command), player_motion, source_standard_ground_movement};
 }
 
 } // namespace
@@ -240,7 +310,7 @@ RuntimeGameplayProfileV1 make_runtime_gameplay_profile_v1() {
   character.ground_probe_distance = 0.30;
   character.step_height = 0.55;
   character.maximum_slope_degrees = 50.0;
-  character.maximum_ground_speed = 6.0;
+  character.maximum_ground_speed = kRacPlayerStandardFastGroundSpeedV1;
   character.ground_acceleration = 30.0;
   character.ground_deceleration = 40.0;
   character.air_acceleration = 10.0;
@@ -291,6 +361,11 @@ void validate_runtime_gameplay_profile_v1(
   } catch (const CharacterControllerError &error) {
     fail("Invalid runtime gameplay character policy: " +
          std::string(error.what()));
+  }
+  if (profile.character.maximum_ground_speed <
+      static_cast<double>(kRacPlayerStandardFastGroundSpeedV1)) {
+    fail("Runtime gameplay character policy cannot represent the recovered "
+         "standard grounded speed");
   }
   try {
     validate_player_combat_profile_v1(profile.combat);
@@ -483,14 +558,17 @@ RuntimeGameplayFrameAdvanceV1 RuntimeGameplaySessionV1::advance_frame_impl(
   for (std::uint32_t offset = 0U; offset < result.fixed_step.step_count;
        ++offset) {
     const auto tick_index = result.fixed_step.first_tick_index + offset;
-    auto command = next_input.consume_for_tick(tick_index);
-    command = map_movement_for_tick(std::move(command), fixed_delta_seconds,
-                                    movement_mapper);
+    const auto raw_command = next_input.consume_for_tick(tick_index);
+    auto movement = prepare_movement_for_tick(
+        raw_command, next_player.snapshot().character.grounded,
+        fixed_delta_seconds, movement_mapper);
     const auto player_step =
-        next_player.fixed_update(foundation_.collision_world, command);
+        next_player.fixed_update(foundation_.collision_world, movement.command,
+                                 std::move(movement.player_motion));
     PlayerCombatStepV1 combat_step;
     try {
-      combat_step = next_combat.fixed_update(command, next_player.snapshot());
+      combat_step =
+          next_combat.fixed_update(movement.command, next_player.snapshot());
     } catch (const PlayerCombatError &error) {
       fail("Runtime player combat tick failed: " +
            std::string(error.what()));
@@ -517,9 +595,10 @@ RuntimeGameplayFrameAdvanceV1 RuntimeGameplaySessionV1::advance_frame_impl(
              std::string(error.what()));
       }
     }
-    next_session.commit_simulation_tick(command);
+    next_session.commit_simulation_tick(movement.command);
     result.ticks.push_back(RuntimeGameplayTickV1{
-        command, player_step, next_player.snapshot(), std::move(combat_step),
+        std::move(movement.command), movement.source_standard_ground_movement,
+        player_step, next_player.snapshot(), std::move(combat_step),
         std::move(gameplay_events)});
   }
 
