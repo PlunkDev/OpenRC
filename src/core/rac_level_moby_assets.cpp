@@ -45,6 +45,16 @@ void validate_limits(const RacLevelMobyAssetLimitsV1 &limits) {
       limits.level_core.max_shrub_classes == 0U ||
       limits.level_core.max_tie_textures == 0U ||
       limits.level_core.max_shrub_textures == 0U ||
+      limits.collision.max_input_bytes == 0U ||
+      limits.collision.max_z_slots == 0U ||
+      limits.collision.max_y_slots == 0U ||
+      limits.collision.max_x_slots == 0U ||
+      limits.collision.max_octants == 0U ||
+      limits.collision.max_main_vertices == 0U ||
+      limits.collision.max_main_faces == 0U ||
+      limits.collision.max_hero_groups == 0U ||
+      limits.collision.max_hero_vertices == 0U ||
+      limits.collision.max_hero_triangles == 0U ||
       limits.gameplay.max_input_bytes == 0U ||
       limits.gameplay.max_moby_classes == 0U ||
       limits.gameplay.max_static_mobies == 0U ||
@@ -250,6 +260,21 @@ RacLevelMobyAssetsV1 load_rac_level_moby_assets_v1(
       decode_wad_bytes(encoded_assets, limits.max_decoded_wad_bytes);
   const auto core = parse_rac_level_core_index_v1(
       index_bytes, encoded_assets, decoded_assets.bytes, limits.level_core);
+  if (core.collision_asset_range.size == 0U) {
+    fail("The RAC1 level-core collision asset is absent");
+  }
+  const auto decoded_asset_span =
+      std::span<const std::byte>(decoded_assets.bytes);
+  const auto collision_bytes = decoded_asset_span.subspan(
+      static_cast<std::size_t>(core.collision_asset_range.offset),
+      static_cast<std::size_t>(core.collision_asset_range.size));
+  RacLevelCollisionV1 collision;
+  try {
+    collision = parse_rac_level_collision_v1(collision_bytes, limits.collision);
+  } catch (const RacLevelCollisionError &error) {
+    fail("The RAC1 level collision asset failed validation: " +
+         std::string(error.what()));
+  }
   const auto tfrag_texture_table_bytes = index_bytes.subspan(
       static_cast<std::size_t>(core.tfrag_texture_table_range.offset),
       static_cast<std::size_t>(core.tfrag_texture_table_range.size));
@@ -315,6 +340,7 @@ RacLevelMobyAssetsV1 load_rac_level_moby_assets_v1(
 
   RacLevelMobyAssetsV1 result;
   result.level_id = level_id;
+  result.collision = std::move(collision);
   result.tfrag_textures = std::move(tfrag_textures);
   result.textures = std::move(textures);
   result.tie_textures = std::move(tie_textures);
@@ -324,8 +350,6 @@ RacLevelMobyAssetsV1 load_rac_level_moby_assets_v1(
     fail("The RAC1 level TIE model count exceeds its output limit");
   }
   result.tie_models.reserve(core.tie_classes.size());
-  const auto decoded_asset_span =
-      std::span<const std::byte>(decoded_assets.bytes);
   for (const auto &entry : core.tie_classes) {
     if (entry.asset_range.size == 0U) {
       continue;

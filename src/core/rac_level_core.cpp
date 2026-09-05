@@ -912,6 +912,19 @@ RacLevelCoreIndexV1 parse_rac_level_core_index_v1(
     asset_boundaries.erase(
         std::unique(asset_boundaries.begin(), asset_boundaries.end()),
         asset_boundaries.end());
+    if (header.collision_offset != 0U) {
+        const auto next = std::upper_bound(
+            asset_boundaries.begin(), asset_boundaries.end(),
+            header.collision_offset);
+        if (next == asset_boundaries.end() ||
+            *next <= header.collision_offset) {
+            fail("The collision asset has no greater proven block boundary");
+        }
+        result.collision_asset_range = {
+            header.collision_offset,
+            static_cast<std::uint64_t>(*next) - header.collision_offset,
+        };
+    }
     for (auto& entry : result.moby_classes) {
         if (entry.asset_offset == 0U) {
             continue;

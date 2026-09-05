@@ -25,6 +25,9 @@ add_library(openrc_core STATIC
     src/core/dvp_vu_execute.cpp
     src/core/ee_r5900_boundary.cpp
     src/core/elf.cpp
+    src/core/fixed_step.cpp
+    src/core/game_input.cpp
+    src/core/game_world.cpp
     src/core/gif_gs.cpp
     src/core/hash.cpp
     src/core/iso9660.cpp
@@ -32,10 +35,12 @@ add_library(openrc_core STATIC
     src/core/map_art.cpp
     src/core/pcm_wav.cpp
     src/core/paths.cpp
+    src/core/prepared_game_v2.cpp
     src/core/preparation.cpp
     src/core/ps_adpcm.cpp
     src/core/ps2_save_bundle.cpp
     src/core/rac_gameplay_bank.cpp
+    src/core/rac_level_collision.cpp
     src/core/rac_level_core.cpp
     src/core/rac_level_moby_assets.cpp
     src/core/rac_level_moby_texture.cpp
@@ -214,6 +219,40 @@ if(OPENRC_BUILD_TESTS)
         PRIVATE
         cxx_std_20
     )
+
+    add_executable(
+        openrc-rac-level-collision-tests
+        tests/rac_level_collision_tests.cpp
+    )
+    target_link_libraries(
+        openrc-rac-level-collision-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-rac-level-collision-tests
+        PRIVATE
+        cxx_std_20
+    )
+
+    add_executable(openrc-game-input-tests tests/game_input_tests.cpp)
+    target_link_libraries(openrc-game-input-tests PRIVATE openrc_core)
+    target_compile_features(openrc-game-input-tests PRIVATE cxx_std_20)
+
+    add_executable(openrc-fixed-step-tests tests/fixed_step_tests.cpp)
+    target_link_libraries(openrc-fixed-step-tests PRIVATE openrc_core)
+    target_compile_features(openrc-fixed-step-tests PRIVATE cxx_std_20)
+
+    add_executable(openrc-game-world-tests tests/game_world_tests.cpp)
+    target_link_libraries(openrc-game-world-tests PRIVATE openrc_core)
+    target_compile_features(openrc-game-world-tests PRIVATE cxx_std_20)
+
+    add_executable(
+        openrc-prepared-game-v2-tests
+        tests/prepared_game_v2_tests.cpp
+    )
+    target_link_libraries(openrc-prepared-game-v2-tests PRIVATE openrc_core)
+    target_compile_features(openrc-prepared-game-v2-tests PRIVATE cxx_std_20)
 
     add_executable(
         openrc-rac-level-moby-texture-tests
@@ -495,6 +534,11 @@ if(OPENRC_BUILD_TESTS)
     if(MSVC)
         target_compile_options(openrc-localized-subtitle-bank-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-gameplay-bank-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-rac-level-collision-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-game-input-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-fixed-step-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-game-world-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-prepared-game-v2-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-level-core-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-level-moby-texture-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-moby-class-tests PRIVATE /W4 /permissive- /utf-8)
@@ -531,6 +575,11 @@ if(OPENRC_BUILD_TESTS)
     else()
         target_compile_options(openrc-localized-subtitle-bank-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-gameplay-bank-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-rac-level-collision-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-game-input-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-fixed-step-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-game-world-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-prepared-game-v2-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-level-core-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-level-moby-texture-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-moby-class-tests PRIVATE -Wall -Wextra -Wpedantic)
@@ -568,6 +617,11 @@ if(OPENRC_BUILD_TESTS)
 
     add_test(NAME localized-subtitle-bank COMMAND openrc-localized-subtitle-bank-tests)
     add_test(NAME rac-gameplay-bank COMMAND openrc-rac-gameplay-bank-tests)
+    add_test(NAME rac-level-collision COMMAND openrc-rac-level-collision-tests)
+    add_test(NAME game-input COMMAND openrc-game-input-tests)
+    add_test(NAME fixed-step COMMAND openrc-fixed-step-tests)
+    add_test(NAME game-world COMMAND openrc-game-world-tests)
+    add_test(NAME prepared-game-v2 COMMAND openrc-prepared-game-v2-tests)
     add_test(NAME rac-level-core COMMAND openrc-rac-level-core-tests)
     add_test(NAME rac-level-moby-texture COMMAND openrc-rac-level-moby-texture-tests)
     add_test(NAME rac-moby-class COMMAND openrc-rac-moby-class-tests)

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "openrc/rac_gameplay_bank.hpp"
+#include "openrc/rac_level_collision.hpp"
 #include "openrc/rac_level_core.hpp"
 #include "openrc/rac_level_moby_texture.hpp"
 #include "openrc/rac_moby_class.hpp"
@@ -46,6 +47,7 @@ struct RacLevelMobyAssetLimitsV1 {
   std::uint64_t max_total_model_vertices = 0U;
   std::uint64_t max_total_model_triangles = 0U;
   RacLevelCoreLimitsV1 level_core;
+  RacLevelCollisionLimitsV1 collision;
   RacGameplayBankLimitsV1 gameplay;
   RacMobyClassLimitsV1 local_class;
   RacMobyClassLimitsV1 shared_class;
@@ -60,6 +62,7 @@ struct RacLevelMobyAssetLimitsV1 {
 
 struct RacLevelMobyAssetsV1 {
   std::uint32_t level_id = 0U;
+  RacLevelCollisionV1 collision;
   RacGameplayBankV1 gameplay;
   // Tfrag and Moby tables share the same RAC1 0x10-byte TextureEntry format,
   // decoded-core pixel store, and raw GS-RAM palette store. They remain

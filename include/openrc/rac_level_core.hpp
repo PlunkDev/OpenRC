@@ -158,6 +158,9 @@ struct RacLevelCoreIndexV1 {
     RacLevelCoreRangeV1 shrub_texture_table_range;
     RacLevelCoreRangeV1 ratchet_sequence_table_range;
     RacLevelCoreRangeV1 gadget_table_range;
+    // Exact decoded-core envelope for the level collision asset. Empty only
+    // when the source header does not publish a collision offset.
+    RacLevelCoreRangeV1 collision_asset_range;
     RacLevelCoreRangeV1 gadget_asset_prefix_range;
     RacLevelCoreRangeV1 gadget_asset_chain_range;
     std::uint64_t total_gadget_encoded_bytes = 0U;

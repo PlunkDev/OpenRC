@@ -160,6 +160,17 @@ make_cli_moby_asset_limits() {
             4096U,
             255U,
             255U},
+        openrc::RacLevelCollisionLimitsV1{
+            kMaximumCliDecodedWadBytes,
+            65'536U,
+            1'000'000U,
+            4'000'000U,
+            1'000'000U,
+            16'000'000U,
+            16'000'000U,
+            65'536U,
+            4'000'000U,
+            4'000'000U},
         openrc::RacGameplayBankLimitsV1{kMaximumCliDecodedWadBytes},
         openrc::RacMobyClassLimitsV1{kMaximumCliDecodedWadBytes, false},
         openrc::RacMobyClassLimitsV1{kMaximumCliDecodedWadBytes, true},
@@ -212,6 +223,7 @@ void print_usage() {
         << "  openrc-cli scene-block-vu-run <disc.iso> <elf> <level-id> <record> <entry-pair> [output.tga]\n"
         << "                                                    Execute and optionally export an auto-fit wireframe\n"
         << "  openrc-cli level-core <disc.iso> <level-id>      Link RAC1 model classes, assets, and placements\n"
+        << "  openrc-cli level-collision <disc.iso> <level-id> Inspect authoritative level collision\n"
         << "  openrc-cli level-moby-scene <disc.iso> <level-id>\n"
         << "                                                    Build static high-LOD Moby scene geometry\n"
         << "  openrc-cli level-tfrag-texture <disc.iso> <level-id> <texture> [output.tga]\n"
@@ -4059,6 +4071,108 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                     << openrc::path_to_utf8(arguments[4]) << '\n'
                     << "TGA bytes:              " << tga.bytes.size() << '\n';
             }
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << "error: " << error.what() << '\n';
+            return kOperationError;
+        }
+    }
+
+    if (command == "level-collision") {
+        if (arguments.size() != 3U) {
+            std::cerr
+                << "error: level-collision expects an ISO path and a level ID\n";
+            return kUsageError;
+        }
+        const auto level_value = parse_decimal_argument(arguments[2]);
+        if (!level_value || *level_value >= openrc::kDiscTocLevelCount) {
+            std::cerr << "error: level ID must be a decimal number from 0 to "
+                      << (openrc::kDiscTocLevelCount - 1U) << '\n';
+            return kUsageError;
+        }
+        const auto level_id = static_cast<std::uint32_t>(*level_value);
+
+        try {
+            const auto assets = openrc::load_rac_level_moby_assets_v1(
+                arguments[1], level_id, make_cli_moby_asset_limits());
+            const auto& collision = assets.collision;
+            std::array<std::uint64_t, 256U> surface_counts{};
+            bool have_bounds = false;
+            float minimum_x = 0.0F;
+            float minimum_y = 0.0F;
+            float minimum_z = 0.0F;
+            float maximum_x = 0.0F;
+            float maximum_y = 0.0F;
+            float maximum_z = 0.0F;
+            const auto include_position =
+                [&](const openrc::RacLevelCollisionVectorV1 position) {
+                    if (!have_bounds) {
+                        minimum_x = maximum_x = position.x;
+                        minimum_y = maximum_y = position.y;
+                        minimum_z = maximum_z = position.z;
+                        have_bounds = true;
+                        return;
+                    }
+                    minimum_x = std::min(minimum_x, position.x);
+                    minimum_y = std::min(minimum_y, position.y);
+                    minimum_z = std::min(minimum_z, position.z);
+                    maximum_x = std::max(maximum_x, position.x);
+                    maximum_y = std::max(maximum_y, position.y);
+                    maximum_z = std::max(maximum_z, position.z);
+                };
+            for (const auto& octant : collision.octants) {
+                for (const auto& vertex : octant.vertices) {
+                    include_position(vertex.world_position);
+                }
+                for (const auto& face : octant.faces) {
+                    ++surface_counts[face.surface_type];
+                }
+            }
+            for (const auto& group : collision.hero_groups) {
+                for (const auto& vertex : group.vertices) {
+                    include_position(vertex.world_position);
+                }
+            }
+
+            std::cout
+                << "OpenRC authoritative RAC1 collision report\n"
+                << "Image:                  "
+                << openrc::path_to_utf8(arguments[1]) << '\n'
+                << "Level ID:               " << level_id << '\n'
+                << "Asset bytes:            " << collision.input_bytes << '\n'
+                << "Main mesh range:        "
+                << hexadecimal(collision.main_mesh_range.offset, 8) << " + "
+                << collision.main_mesh_range.size << " bytes\n"
+                << "Tree Z/Y/X slots:       " << collision.z_count << '/'
+                << collision.total_y_slots << '/'
+                << collision.total_x_slots << '\n'
+                << "Octants:                " << collision.octants.size() << '\n'
+                << "Main vertices/faces:    "
+                << collision.total_main_vertices << '/'
+                << collision.total_main_faces << '\n'
+                << "Main quads:             "
+                << collision.total_main_quads << '\n'
+                << "Hero groups/verts/tris: "
+                << collision.hero_groups.size() << '/'
+                << collision.total_hero_vertices << '/'
+                << collision.total_hero_triangles << '\n';
+            if (have_bounds) {
+                std::cout
+                    << "Bounds X:               [" << minimum_x << ", "
+                    << maximum_x << "]\n"
+                    << "Bounds Y:               [" << minimum_y << ", "
+                    << maximum_y << "]\n"
+                    << "Bounds Z:               [" << minimum_z << ", "
+                    << maximum_z << "]\n";
+            }
+            std::cout << "Surface types (hex=count):";
+            for (std::size_t type = 0U; type < surface_counts.size(); ++type) {
+                if (surface_counts[type] != 0U) {
+                    std::cout << ' ' << hexadecimal(type, 2) << '='
+                              << surface_counts[type];
+                }
+            }
+            std::cout << '\n';
             return 0;
         } catch (const std::exception& error) {
             std::cerr << "error: " << error.what() << '\n';

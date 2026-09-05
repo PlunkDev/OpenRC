@@ -232,7 +232,9 @@ void test_valid_level_core() {
             result.ratchet_sequence_table_range ==
                 openrc::RacLevelCoreRangeV1{0x270U, 0x400U} &&
             result.gadget_table_range ==
-                openrc::RacLevelCoreRangeV1{0x670U, 0x20U},
+                openrc::RacLevelCoreRangeV1{0x670U, 0x20U} &&
+            result.collision_asset_range ==
+                openrc::RacLevelCoreRangeV1{0xc0U, 0x40U},
         "RAC level-core directory ranges are wrong");
     expect(
         result.moby_classes.size() == 4U &&
