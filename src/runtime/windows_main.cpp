@@ -1,5 +1,4 @@
 #include "d3d11_renderer.hpp"
-#include "level_scene_recovery.hpp"
 
 #include "openrc/prepared_game_v2_fs.hpp"
 #include "openrc/runtime_gameplay.hpp"
@@ -15,7 +14,6 @@
 #endif
 #include <shellapi.h>
 #include <windows.h>
-#include <windowsx.h>
 
 #include <algorithm>
 #include <chrono>
@@ -36,16 +34,11 @@
 namespace {
 
 constexpr wchar_t kWindowClassName[] = L"PlunkDev.OpenRC.Runtime.Window";
-constexpr wchar_t kApplicationName[] = L"OpenRC native level viewer";
+constexpr wchar_t kApplicationName[] = L"OpenRC runtime";
 
 struct RuntimeArguments {
-    std::optional<std::filesystem::path> prepared_root;
-    std::filesystem::path disc_image;
-    std::filesystem::path boot_executable;
+    std::filesystem::path prepared_root;
     std::uint32_t level_id = 0U;
-    std::uint64_t record_index = 0U;
-    std::uint16_t entrypoint = 16U;
-    bool all_records = false;
     bool smoke_test = false;
     bool show_help = false;
 };
@@ -61,12 +54,21 @@ struct GameplayKeyboardState {
     bool look_down = false;
     bool jump = false;
     bool reset = false;
+    bool primary_action_key = false;
+    bool primary_action_pointer = false;
+};
+
+enum class GameplaySmokeTargetKindV1 {
+    collectible,
+    destructible,
 };
 
 struct GameplaySmokeTargetV1 {
+    GameplaySmokeTargetKindV1 kind =
+        GameplaySmokeTargetKindV1::collectible;
     std::uint32_t authored_id = 0U;
     std::uint32_t render_instance_id = 0U;
-    openrc::CollisionVectorV1 feet_position;
+    openrc::CollisionVectorV1 world_target;
     std::string item_key;
     std::uint32_t amount = 0U;
 };
@@ -81,14 +83,13 @@ struct WindowState {
     std::uint32_t gameplay_submitted_buttons = 0U;
     std::vector<openrc::EntityRenderBindingV1> gameplay_render_bindings;
     std::vector<std::uint32_t> gameplay_collectible_ids;
+    std::vector<std::uint32_t> gameplay_destructible_ids;
     std::uint64_t gameplay_collected_count = 0U;
+    std::uint64_t gameplay_destroyed_count = 0U;
     std::optional<GameplaySmokeTargetV1> gameplay_smoke_target;
     std::chrono::steady_clock::time_point previous_gameplay_frame{};
     std::optional<std::string> fatal_error;
     std::wstring base_title;
-    POINT previous_pointer{};
-    bool orbit_drag_active = false;
-    bool native_content = false;
     bool gameplay_actor = false;
 };
 
@@ -199,12 +200,8 @@ parse_unsigned_decimal(const std::wstring_view text) noexcept {
         raw_arguments);
 
     RuntimeArguments result;
-    bool saw_disc_image = false;
-    bool saw_boot_executable = false;
     bool saw_prepared_root = false;
     bool saw_level = false;
-    bool saw_record = false;
-    bool saw_entrypoint = false;
 
     for (int index = 1; index < argument_count; ++index) {
         const std::wstring_view name(raw_arguments[index]);
@@ -216,33 +213,23 @@ parse_unsigned_decimal(const std::wstring_view text) noexcept {
             result.smoke_test = true;
             continue;
         }
-        if (index + 1 >= argument_count) {
-            throw std::runtime_error(
-                "A named runtime argument is missing its value");
-        }
-        const std::wstring_view value(raw_arguments[++index]);
         if (name == L"--prepared-root") {
+            if (index + 1 >= argument_count) {
+                throw std::runtime_error(
+                    "--prepared-root is missing its value");
+            }
+            const std::wstring_view value(raw_arguments[++index]);
             if (saw_prepared_root || value.empty()) {
                 throw std::runtime_error(
                     "--prepared-root must be supplied exactly once");
             }
             result.prepared_root = std::filesystem::path(value);
             saw_prepared_root = true;
-        } else if (name == L"--disc-image") {
-            if (saw_disc_image || value.empty()) {
-                throw std::runtime_error(
-                    "--disc-image must be supplied exactly once");
-            }
-            result.disc_image = std::filesystem::path(value);
-            saw_disc_image = true;
-        } else if (name == L"--boot-executable") {
-            if (saw_boot_executable || value.empty()) {
-                throw std::runtime_error(
-                    "--boot-executable must be supplied exactly once");
-            }
-            result.boot_executable = std::filesystem::path(value);
-            saw_boot_executable = true;
         } else if (name == L"--level") {
+            if (index + 1 >= argument_count) {
+                throw std::runtime_error("--level is missing its value");
+            }
+            const std::wstring_view value(raw_arguments[++index]);
             const auto parsed = parse_unsigned_decimal(value);
             if (saw_level || !parsed ||
                 *parsed > std::numeric_limits<std::uint32_t>::max()) {
@@ -251,52 +238,14 @@ parse_unsigned_decimal(const std::wstring_view text) noexcept {
             }
             result.level_id = static_cast<std::uint32_t>(*parsed);
             saw_level = true;
-        } else if (name == L"--record") {
-            if (saw_record) {
-                throw std::runtime_error(
-                    "--record must be supplied at most once");
-            }
-            if (value == L"all") {
-                result.all_records = true;
-            } else {
-                const auto parsed = parse_unsigned_decimal(value);
-                if (!parsed) {
-                    throw std::runtime_error(
-                        "--record must be one unsigned decimal value or all");
-                }
-                result.record_index = *parsed;
-            }
-            saw_record = true;
-        } else if (name == L"--entry-pair") {
-            const auto parsed = parse_unsigned_decimal(value);
-            if (saw_entrypoint || !parsed ||
-                *parsed > std::numeric_limits<std::uint16_t>::max()) {
-                throw std::runtime_error(
-                    "--entry-pair must be one unsigned decimal value");
-            }
-            result.entrypoint = static_cast<std::uint16_t>(*parsed);
-            saw_entrypoint = true;
         } else {
             throw std::runtime_error("The runtime received an unknown argument");
         }
     }
 
-    if (!result.show_help) {
-        if (saw_prepared_root) {
-            if (saw_disc_image || saw_boot_executable) {
-                throw std::runtime_error(
-                    "--prepared-root cannot be combined with disc/ELF inputs");
-            }
-            if (saw_record || saw_entrypoint) {
-                throw std::runtime_error(
-                    "record and entry-pair controls are only available in "
-                    "the legacy recovery viewer");
-            }
-        } else if (!saw_disc_image || !saw_boot_executable) {
+    if (!result.show_help && (!saw_prepared_root || !saw_level)) {
         throw std::runtime_error(
-                "Use --prepared-root, or supply both --disc-image and "
-                "--boot-executable for the legacy recovery viewer");
-        }
+            "Both --prepared-root and --level are required");
     }
     return result;
 }
@@ -305,23 +254,20 @@ void refresh_window_title(const HWND window, const WindowState& state) {
     if (!state.renderer) {
         return;
     }
-    auto suffix = state.gameplay
-                      ? (state.gameplay_actor
-                             ? std::wstring(
-                                   L" - playable prototype (native player model)")
-                             : std::wstring(
-                                   L" - playable prototype (debug player marker)"))
-                      : state.native_content
-                            ? std::wstring(L" - native package")
-                            : (state.renderer->is_3d_view()
-                                   ? std::wstring(
-                                         L" - recovered level 3D (debug orbit)")
-                                   : std::wstring(
-                                         L" - decoded GS output (2D)"));
+    auto suffix = state.gameplay_actor
+                      ? std::wstring(
+                            L" - playable prototype (prepared player model)")
+                      : std::wstring(
+                            L" - playable prototype (debug player marker)");
     if (!state.gameplay_collectible_ids.empty()) {
         suffix += L" - collectibles " +
                   std::to_wstring(state.gameplay_collected_count) + L"/" +
                   std::to_wstring(state.gameplay_collectible_ids.size());
+    }
+    if (!state.gameplay_destructible_ids.empty()) {
+        suffix += L" - destructibles " +
+                  std::to_wstring(state.gameplay_destroyed_count) + L"/" +
+                  std::to_wstring(state.gameplay_destructible_ids.size());
     }
     SetWindowTextW(window, (state.base_title + suffix).c_str());
 }
@@ -366,6 +312,10 @@ make_gameplay_input_sample(const GameplayKeyboardState& keyboard) noexcept {
         sample.held_buttons |= openrc::game::game_button_mask_v1(
             openrc::game::GameButtonV1::reset_checkpoint);
     }
+    if (keyboard.primary_action_key || keyboard.primary_action_pointer) {
+        sample.held_buttons |= openrc::game::game_button_mask_v1(
+            openrc::game::GameButtonV1::primary_action);
+    }
     return sample;
 }
 
@@ -404,6 +354,9 @@ make_gameplay_input_sample(const GameplayKeyboardState& keyboard) noexcept {
     case 'R':
         keyboard.reset = held;
         return true;
+    case 'F':
+        keyboard.primary_action_key = held;
+        return true;
     default:
         return false;
     }
@@ -427,7 +380,21 @@ make_gameplay_input_sample(const GameplayKeyboardState& keyboard) noexcept {
     return true;
 }
 
-void release_gameplay_keyboard(WindowState& state) noexcept {
+void update_gameplay_primary_pointer(
+    WindowState& state,
+    const bool held) noexcept {
+    const auto buttons_before =
+        make_gameplay_input_sample(state.gameplay_keyboard).held_buttons;
+    state.gameplay_keyboard.primary_action_pointer = held;
+    const auto buttons_after =
+        make_gameplay_input_sample(state.gameplay_keyboard).held_buttons;
+    state.gameplay_pending_pressed_buttons |=
+        buttons_after & ~buttons_before;
+    state.gameplay_pending_released_buttons |=
+        buttons_before & ~buttons_after;
+}
+
+void release_gameplay_input(WindowState& state) noexcept {
     state.gameplay_keyboard = {};
     state.gameplay_pending_pressed_buttons = 0U;
     state.gameplay_pending_released_buttons =
@@ -547,12 +514,54 @@ make_gameplay_camera_profile(const double aspect_ratio) {
             "The graphical collectible smoke target is not render-bound");
     }
     return GameplaySmokeTargetV1{
+        GameplaySmokeTargetKindV1::collectible,
         collectible.authored_id,
         binding->render_instance_id,
         openrc::game::world_collectible_center_v1(
             transform->transform, collectible),
         collectible.item_key,
         collectible.amount,
+    };
+}
+
+[[nodiscard]] GameplaySmokeTargetV1 make_gameplay_smoke_target(
+    const openrc::EntitySceneV1& entities,
+    const openrc::DestructibleDefinitionV1& destructible) {
+    const auto transform = std::lower_bound(
+        entities.transforms.begin(),
+        entities.transforms.end(),
+        destructible.authored_id,
+        [](const openrc::EntityTransformComponentV1& candidate,
+           const std::uint32_t authored_id) {
+            return candidate.authored_id < authored_id;
+        });
+    const auto binding = std::lower_bound(
+        entities.render_bindings.begin(),
+        entities.render_bindings.end(),
+        destructible.authored_id,
+        [](const openrc::EntityRenderBindingV1& candidate,
+           const std::uint32_t authored_id) {
+            return candidate.authored_id < authored_id;
+        });
+    if (transform == entities.transforms.end() ||
+        transform->authored_id != destructible.authored_id ||
+        binding == entities.render_bindings.end() ||
+        binding->authored_id != destructible.authored_id) {
+        throw std::runtime_error(
+            "The graphical destructible smoke target is not render-bound");
+    }
+    if (destructible.drops.empty()) {
+        throw std::runtime_error(
+            "The graphical destructible smoke target has no drop to verify");
+    }
+    return GameplaySmokeTargetV1{
+        GameplaySmokeTargetKindV1::destructible,
+        destructible.authored_id,
+        binding->render_instance_id,
+        openrc::game::world_destructible_center_v1(
+            transform->transform, destructible),
+        destructible.drops.front().item_key,
+        destructible.drops.front().amount,
     };
 }
 
@@ -592,6 +601,33 @@ void synchronize_gameplay_entity_presentation(WindowState& state) {
         }
     }
     state.gameplay_collected_count = collected_count;
+
+    std::uint64_t destroyed_count = 0U;
+    for (const auto authored_id : state.gameplay_destructible_ids) {
+        if (entity_gameplay->destroyed(authored_id)) {
+            ++destroyed_count;
+        }
+    }
+    state.gameplay_destroyed_count = destroyed_count;
+}
+
+void set_gameplay_entity_render_enabled(
+    WindowState& state,
+    const std::uint32_t authored_id,
+    const bool enabled) {
+    const auto binding = std::lower_bound(
+        state.gameplay_render_bindings.begin(),
+        state.gameplay_render_bindings.end(),
+        authored_id,
+        [](const openrc::EntityRenderBindingV1& candidate,
+           const std::uint32_t id) {
+            return candidate.authored_id < id;
+        });
+    if (binding != state.gameplay_render_bindings.end() &&
+        binding->authored_id == authored_id) {
+        state.renderer->set_render_instance_enabled(
+            binding->render_instance_id, enabled);
+    }
 }
 
 void apply_gameplay_events(
@@ -603,39 +639,72 @@ void apply_gameplay_events(
     }
     for (const auto& tick : ticks) {
         for (const auto& event : tick.gameplay_events) {
-            if (event.kind !=
-                openrc::game::EntityGameplayEventKindV1::item_collected) {
+            switch (event.kind) {
+            case openrc::game::EntityGameplayEventKindV1::item_collected:
+                if (!std::binary_search(
+                        state.gameplay_collectible_ids.begin(),
+                        state.gameplay_collectible_ids.end(),
+                        event.authored_id)) {
+                    throw std::logic_error(
+                        "Gameplay collected an entity outside the mounted "
+                        "scene");
+                }
+                set_gameplay_entity_render_enabled(
+                    state, event.authored_id, false);
+                if (state.gameplay_collected_count >=
+                    static_cast<std::uint64_t>(
+                        state.gameplay_collectible_ids.size())) {
+                    throw std::logic_error(
+                        "Gameplay collected an entity more than once");
+                }
+                ++state.gameplay_collected_count;
+                break;
+            case openrc::game::EntityGameplayEventKindV1::entity_damaged:
+                if (!std::binary_search(
+                        state.gameplay_destructible_ids.begin(),
+                        state.gameplay_destructible_ids.end(),
+                        event.authored_id)) {
+                    throw std::logic_error(
+                        "Gameplay damaged an entity outside the mounted "
+                        "destructible scene");
+                }
+                // Damage alone deliberately leaves the render instance live.
+                break;
+            case openrc::game::EntityGameplayEventKindV1::entity_destroyed:
+                if (!std::binary_search(
+                        state.gameplay_destructible_ids.begin(),
+                        state.gameplay_destructible_ids.end(),
+                        event.authored_id)) {
+                    throw std::logic_error(
+                        "Gameplay destroyed an entity outside the mounted "
+                        "destructible scene");
+                }
+                set_gameplay_entity_render_enabled(
+                    state, event.authored_id, false);
+                if (state.gameplay_destroyed_count >=
+                    static_cast<std::uint64_t>(
+                        state.gameplay_destructible_ids.size())) {
+                    throw std::logic_error(
+                        "Gameplay destroyed an entity more than once");
+                }
+                ++state.gameplay_destroyed_count;
+                break;
+            case openrc::game::EntityGameplayEventKindV1::item_granted:
+                if (!std::binary_search(
+                        state.gameplay_destructible_ids.begin(),
+                        state.gameplay_destructible_ids.end(),
+                        event.authored_id)) {
+                    throw std::logic_error(
+                        "Gameplay granted an item outside the mounted "
+                        "destructible scene");
+                }
+                // The deterministic gameplay runtime has already committed
+                // the persistent item total before emitting this event.
+                break;
+            default:
                 throw std::logic_error(
                     "Gameplay emitted an unknown presentation event");
             }
-            if (!std::binary_search(
-                    state.gameplay_collectible_ids.begin(),
-                    state.gameplay_collectible_ids.end(),
-                    event.authored_id)) {
-                throw std::logic_error(
-                    "Gameplay collected an entity outside the mounted scene");
-            }
-
-            const auto binding = std::lower_bound(
-                state.gameplay_render_bindings.begin(),
-                state.gameplay_render_bindings.end(),
-                event.authored_id,
-                [](const openrc::EntityRenderBindingV1& candidate,
-                   const std::uint32_t authored_id) {
-                    return candidate.authored_id < authored_id;
-                });
-            if (binding != state.gameplay_render_bindings.end() &&
-                binding->authored_id == event.authored_id) {
-                state.renderer->set_render_instance_enabled(
-                    binding->render_instance_id, false);
-            }
-            if (state.gameplay_collected_count >=
-                static_cast<std::uint64_t>(
-                    state.gameplay_collectible_ids.size())) {
-                throw std::logic_error(
-                    "Gameplay collected an entity more than once");
-            }
-            ++state.gameplay_collected_count;
         }
     }
 }
@@ -738,9 +807,11 @@ void advance_gameplay_frame(
     }
     state.gameplay_camera = std::move(next_camera);
     const auto previous_collected_count = state.gameplay_collected_count;
+    const auto previous_destroyed_count = state.gameplay_destroyed_count;
     update_gameplay_player_presentation(state, frame.snapshot.player);
     apply_gameplay_events(state, frame.ticks);
-    if (state.gameplay_collected_count != previous_collected_count) {
+    if (state.gameplay_collected_count != previous_collected_count ||
+        state.gameplay_destroyed_count != previous_destroyed_count) {
         refresh_window_title(window, state);
     }
 }
@@ -782,53 +853,17 @@ LRESULT CALLBACK window_procedure(
         }
         return 0;
     case WM_KEYDOWN:
-        if (state != nullptr && state->renderer) {
+        if (state != nullptr && state->gameplay) {
             try {
-                if (state->gameplay) {
-                    if (update_gameplay_key(*state, w_param, true)) {
-                        return 0;
-                    }
-                    return DefWindowProcW(
-                        window, message, w_param, l_param);
+                if (update_gameplay_key(*state, w_param, true)) {
+                    return 0;
                 }
-                constexpr float kOrbitStep = 0.0872664626F;
-                switch (w_param) {
-                case VK_LEFT:
-                    state->renderer->orbit(-kOrbitStep, 0.0F);
-                    break;
-                case VK_RIGHT:
-                    state->renderer->orbit(kOrbitStep, 0.0F);
-                    break;
-                case VK_UP:
-                    state->renderer->orbit(0.0F, kOrbitStep);
-                    break;
-                case VK_DOWN:
-                    state->renderer->orbit(0.0F, -kOrbitStep);
-                    break;
-                case VK_ADD:
-                case VK_OEM_PLUS:
-                    state->renderer->zoom(1.0F);
-                    break;
-                case VK_SUBTRACT:
-                case VK_OEM_MINUS:
-                    state->renderer->zoom(-1.0F);
-                    break;
-                case 'R':
-                    state->renderer->reset_camera();
-                    break;
-                case VK_TAB:
-                    state->renderer->toggle_view_mode();
-                    refresh_window_title(window, *state);
-                    break;
-                default:
-                    return DefWindowProcW(window, message, w_param, l_param);
-                }
-                InvalidateRect(window, nullptr, FALSE);
             } catch (const std::exception& error) {
                 remember_window_error(window, *state, error.what());
+                return 0;
             }
         }
-        return 0;
+        return DefWindowProcW(window, message, w_param, l_param);
     case WM_KEYUP:
         if (state != nullptr && state->gameplay) {
             try {
@@ -843,71 +878,35 @@ LRESULT CALLBACK window_procedure(
         return DefWindowProcW(window, message, w_param, l_param);
     case WM_KILLFOCUS:
         if (state != nullptr && state->gameplay) {
-            release_gameplay_keyboard(*state);
+            release_gameplay_input(*state);
             return 0;
         }
         break;
     case WM_ACTIVATEAPP:
         if (state != nullptr && state->gameplay && w_param == FALSE) {
-            release_gameplay_keyboard(*state);
+            release_gameplay_input(*state);
             return 0;
         }
         break;
-    case WM_MOUSEWHEEL:
-        if (state != nullptr && state->renderer && !state->gameplay) {
-            try {
-                const auto delta = static_cast<float>(
-                    GET_WHEEL_DELTA_WPARAM(w_param));
-                state->renderer->zoom(delta / WHEEL_DELTA);
-                InvalidateRect(window, nullptr, FALSE);
-            } catch (const std::exception& error) {
-                remember_window_error(window, *state, error.what());
-            }
-        }
-        return 0;
     case WM_LBUTTONDOWN:
-        if (state != nullptr && state->renderer &&
-            !state->gameplay &&
-            state->renderer->is_3d_view()) {
-            state->previous_pointer = {
-                static_cast<LONG>(GET_X_LPARAM(l_param)),
-                static_cast<LONG>(GET_Y_LPARAM(l_param)),
-            };
-            state->orbit_drag_active = true;
+        if (state != nullptr && state->gameplay) {
+            update_gameplay_primary_pointer(*state, true);
             SetCapture(window);
+            return 0;
         }
-        return 0;
-    case WM_MOUSEMOVE:
-        if (state != nullptr && state->renderer &&
-            state->orbit_drag_active && (w_param & MK_LBUTTON) != 0U) {
-            const POINT current{
-                static_cast<LONG>(GET_X_LPARAM(l_param)),
-                static_cast<LONG>(GET_Y_LPARAM(l_param)),
-            };
-            const auto delta_x = current.x - state->previous_pointer.x;
-            const auto delta_y = current.y - state->previous_pointer.y;
-            state->previous_pointer = current;
-            try {
-                state->renderer->orbit(
-                    static_cast<float>(delta_x) * 0.008F,
-                    static_cast<float>(-delta_y) * 0.008F);
-                InvalidateRect(window, nullptr, FALSE);
-            } catch (const std::exception& error) {
-                remember_window_error(window, *state, error.what());
-            }
-        }
-        return 0;
+        return DefWindowProcW(window, message, w_param, l_param);
     case WM_LBUTTONUP:
-        if (state != nullptr && state->orbit_drag_active) {
-            state->orbit_drag_active = false;
+        if (state != nullptr && state->gameplay) {
+            update_gameplay_primary_pointer(*state, false);
             if (GetCapture() == window) {
                 ReleaseCapture();
             }
+            return 0;
         }
-        return 0;
+        return DefWindowProcW(window, message, w_param, l_param);
     case WM_CAPTURECHANGED:
-        if (state != nullptr) {
-            state->orbit_drag_active = false;
+        if (state != nullptr && state->gameplay) {
+            update_gameplay_primary_pointer(*state, false);
         }
         return 0;
     case WM_PAINT: {
@@ -938,65 +937,16 @@ LRESULT CALLBACK window_procedure(
     return DefWindowProcW(window, message, w_param, l_param);
 }
 
-[[nodiscard]] std::wstring make_window_title(
-    const RuntimeArguments& arguments,
-    const openrc::runtime::LevelSceneRecoveryResultV1 & geometry) {
-    if (arguments.all_records) {
-        if (arguments.entrypoint !=
-            openrc::kSceneBlockSourceGeometryEntrypointV1) {
-            return std::wstring(L"OpenRC - Level ") +
-                std::to_wstring(arguments.level_id) +
-                L", all records - GS " +
-                std::to_wstring(geometry.raster_record_count) + L"/" +
-                std::to_wstring(geometry.total_record_count) + L", " +
-                std::to_wstring(geometry.raster.emitted_triangle_count) +
-                L" triangles";
-        }
-        const auto non_drawing_record_count =
-            geometry.total_record_count - geometry.raster_record_count;
-        const auto source_triangle_count = geometry.terrain_triangle_count;
-        return std::wstring(L"OpenRC - Level ") +
-            std::to_wstring(arguments.level_id) +
-            L", all records - source " +
-            std::to_wstring(geometry.source_record_count) + L", GS-only " +
-            std::to_wstring(geometry.unavailable_source_record_count) +
-            L", non-drawing " +
-            std::to_wstring(non_drawing_record_count) + L", triangles " +
-            std::to_wstring(source_triangle_count) + L" source + " +
-            std::to_wstring(geometry.moby_triangle_count) +
-            L" static-Moby + " +
-            std::to_wstring(geometry.tie_triangle_count) +
-            L" TIE, terrain-textured " +
-            std::to_wstring(geometry.terrain_textured_triangle_count) + L"/" +
-            std::to_wstring(source_triangle_count) + L", placements " +
-            std::to_wstring(geometry.moby_rendered_placement_count) + L"/" +
-            std::to_wstring(geometry.moby_placement_count) + L" Moby + " +
-            std::to_wstring(geometry.tie_rendered_placement_count) + L"/" +
-            std::to_wstring(geometry.tie_placement_count) + L" TIE, " +
-            std::to_wstring(geometry.raster.emitted_triangle_count) + L" GS";
-    }
-    return std::wstring(L"OpenRC - Level ") +
-        std::to_wstring(arguments.level_id) + L", record " +
-        std::to_wstring(arguments.record_index) + L", entry " +
-        std::to_wstring(arguments.entrypoint) + L" - " +
-        std::to_wstring(geometry.raster.emitted_triangle_count) +
-        L" triangles, terrain-textured " +
-        std::to_wstring(geometry.terrain_textured_triangle_count) + L"/" +
-        std::to_wstring(geometry.source
-                            ? geometry.source->emitted_triangle_count
-                            : 0U);
-}
-
 [[nodiscard]] std::wstring
-make_native_window_title(const openrc::game::RuntimeLevelContentV1 &content) {
+make_runtime_window_title(const openrc::game::RuntimeLevelContentV1& content) {
     std::uint64_t triangle_count = 0U;
-    for (const auto &mesh : content.render_scene.meshes) {
+    for (const auto& mesh : content.render_scene.meshes) {
         triangle_count += mesh.triangle_indices.size() / 3U;
     }
-    return std::wstring(L"OpenRC - native level ") +
-           std::to_wstring(content.foundation.level_id) + L" - " +
-           std::to_wstring(content.render_scene.instances.size()) +
-           L" instances, " + std::to_wstring(triangle_count) + L" triangles";
+    return std::wstring(L"OpenRC - level ") +
+        std::to_wstring(content.foundation.level_id) + L" - " +
+        std::to_wstring(content.render_scene.instances.size()) +
+        L" instances, " + std::to_wstring(triangle_count) + L" triangles";
 }
 
 [[nodiscard]] HWND create_runtime_window(
@@ -1041,31 +991,19 @@ make_native_window_title(const openrc::game::RuntimeLevelContentV1 &content) {
 }
 
 constexpr wchar_t kUsageText[] =
-    L"OpenRC native level viewer\n\n"
-    L"Prepared game (normal runtime):\n"
+    L"OpenRC runtime\n\n"
+    L"Required prepared-game inputs:\n"
     L"  --prepared-root <prepared game directory>\n"
     L"  --level <level ID>\n\n"
-    L"Legacy recovery viewer:\n"
-    L"  --disc-image <disc.iso>\n"
-    L"  --boot-executable <prepared ELF>\n\n"
     L"Optional:\n"
-    L"  --level <0..18>\n"
-    L"  --record <index|all>\n"
-    L"  --entry-pair <6,8,10,14,16,20>\n\n"
-    L"Developer verification:\n"
-    L"  --smoke-test - render one hidden frame and exit\n\n"
-    L"Prepared-game controls:\n"
+    L"  --smoke-test - run hidden graphical/gameplay smoke and exit\n"
+    L"  --help - show this help\n\n"
+    L"Controls:\n"
     L"  W/A/S/D - move relative to the camera\n"
     L"  arrow keys - rotate/pitch camera\n"
     L"  Space - jump\n"
-    L"  R - reset to checkpoint\n\n"
-    L"Using --record all independently executes and merges every supported "
-    L"record in the selected level.\n\n"
-    L"Recovered 3D debug view (entry 16):\n"
-    L"  drag or arrow keys - orbit\n"
-    L"  mouse wheel or +/- - zoom\n"
-    L"  R - reset camera\n"
-    L"  Tab - compare decoded GS output\n";
+    L"  F or left mouse button - primary action\n"
+    L"  R - reset to checkpoint\n";
 
 } // namespace
 
@@ -1087,176 +1025,127 @@ int WINAPI wWinMain(
             return 0;
         }
 
-        std::optional<openrc::runtime::LevelSceneRecoveryResultV1>
-            recovered_geometry;
-        std::optional<openrc::game::RuntimeLevelContentV1> native_content;
-        if (arguments.prepared_root) {
-            const auto filesystem_limits = make_runtime_prepared_game_limits();
-            const auto prepared = openrc::load_prepared_game_v2_root_v1(
-                *arguments.prepared_root, filesystem_limits);
-            const auto resolved =
-                openrc::load_resolved_prepared_game_level_package_v1(
-                    prepared, arguments.level_id,
-                    std::span<
-                        const openrc::ExplicitLevelPackageOverlayBytesV1>{},
-                    filesystem_limits);
-            native_content = openrc::game::load_runtime_level_content_v1(
-                resolved, make_runtime_level_content_limits());
-        } else {
-            const openrc::runtime::LevelSceneRecoveryRequestV1 recovery_request{
-                arguments.disc_image,
-                arguments.boot_executable,
+        const auto filesystem_limits = make_runtime_prepared_game_limits();
+        const auto prepared = openrc::load_prepared_game_v2_root_v1(
+            arguments.prepared_root, filesystem_limits);
+        const auto resolved =
+            openrc::load_resolved_prepared_game_level_package_v1(
+                prepared,
                 arguments.level_id,
-                arguments.all_records
-                    ? openrc::runtime::LevelSceneRecordSelectionV1::all_records
-                    : openrc::runtime::LevelSceneRecordSelectionV1::
-                          single_record,
-                arguments.record_index,
-                arguments.entrypoint,
-            };
-            recovered_geometry = openrc::runtime::recover_level_scene_v1(
-                recovery_request,
-                openrc::runtime::make_level_scene_recovery_limits_v1(),
-                openrc::runtime::make_level_scene_recovery_profile_v1());
-        }
+                std::span<
+                    const openrc::ExplicitLevelPackageOverlayBytesV1>{},
+                filesystem_limits);
+        auto level_content = openrc::game::load_runtime_level_content_v1(
+            resolved, make_runtime_level_content_limits());
 
         WindowState state;
-        state.native_content = native_content.has_value();
-        state.base_title =
-            native_content ? make_native_window_title(*native_content)
-                           : make_window_title(arguments, *recovered_geometry);
+        state.base_title = make_runtime_window_title(level_content);
         const auto window = create_runtime_window(
             instance,
             state,
             state.base_title);
         try {
-            if (native_content) {
-                const auto player_actor =
-                    openrc::game::resolve_runtime_player_actor_v1(
-                        *native_content, 0U);
-                if (player_actor) {
-                    state.gameplay_actor = true;
-                    const auto& library = *native_content->actor_library;
-                    state.renderer =
-                        std::make_unique<openrc::runtime::D3d11Renderer>(
-                            window,
-                            native_content->render_scene,
-                            library.rigs[player_actor->actor_rig_index].rig,
-                            library.models[player_actor->actor_model_index],
-                            player_actor->model_to_entity);
-                } else {
-                    state.renderer =
-                        std::make_unique<openrc::runtime::D3d11Renderer>(
-                            window, native_content->render_scene);
-                }
-                openrc::game::RuntimeGameplaySessionOptionsV1 gameplay_options;
-                if (native_content->entity_scene &&
-                    native_content->gameplay_scene) {
-                    state.gameplay_render_bindings =
-                        native_content->entity_scene->render_bindings;
-                    state.gameplay_collectible_ids.reserve(
-                        native_content->gameplay_scene->collectibles.size());
-                    for (const auto& collectible :
-                         native_content->gameplay_scene->collectibles) {
-                        state.gameplay_collectible_ids.push_back(
-                            collectible.authored_id);
-                    }
-                    if (arguments.smoke_test &&
-                        !native_content->gameplay_scene->collectibles.empty()) {
-                        state.gameplay_smoke_target = make_gameplay_smoke_target(
-                            *native_content->entity_scene,
-                            native_content->gameplay_scene->collectibles.front());
-                    }
-                    gameplay_options.entity_gameplay =
-                        openrc::game::RuntimeGameplayEntityContentV1{
-                            std::move(*native_content->entity_scene),
-                            std::move(*native_content->gameplay_scene),
-                            openrc::game::
-                                make_runtime_entity_gameplay_limits_v1(),
-                        };
-                }
-                state.gameplay = std::make_unique<
-                    openrc::game::RuntimeGameplaySessionV1>(
-                        std::move(native_content->foundation),
-                        std::move(gameplay_options));
-                RECT client_rectangle{};
-                if (GetClientRect(window, &client_rectangle) == FALSE) {
-                    throw std::runtime_error(
-                        "GetClientRect failed while initializing gameplay");
-                }
-                const auto client_width = static_cast<std::uint32_t>(
-                    std::max<LONG>(
-                        0,
-                        client_rectangle.right - client_rectangle.left));
-                const auto client_height = static_cast<std::uint32_t>(
-                    std::max<LONG>(
-                        0,
-                        client_rectangle.bottom - client_rectangle.top));
-                const auto player = state.gameplay->snapshot().player;
-                state.gameplay_camera.emplace(
-                    make_gameplay_camera_profile(
-                        gameplay_aspect_ratio(
-                            client_width, client_height)),
-                    openrc::game::ThirdPersonCameraStateV1{
-                        canonical_gameplay_yaw(
-                            player.facing_yaw_radians),
-                        22.0 * std::numbers::pi_v<double> / 180.0,
-                        6.0,
-                    });
-                update_gameplay_player_presentation(state, player);
-                synchronize_gameplay_entity_presentation(state);
-            } else {
-                auto &geometry = *recovered_geometry;
-                if (geometry.source) {
-                if (geometry.tfrag_texture_bank &&
-                    !geometry.terrain_material_batches.empty()) {
-                    std::vector<
-                        openrc::runtime::D3d11ObjectTextureSourceV1>
-                        object_texture_sources;
-                    object_texture_sources.reserve(2U);
-                    if (geometry.moby_texture_bank &&
-                        geometry.moby_first_triangle) {
-                        object_texture_sources.push_back({
-                            *geometry.moby_first_triangle,
-                            geometry.moby_triangle_count,
-                            geometry.moby_material_batches,
-                            geometry.moby_texture_bank->textures,
-                        });
-                    }
-                    if (geometry.tie_texture_bank &&
-                        geometry.tie_first_triangle) {
-                        object_texture_sources.push_back({
-                            *geometry.tie_first_triangle,
-                            geometry.tie_triangle_count,
-                            geometry.tie_material_batches,
-                            geometry.tie_texture_bank->textures,
-                        });
-                    }
-                    openrc::runtime::D3d11SourceTextureSourcesV1 textures{
-                        {
-                            geometry.terrain_triangle_count,
-                            geometry.terrain_material_batches,
-                            geometry.tfrag_texture_bank->textures,
-                        },
-                        object_texture_sources,
-                    };
-                    state.renderer =
-                        std::make_unique<openrc::runtime::D3d11Renderer>(
-                            window,
-                            geometry.raster,
-                            *geometry.source,
-                            textures);
-                } else {
-                    state.renderer =
-                        std::make_unique<openrc::runtime::D3d11Renderer>(
-                            window, geometry.raster, *geometry.source);
-                }
+            const auto player_actor =
+                openrc::game::resolve_runtime_player_actor_v1(
+                    level_content, 0U);
+            if (player_actor) {
+                state.gameplay_actor = true;
+                const auto& library = *level_content.actor_library;
+                state.renderer =
+                    std::make_unique<openrc::runtime::D3d11Renderer>(
+                        window,
+                        level_content.render_scene,
+                        library.rigs[player_actor->actor_rig_index].rig,
+                        library.models[player_actor->actor_model_index],
+                        player_actor->model_to_entity);
             } else {
                 state.renderer =
                     std::make_unique<openrc::runtime::D3d11Renderer>(
-                        window, geometry.raster);
-                }
+                        window, level_content.render_scene);
             }
+            openrc::game::RuntimeGameplaySessionOptionsV1 gameplay_options;
+            if (level_content.entity_scene &&
+                (level_content.gameplay_scene ||
+                 level_content.destructible_scene)) {
+                state.gameplay_render_bindings =
+                    level_content.entity_scene->render_bindings;
+                if (level_content.gameplay_scene) {
+                    state.gameplay_collectible_ids.reserve(
+                        level_content.gameplay_scene->collectibles.size());
+                    for (const auto& collectible :
+                         level_content.gameplay_scene->collectibles) {
+                        state.gameplay_collectible_ids.push_back(
+                            collectible.authored_id);
+                    }
+                }
+                if (level_content.destructible_scene) {
+                    state.gameplay_destructible_ids.reserve(
+                        level_content.destructible_scene->destructibles.size());
+                    for (const auto& destructible :
+                         level_content.destructible_scene->destructibles) {
+                        state.gameplay_destructible_ids.push_back(
+                            destructible.authored_id);
+                    }
+                }
+                if (arguments.smoke_test &&
+                    level_content.destructible_scene &&
+                    !level_content.destructible_scene->destructibles.empty()) {
+                    state.gameplay_smoke_target = make_gameplay_smoke_target(
+                        *level_content.entity_scene,
+                        level_content.destructible_scene
+                            ->destructibles.front());
+                } else if (arguments.smoke_test &&
+                           level_content.gameplay_scene &&
+                           !level_content.gameplay_scene
+                                ->collectibles.empty()) {
+                    state.gameplay_smoke_target = make_gameplay_smoke_target(
+                        *level_content.entity_scene,
+                        level_content.gameplay_scene->collectibles.front());
+                }
+                openrc::GameplaySceneV1 gameplay_scene;
+                gameplay_scene.level_id =
+                    level_content.entity_scene->level_id;
+                if (level_content.gameplay_scene) {
+                    gameplay_scene =
+                        std::move(*level_content.gameplay_scene);
+                }
+                gameplay_options.entity_gameplay =
+                    openrc::game::RuntimeGameplayEntityContentV1{
+                        std::move(*level_content.entity_scene),
+                        std::move(gameplay_scene),
+                        openrc::game::
+                            make_runtime_entity_gameplay_limits_v1(),
+                        std::move(level_content.destructible_scene),
+                    };
+            }
+            state.gameplay = std::make_unique<
+                openrc::game::RuntimeGameplaySessionV1>(
+                    std::move(level_content.foundation),
+                    std::move(gameplay_options));
+            RECT client_rectangle{};
+            if (GetClientRect(window, &client_rectangle) == FALSE) {
+                throw std::runtime_error(
+                    "GetClientRect failed while initializing gameplay");
+            }
+            const auto client_width = static_cast<std::uint32_t>(
+                std::max<LONG>(
+                    0,
+                    client_rectangle.right - client_rectangle.left));
+            const auto client_height = static_cast<std::uint32_t>(
+                std::max<LONG>(
+                    0,
+                    client_rectangle.bottom - client_rectangle.top));
+            const auto player = state.gameplay->snapshot().player;
+            state.gameplay_camera.emplace(
+                make_gameplay_camera_profile(
+                    gameplay_aspect_ratio(client_width, client_height)),
+                openrc::game::ThirdPersonCameraStateV1{
+                    canonical_gameplay_yaw(player.facing_yaw_radians),
+                    22.0 * std::numbers::pi_v<double> / 180.0,
+                    6.0,
+                });
+            update_gameplay_player_presentation(state, player);
+            synchronize_gameplay_entity_presentation(state);
             refresh_window_title(window, state);
         } catch (...) {
             DestroyWindow(window);
@@ -1265,39 +1154,109 @@ int WINAPI wWinMain(
 
         if (arguments.smoke_test) {
             if (state.gameplay) {
+                auto initial_item_total = UINT64_C(0);
                 if (state.gameplay_smoke_target) {
                     auto checkpoint =
                         state.gameplay->player().snapshot().checkpoint;
                     checkpoint.checkpoint_id =
                         state.gameplay_smoke_target->authored_id;
-                    checkpoint.feet_position =
-                        state.gameplay_smoke_target->feet_position;
                     checkpoint.facing_yaw_radians = 0.0;
+                    checkpoint.feet_position =
+                        state.gameplay_smoke_target->world_target;
+                    if (state.gameplay_smoke_target->kind ==
+                        GameplaySmokeTargetKindV1::destructible) {
+                        const auto& combat = state.gameplay->profile().combat;
+                        checkpoint.feet_position.x -=
+                            (combat.forward_start + combat.forward_end) * 0.5;
+                        checkpoint.feet_position.z -= combat.vertical_offset;
+                        initial_item_total = state.gameplay->item_total(
+                            state.gameplay_smoke_target->item_key);
+                    }
                     state.gameplay->set_checkpoint(checkpoint, true);
+                    update_gameplay_player_presentation(
+                        state, state.gameplay->player().snapshot());
+                    synchronize_gameplay_entity_presentation(state);
+
+                    const auto render_instance_id =
+                        state.gameplay_smoke_target->render_instance_id;
+                    if (!state.renderer->render_instance_enabled(
+                            render_instance_id)) {
+                        throw std::runtime_error(
+                            "The graphical smoke target was hidden before "
+                            "gameplay could exercise it");
+                    }
+                    static_cast<void>(state.renderer->render());
+                    if (!state.renderer
+                             ->last_frame_render_instance_submitted(
+                                 render_instance_id)) {
+                        throw std::runtime_error(
+                            "The graphical smoke did not submit its visible "
+                            "real mounted target to D3D11");
+                    }
+
+                    if (state.gameplay_smoke_target->kind ==
+                            GameplaySmokeTargetKindV1::destructible &&
+                        !update_gameplay_key(state, 'F', true)) {
+                        throw std::logic_error(
+                            "The graphical smoke could not submit primary "
+                            "action");
+                    }
                 }
                 const auto smoke_frame_time =
                     std::chrono::steady_clock::now();
                 state.previous_gameplay_frame =
-                    smoke_frame_time - std::chrono::milliseconds(20);
+                    smoke_frame_time - std::chrono::milliseconds(
+                        state.gameplay_smoke_target &&
+                                state.gameplay_smoke_target->kind ==
+                                    GameplaySmokeTargetKindV1::destructible
+                            ? 100
+                            : 20);
                 advance_gameplay_frame(window, state, smoke_frame_time);
                 if (state.gameplay_smoke_target) {
                     const auto* const entity_gameplay =
                         state.gameplay->entity_gameplay();
-                    if (entity_gameplay == nullptr ||
-                        !entity_gameplay->collected(
-                            state.gameplay_smoke_target->authored_id) ||
-                        state.gameplay->item_total(
-                            state.gameplay_smoke_target->item_key) <
-                            state.gameplay_smoke_target->amount ||
-                        state.renderer->render_instance_enabled(
-                            state.gameplay_smoke_target->render_instance_id)) {
+                    const auto final_item_total = state.gameplay->item_total(
+                        state.gameplay_smoke_target->item_key);
+                    if (state.gameplay_smoke_target->kind ==
+                        GameplaySmokeTargetKindV1::destructible) {
+                        static_cast<void>(
+                            update_gameplay_key(state, 'F', false));
+                        if (entity_gameplay == nullptr ||
+                            !entity_gameplay->destroyed(
+                                state.gameplay_smoke_target->authored_id) ||
+                            final_item_total < initial_item_total ||
+                            final_item_total - initial_item_total <
+                                state.gameplay_smoke_target->amount ||
+                            state.renderer->render_instance_enabled(
+                                state.gameplay_smoke_target
+                                    ->render_instance_id)) {
+                            throw std::runtime_error(
+                                "The graphical destructible smoke did not "
+                                "destroy, credit, and hide its real mounted "
+                                "target");
+                        }
+                    } else if (entity_gameplay == nullptr ||
+                               !entity_gameplay->collected(
+                                   state.gameplay_smoke_target->authored_id) ||
+                               final_item_total <
+                                   state.gameplay_smoke_target->amount ||
+                               state.renderer->render_instance_enabled(
+                                   state.gameplay_smoke_target
+                                       ->render_instance_id)) {
                         throw std::runtime_error(
                             "The graphical collectible smoke did not collect, "
                             "credit, and hide its real mounted target");
                     }
                 }
             }
-            state.renderer->render();
+            static_cast<void>(state.renderer->render());
+            if (state.gameplay_smoke_target &&
+                state.renderer->last_frame_render_instance_submitted(
+                    state.gameplay_smoke_target->render_instance_id)) {
+                throw std::runtime_error(
+                    "The graphical smoke resubmitted its hidden real mounted "
+                    "target after gameplay removed it");
+            }
             DestroyWindow(window);
             return 0;
         }
@@ -1346,18 +1305,6 @@ int WINAPI wWinMain(
                             "Waiting for an occluded runtime window failed");
                     }
                 }
-            }
-        } else {
-            for (;;) {
-                const auto result = GetMessageW(&message, nullptr, 0U, 0U);
-                if (result == -1) {
-                    throw std::runtime_error("GetMessageW failed");
-                }
-                if (result == 0) {
-                    break;
-                }
-                TranslateMessage(&message);
-                DispatchMessageW(&message);
             }
         }
         if (state.fatal_error) {

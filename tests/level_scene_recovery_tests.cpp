@@ -57,7 +57,8 @@ void test_default_limits_and_profile_are_explicitly_bounded() {
                        scene_block_itof0_units &&
                profile.tie_coordinate_domain ==
                    openrc::runtime::TieSceneCoordinateDomainV1::
-                       scene_block_itof0_units,
+                       scene_block_itof0_units &&
+               profile.excluded_moby_class_ids.empty(),
            "the viewer coordinate profile changed");
 
     for (std::size_t row = 0U;
@@ -146,6 +147,15 @@ void test_validation_rejects_unbounded_or_unknown_policy() {
                 request, default_limits, profile);
         },
         "an unknown coordinate-domain profile was accepted");
+
+    profile = default_profile;
+    profile.excluded_moby_class_ids = {42U, 42U};
+    expect_runtime_error(
+        [&] {
+            openrc::runtime::validate_level_scene_recovery_request_v1(
+                request, default_limits, profile);
+        },
+        "duplicate Moby class exclusions were accepted");
 }
 
 } // namespace

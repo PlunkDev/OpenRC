@@ -244,6 +244,49 @@ void test_explicit_skip_policy() {
            "a skipped Moby scene unexpectedly retained material batches");
 }
 
+void test_explicit_class_exclusion() {
+    const std::vector models{make_model(42U), make_model(43U)};
+    auto invalid_excluded = make_placement(42U);
+    invalid_excluded.scale = std::numeric_limits<float>::quiet_NaN();
+    const std::vector placements{
+        make_placement(42U), make_placement(43U), make_placement(42U)};
+    const std::array<std::uint32_t, 1U> excluded{42U};
+    const auto result =
+        openrc::runtime::build_filtered_moby_scene_geometry_v1(
+            models, placements, excluded,
+            openrc::runtime::MobySceneCoordinateDomainV1::world_units,
+            kLimits);
+    expect(result.geometry.has_value() &&
+               result.stats.placement_count == 3U &&
+               result.stats.excluded_placement_count == 2U &&
+               result.stats.rendered_placement_count == 1U &&
+               result.geometry->emitted_triangle_count == 1U,
+           "the explicit Moby class exclusion did not partition placements");
+
+    try {
+        const std::vector invalid_placements{invalid_excluded};
+        (void)openrc::runtime::build_filtered_moby_scene_geometry_v1(
+            models, invalid_placements, excluded,
+            openrc::runtime::MobySceneCoordinateDomainV1::world_units,
+            kLimits);
+        throw std::runtime_error(
+            "an invalid excluded Moby placement was silently accepted");
+    } catch (const openrc::runtime::MobySceneGeometryError&) {
+    }
+
+    const std::array<std::uint32_t, 2U> duplicate{42U, 42U};
+    try {
+        (void)openrc::runtime::build_filtered_moby_scene_geometry_v1(
+            models, placements, duplicate,
+            openrc::runtime::MobySceneCoordinateDomainV1::world_units,
+            kLimits);
+    } catch (const openrc::runtime::MobySceneGeometryError&) {
+        return;
+    }
+    throw std::runtime_error(
+        "duplicate Moby class exclusions were accepted");
+}
+
 void test_limits_and_structural_rejections() {
     expect_rejected(
         [](auto&, auto&, auto& limits) { limits = {}; },
@@ -330,6 +373,7 @@ int main() {
         test_scene_block_coordinate_domain();
         test_invalid_coordinate_domain();
         test_explicit_skip_policy();
+        test_explicit_class_exclusion();
         test_limits_and_structural_rejections();
         std::cout << "moby_scene_geometry_tests: ok\n";
         return 0;

@@ -749,33 +749,7 @@ void inspect_selected_iso() {
             "The prepared-game manifest no longer matches the installation "
             "remembered by the launcher");
     }
-    if (prepared.manifest.content_api_version !=
-            openrc::kOpenRcContentApiVersionV1 ||
-        prepared.manifest.provenance.game_id != openrc::kNativeGameIdV1 ||
-        prepared.manifest.provenance.build_id != openrc::kNativeGameBuildIdV1 ||
-        prepared.manifest.levels.size() != openrc::kDiscTocLevelCount) {
-        throw std::runtime_error(
-            "The prepared game is not a compatible complete RAC1 "
-            "installation");
-    }
-    for (std::uint32_t level_id = 0U;
-         level_id < openrc::kDiscTocLevelCount; ++level_id) {
-        if (openrc::find_prepared_game_level_v2(
-                prepared.manifest, level_id) == nullptr) {
-            throw std::runtime_error(
-                "The prepared game is missing a canonical planet package");
-        }
-    }
-    const auto resolved =
-        openrc::load_resolved_prepared_game_level_package_v1(
-            prepared,
-            0U,
-            std::span<
-                const openrc::ExplicitLevelPackageOverlayBytesV1>{},
-            openrc::make_native_game_prepared_game_limits_v1());
-    static_cast<void>(openrc::game::load_runtime_level_content_v1(
-        resolved,
-        openrc::game::make_runtime_level_content_limits_v1()));
+    openrc::validate_current_native_game_publication_v1(prepared);
     return prepared;
 }
 
@@ -1069,8 +1043,14 @@ void create_controls(const HWND window) {
                 L"\r\n\r\nThe original ISO is not required to play.");
         }
     } catch (const std::exception& error) {
+        g_ready_game.reset();
+        EnableWindow(g_play_button, FALSE);
+        set_status(L"The saved native installation needs to be prepared again.");
         set_report(to_wide(
-            std::string("Could not restore launcher state: ") +
+            std::string("The saved game data is old, incomplete, or damaged. "
+                        "Keep your ISO selected, click Inspect disc, then "
+                        "Prepare game. OpenRC will rebuild the same local "
+                        "installation; no second client is created.\n\n") +
             error.what()));
     }
 }

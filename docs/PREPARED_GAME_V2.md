@@ -157,7 +157,7 @@ one `mod_resource` provenance record.
 
 ## Current native-game resource profile
 
-The current all-level asset compiler is being updated to emit exactly six
+The current all-level asset compiler emits exactly seven
 upsert resources in every base `LevelPackageV1`:
 
 | Resource ID | Type ID | Schema | Runtime role |
@@ -165,6 +165,7 @@ upsert resources in every base `LevelPackageV1`:
 | `actors/library` | `openrc.actor-library` | 1 | semantic rigs and render-ready skinned actor models |
 | `world/bootstrap` | `openrc.level-bootstrap` | 1 | authored spawn points and absolute death plane |
 | `world/collision` | `openrc.collision-world` | 1 | exact-Q6 native collision geometry and search grid |
+| `world/destructibles` | `openrc.destructible-scene` | 1 | neutral health, hit volumes, damage channels, and ordered item drops |
 | `world/entities` | `openrc.entity-scene` | 1 | stable entity definitions and typed component bindings |
 | `world/gameplay` | `openrc.gameplay-scene` | 1 | deterministic overlap collectibles and semantic inventory grants |
 | `world/render-scene` | `openrc.render-scene` | 1 | static textures, materials, meshes, and instances |
@@ -177,23 +178,29 @@ versioned resource types and explicit overlays.
 The runtime compatibility loader requires bootstrap, collision, and render
 scene. It accepts both actor library and entity scene as one feature pair so
 older three-resource development packages remain readable; a package exposing
-only one half is rejected. Gameplay scene is another optional compatibility
-extension for older packages, but it requires entity scene whenever present.
-The combined loader cross-validates the level ID, every semantic
-entity-to-model-to-rig relationship, and every collectible reference to an
-entity definition with an authored transform before gameplay receives the
-content. New native-game publications target all six resources. Fresh
-preparation and strict reuse validation have verified that exact profile across
-all 19 supported levels.
+only one half is rejected. Gameplay and destructible scenes are optional
+compatibility extensions for older or independently authored packages, but
+each requires entity scene whenever present. The combined loader
+cross-validates the level ID, every semantic entity-to-model-to-rig
+relationship, and every collectible or destructible reference to an entity
+definition with an authored transform before gameplay receives the content.
+New native-game publications require all seven resources. Their compiler ID
+and profile version differ from the earlier six-resource cache, so exact
+current-profile validation rejects old data rather than silently mounting a
+mixture. Fresh preparation, exact validation of all 19 supported levels, and a
+second reuse pass now verify the seven-resource profile on the reference input;
+package-only and graphical Veldin destruction smokes pass against that same
+publication.
 
 RAC class IDs, WAD and ELF offsets, VIF/VU/GIF/GS commands, and PS2 texture
-layouts are compiler-only inputs. They are not fields in these six runtime
+layouts are compiler-only inputs. They are not fields in these seven runtime
 resources. Cross-resource references use semantic keys, while dense numeric IDs
 remain local to a canonical resource table. This lets later planets and mod
 overlays reuse or replace actor, entity, and gameplay data without embedding
 source-format dispatch in the native runtime. See
-[ActorLibraryV1](ACTOR_LIBRARY_V1.md), [EntitySceneV1](ENTITY_SCENE_V1.md), and
-[GameplaySceneV1](GAMEPLAY_SCENE_V1.md) for those public contracts.
+[ActorLibraryV1](ACTOR_LIBRARY_V1.md), [EntitySceneV1](ENTITY_SCENE_V1.md),
+[GameplaySceneV1](GAMEPLAY_SCENE_V1.md), and
+[DestructibleSceneV1](DESTRUCTIBLE_SCENE_V1.md) for those public contracts.
 
 ### Current collectible adapter policy
 
@@ -210,6 +217,24 @@ claimed to have been recovered from a source placement. The overlap sphere is
 derived from the model bounds and transformed through the neutral entity
 transform. Original animation, effects, sound, and pickup timing remain outside
 this V1 policy.
+
+### Current destructible adapter policy
+
+The same compiler boundary maps static Moby class 500 to neutral Bolt Crates.
+It compiles the model once into shared render data and emits one entity,
+render-instance binding, and `DestructibleSceneV1` definition per placement.
+The current policy assigns one health and one `openrc.currency/bolts` drop;
+those values are not claimed as recovered PVar semantics. `F` and the left
+mouse button map to the runtime's neutral primary-action input, whose current
+fixed-tick melee profile can damage these definitions without class-specific
+dispatch.
+
+The generic compatibility loader may still mount an older package with no
+destructible scene. That compatibility is not permission to reuse it as a
+current native-game installation: the Launcher validates the exact
+seven-resource profile and rejects stale compiler/profile identities before
+Play. The next Prepare operation rebuilds the same local cache from the
+selected supported disc; it does not install or launch a second client.
 
 ## Determinism and overlays
 

@@ -30,6 +30,8 @@ add_library(openrc_core STATIC
     src/core/companion_wad_index.cpp
     src/core/disc.cpp
     src/core/disc_toc.cpp
+    src/core/destructible_scene.cpp
+    src/core/destructible_scene_io.cpp
     src/core/dvp_vu.cpp
     src/core/dvp_vu_execute.cpp
     src/core/ee_r5900_boundary.cpp
@@ -46,6 +48,7 @@ add_library(openrc_core STATIC
     src/core/iso9660.cpp
     src/core/launcher_plan.cpp
     src/core/level_actor_library_compile.cpp
+    src/core/level_destructible_scene_compile.cpp
     src/core/level_entity_scene_compile.cpp
     src/core/level_gameplay_scene_compile.cpp
     src/core/level_render_scene_compile.cpp
@@ -54,6 +57,7 @@ add_library(openrc_core STATIC
     src/core/map_art.cpp
     src/core/pcm_wav.cpp
     src/core/paths.cpp
+    src/core/player_combat.cpp
     src/core/player_simulation.cpp
     src/core/prepared_game_v2.cpp
     src/core/prepared_game_v2_fs.cpp
@@ -64,6 +68,7 @@ add_library(openrc_core STATIC
     src/core/rac_gameplay_bank.cpp
     src/core/rac_actor_library_compile.cpp
     src/core/rac_collectible_scene_compile.cpp
+    src/core/rac_destructible_scene_compile.cpp
     src/core/rac_level_bootstrap_compile.cpp
     src/core/rac_level_collision.cpp
     src/core/rac_level_collision_compile.cpp
@@ -83,6 +88,7 @@ add_library(openrc_core STATIC
     src/core/runtime_gameplay.cpp
     src/core/runtime_gameplay_scene.cpp
     src/core/runtime_gameplay_scene_resource.cpp
+    src/core/runtime_destructible_scene_resource.cpp
     src/core/runtime_actor_library.cpp
     src/core/runtime_entity_scene.cpp
     src/core/runtime_player_actor.cpp
@@ -280,7 +286,7 @@ if(OPENRC_BUILD_RUNTIME AND WIN32)
         WIN32_LEAN_AND_MEAN
     )
     target_link_libraries(openrc-runtime PRIVATE
-        openrc_level_scene_recovery
+        openrc_core
         openrc_render_scene_d3d_data
         d3d11
         dxgi
@@ -453,6 +459,40 @@ if(OPENRC_BUILD_TESTS)
     target_link_libraries(openrc-game-world-tests PRIVATE openrc_core)
     target_compile_features(openrc-game-world-tests PRIVATE cxx_std_20)
 
+    set(OPENRC_DESTRUCTIBLE_TEST_TARGETS
+        openrc-player-combat-tests
+        openrc-destructible-scene-tests
+        openrc-level-destructible-scene-compile-tests
+        openrc-rac-destructible-scene-compile-tests
+        openrc-runtime-destructible-scene-resource-tests
+    )
+    add_executable(openrc-player-combat-tests tests/player_combat_tests.cpp)
+    add_executable(
+        openrc-destructible-scene-tests
+        tests/destructible_scene_tests.cpp
+    )
+    add_executable(
+        openrc-level-destructible-scene-compile-tests
+        tests/level_destructible_scene_compile_tests.cpp
+    )
+    add_executable(
+        openrc-rac-destructible-scene-compile-tests
+        tests/rac_destructible_scene_compile_tests.cpp
+    )
+    add_executable(
+        openrc-runtime-destructible-scene-resource-tests
+        tests/runtime_destructible_scene_resource_tests.cpp
+    )
+    foreach(target IN LISTS OPENRC_DESTRUCTIBLE_TEST_TARGETS)
+        target_link_libraries(${target} PRIVATE openrc_core)
+        target_compile_features(${target} PRIVATE cxx_std_20)
+        if(MSVC)
+            target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8)
+        else()
+            target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+        endif()
+    endforeach()
+
     add_executable(
         openrc-runtime-gameplay-tests
         tests/runtime_gameplay_tests.cpp
@@ -541,6 +581,34 @@ if(OPENRC_BUILD_TESTS)
         PRIVATE
         cxx_std_20
     )
+
+    add_executable(
+        openrc-native-game-prepare-tests
+        tests/native_game_prepare_tests.cpp
+    )
+    target_link_libraries(
+        openrc-native-game-prepare-tests
+        PRIVATE
+        openrc_native_game_prepare
+    )
+    target_compile_features(
+        openrc-native-game-prepare-tests
+        PRIVATE
+        cxx_std_20
+    )
+    if(MSVC)
+        target_compile_options(
+            openrc-native-game-prepare-tests
+            PRIVATE
+            /W4 /permissive- /utf-8
+        )
+    else()
+        target_compile_options(
+            openrc-native-game-prepare-tests
+            PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+    endif()
 
     add_executable(
         openrc-level-bootstrap-tests
@@ -1520,6 +1588,20 @@ if(OPENRC_BUILD_TESTS)
     add_test(NAME game-input COMMAND openrc-game-input-tests)
     add_test(NAME fixed-step COMMAND openrc-fixed-step-tests)
     add_test(NAME game-world COMMAND openrc-game-world-tests)
+    add_test(NAME player-combat COMMAND openrc-player-combat-tests)
+    add_test(NAME destructible-scene COMMAND openrc-destructible-scene-tests)
+    add_test(
+        NAME level-destructible-scene-compile
+        COMMAND openrc-level-destructible-scene-compile-tests
+    )
+    add_test(
+        NAME rac-destructible-scene-compile
+        COMMAND openrc-rac-destructible-scene-compile-tests
+    )
+    add_test(
+        NAME runtime-destructible-scene-resource
+        COMMAND openrc-runtime-destructible-scene-resource-tests
+    )
     add_test(NAME runtime-gameplay COMMAND openrc-runtime-gameplay-tests)
     add_test(NAME runtime-gameplay-scene COMMAND openrc-runtime-gameplay-scene-tests)
     add_test(NAME runtime-gameplay-scene-resource COMMAND openrc-runtime-gameplay-scene-resource-tests)
@@ -1527,6 +1609,7 @@ if(OPENRC_BUILD_TESTS)
     add_test(NAME prepared-game-v2 COMMAND openrc-prepared-game-v2-tests)
     add_test(NAME prepared-game-v2-fs COMMAND openrc-prepared-game-v2-fs-tests)
     add_test(NAME prepared-game-v2-publish COMMAND openrc-prepared-game-v2-publish-tests)
+    add_test(NAME native-game-prepare COMMAND openrc-native-game-prepare-tests)
     add_test(NAME level-bootstrap COMMAND openrc-level-bootstrap-tests)
     add_test(NAME level-render-scene-compile COMMAND openrc-level-render-scene-compile-tests)
     add_test(NAME level-actor-library-compile COMMAND openrc-level-actor-library-compile-tests)

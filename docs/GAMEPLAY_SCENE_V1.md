@@ -97,9 +97,11 @@ spin, hover, effects, sound, or original pickup timing.
 
 ## Integration status
 
-The neutral schema, compiler adapter, deterministic collection state, and
-render-instance visibility path are verified end to end for the supported PAL
-v2.00 image. A fresh preparation plus reuse validation covered all 19
-six-resource packages. Package-only smokes on Veldin and a second level each
-collected a real Bolt, credited its semantic inventory key, disabled the bound
-render instance, and completed a D3D11 draw from prepared data alone.
+The neutral collectible schema, compiler adapter, deterministic collection
+state, and render-instance visibility path were verified end to end for the
+supported PAL v2.00 image through the earlier six-resource profile. The current
+native profile adds `world/destructibles` as a seventh resource. Its synthetic
+tests preserve the collectible behavior, and fresh preparation plus exact
+validation now cover all 19 real-data packages. A second preparation reused the
+same cache, while package-only smokes for both Veldin level IDs preserved the
+collectible and inventory path.

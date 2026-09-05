@@ -224,9 +224,10 @@ void append_material_batch(
 
 } // namespace
 
-MobySceneGeometryV1 build_moby_scene_geometry_v1(
+MobySceneGeometryV1 build_filtered_moby_scene_geometry_v1(
     const std::span<const RacLevelMobyModelV1> models,
     const std::span<const RacGameplayMobyInstanceV1> placements,
+    const std::span<const std::uint32_t> excluded_class_ids,
     const MobySceneCoordinateDomainV1 coordinate_domain,
     const MobySceneGeometryLimitsV1 limits) {
     if (limits.max_models == 0U || limits.max_instances == 0U ||
@@ -240,6 +241,12 @@ MobySceneGeometryV1 build_moby_scene_geometry_v1(
                   "The Moby scene model count");
     require_limit(placements.size(), limits.max_instances,
                   "The Moby scene placement count");
+    for (std::size_t index = 1U; index < excluded_class_ids.size(); ++index) {
+        if (excluded_class_ids[index - 1U] >= excluded_class_ids[index]) {
+            fail("The Moby scene excluded class IDs are duplicate or out of "
+                 "order");
+        }
+    }
 
     const auto coordinate_scale = coordinate_scale_for(coordinate_domain);
     MobySceneGeometryV1 result;
@@ -276,6 +283,13 @@ MobySceneGeometryV1 build_moby_scene_geometry_v1(
                 placement.rotation,
                 [](const float value) { return !std::isfinite(value); })) {
             fail("A Moby scene placement has an invalid transform");
+        }
+
+        if (std::binary_search(excluded_class_ids.begin(),
+                               excluded_class_ids.end(),
+                               placement.class_id)) {
+            ++result.stats.excluded_placement_count;
+            continue;
         }
 
         const auto found = class_to_model.find(placement.class_id);
@@ -391,6 +405,15 @@ MobySceneGeometryV1 build_moby_scene_geometry_v1(
         result.geometry = std::move(geometry);
     }
     return result;
+}
+
+MobySceneGeometryV1 build_moby_scene_geometry_v1(
+    const std::span<const RacLevelMobyModelV1> models,
+    const std::span<const RacGameplayMobyInstanceV1> placements,
+    const MobySceneCoordinateDomainV1 coordinate_domain,
+    const MobySceneGeometryLimitsV1 limits) {
+    return build_filtered_moby_scene_geometry_v1(
+        models, placements, {}, coordinate_domain, limits);
 }
 
 } // namespace openrc::runtime

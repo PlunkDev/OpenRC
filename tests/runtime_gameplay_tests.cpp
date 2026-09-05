@@ -122,6 +122,7 @@ entity_gameplay_content(const std::uint32_t level_id = 7U) {
       canonicalize_gameplay_scene_v1(std::move(gameplay),
                                      kEntityGameplayLimits.gameplay_scene),
       kEntityGameplayLimits,
+      std::nullopt,
   };
 }
 
@@ -154,6 +155,51 @@ movement_gated_entity_gameplay_content() {
       canonicalize_gameplay_scene_v1(std::move(gameplay),
                                      kEntityGameplayLimits.gameplay_scene),
       kEntityGameplayLimits,
+      std::nullopt,
+  };
+}
+
+[[nodiscard]] openrc::game::RuntimeGameplayEntityContentV1
+wrench_destructible_entity_gameplay_content() {
+  using namespace openrc;
+
+  EntityDefinitionV1 definition;
+  definition.authored_id = 10U;
+  definition.archetype_key = "openrc.destructible/wrench-target";
+  definition.flags = kEntityDefinitionInitiallyEnabledV1;
+
+  EntityTransformComponentV1 transform;
+  transform.authored_id = definition.authored_id;
+  // The production wrench pulse travels along +X at this height.
+  transform.transform.position = {1.0F, 0.0F, 0.85F};
+
+  EntitySceneV1 entities;
+  entities.level_id = 7U;
+  entities.definitions = {definition};
+  entities.transforms = {transform};
+
+  GameplaySceneV1 gameplay;
+  gameplay.level_id = 7U;
+
+  DestructibleDefinitionV1 destructible;
+  destructible.authored_id = definition.authored_id;
+  destructible.max_health = 1U;
+  destructible.accepted_damage_channels = game::kDamageChannelMeleeV1;
+  destructible.hit_radius = 0.25F;
+  destructible.drops = {{"openrc.currency/bolts", 1U, 0U}};
+
+  DestructibleSceneV1 destructibles;
+  destructibles.level_id = 7U;
+  destructibles.destructibles = {destructible};
+
+  return {
+      canonicalize_entity_scene_v1(std::move(entities),
+                                   kEntityGameplayLimits.entity_scene),
+      canonicalize_gameplay_scene_v1(std::move(gameplay),
+                                     kEntityGameplayLimits.gameplay_scene),
+      kEntityGameplayLimits,
+      canonicalize_destructible_scene_v1(
+          std::move(destructibles), kEntityGameplayLimits.destructible_scene),
   };
 }
 
@@ -164,6 +210,7 @@ void assert_tick_invariants(
              snapshot.player.next_tick_index == expected_tick &&
              snapshot.input_next_tick_index == expected_tick &&
              snapshot.fixed_step_next_tick_index == expected_tick &&
+             snapshot.combat.next_tick_index == expected_tick &&
              (!snapshot.entity_gameplay ||
               snapshot.entity_gameplay->next_tick_index == expected_tick),
          "runtime gameplay tick owners diverged");
@@ -519,6 +566,100 @@ void test_collectible_tick_observes_post_movement_player_capsule() {
          "collectible overlap did not observe the player pose after movement");
 }
 
+void test_primary_action_destroys_destructible_and_grants_drop() {
+  using namespace openrc::game;
+
+  RuntimeGameplaySessionOptionsV1 options;
+  options.entity_gameplay = wrench_destructible_entity_gameplay_content();
+  RuntimeGameplaySessionV1 runtime(foundation(), options);
+  const auto primary = game_button_mask_v1(GameButtonV1::primary_action);
+
+  const auto startup_one =
+      runtime.advance_frame(16'666'667U, movement_sample(0, 0, primary));
+  expect(startup_one.ticks.size() == 1U &&
+             startup_one.ticks.front().combat.attack_started &&
+             !startup_one.ticks.front().combat.damage_pulse &&
+             startup_one.ticks.front().gameplay_events.empty(),
+         "primary action did not enter the production wrench startup phase");
+
+  const auto startup_two =
+      runtime.advance_frame(16'666'667U, movement_sample(0, 0));
+  expect(startup_two.ticks.size() == 1U &&
+             !startup_two.ticks.front().combat.attack_started &&
+             !startup_two.ticks.front().combat.damage_pulse &&
+             startup_two.ticks.front().gameplay_events.empty(),
+         "the second production wrench startup tick emitted damage early");
+
+  const auto active = runtime.advance_frame(16'666'667U);
+  const std::vector<EntityGameplayEventV1> expected_events{
+      {EntityGameplayEventKindV1::entity_damaged, 2U, 10U, {}, 0U, 1U, 0U,
+       1U, 0U, 0U},
+      {EntityGameplayEventKindV1::entity_destroyed, 2U, 10U, {}, 0U, 1U, 0U,
+       1U, 0U, 0U},
+      {EntityGameplayEventKindV1::item_granted, 2U, 10U,
+       "openrc.currency/bolts", 1U, 0U, 0U, 0U, 0U, 0U},
+  };
+  expect(active.ticks.size() == 1U &&
+             active.ticks.front().combat.damage_pulse &&
+             active.ticks.front().combat.damage_pulse->attack_sequence == 1U &&
+             active.ticks.front().combat.damage_pulse->source_authored_id ==
+                 0U &&
+             active.ticks.front().combat.damage_pulse->damage_channel ==
+                 kDamageChannelMeleeV1 &&
+             active.ticks.front().gameplay_events == expected_events,
+         "the production wrench pulse did not destroy the neutral target in "
+         "canonical event order");
+
+  const auto *gameplay = runtime.entity_gameplay();
+  expect(gameplay != nullptr && gameplay->destroyed(10U) &&
+             gameplay->health(10U) == std::optional<std::uint32_t>{0U} &&
+             gameplay->world().entity_count() == 0U &&
+             runtime.item_total("openrc.currency/bolts") == 1U &&
+             active.snapshot.entity_gameplay &&
+             active.snapshot.entity_gameplay->item_totals ==
+                 std::vector<EntityGameplayItemTotalV1>{
+                     {"openrc.currency/bolts", 1U}},
+         "destruction and its semantic drop were not committed atomically");
+  assert_tick_invariants(active.snapshot, 3U);
+
+  const auto repeated_active_pulse = runtime.advance_frame(16'666'667U);
+  expect(repeated_active_pulse.ticks.size() == 1U &&
+             repeated_active_pulse.ticks.front().combat.damage_pulse &&
+             repeated_active_pulse.ticks.front().gameplay_events.empty() &&
+             runtime.item_total("openrc.currency/bolts") == 1U,
+         "a later active pulse repeated destroyed-entity events or its drop");
+  assert_tick_invariants(repeated_active_pulse.snapshot, 4U);
+}
+
+void test_damage_geometry_domain_is_shared_by_producer_and_consumer() {
+  using namespace openrc::game;
+
+  RuntimeGameplaySessionOptionsV1 options;
+  options.profile = make_runtime_gameplay_profile_v1();
+  options.profile.combat.startup_ticks = 0U;
+  options.profile.combat.active_ticks = 1U;
+  options.profile.combat.recovery_ticks = 0U;
+  options.profile.combat.forward_start = 0.0;
+  options.profile.combat.forward_end =
+      kGameplayDamageMaximumGeometryMagnitudeV1;
+  options.entity_gameplay = wrench_destructible_entity_gameplay_content();
+  RuntimeGameplaySessionV1 runtime(foundation(), options);
+
+  const auto primary = game_button_mask_v1(GameButtonV1::primary_action);
+  const auto frame =
+      runtime.advance_frame(16'666'667U, movement_sample(0, 0, primary));
+  expect(frame.ticks.size() == 1U &&
+             frame.ticks.front().combat.damage_pulse &&
+             frame.ticks.front().combat.damage_pulse->capsule_end.x ==
+                 kGameplayDamageMaximumGeometryMagnitudeV1 &&
+             frame.ticks.front().gameplay_events.size() == 3U &&
+             runtime.entity_gameplay()->destroyed(10U) &&
+             runtime.item_total("openrc.currency/bolts") == 1U,
+         "a boundary-valid producer pulse was rejected or missed by the "
+         "entity-gameplay consumer");
+  assert_tick_invariants(frame.snapshot, 1U);
+}
+
 void test_item_total_restore_and_reload_preserve_persistence() {
   using namespace openrc::game;
 
@@ -564,6 +705,62 @@ void test_item_total_restore_and_reload_preserve_persistence() {
                       "items/bolts", 7U}} &&
              runtime.item_total("items/bolts") == 124U,
          "reloaded collectible state did not reset while totals persisted");
+}
+
+void test_optional_entity_content_uses_global_level_instance_sequence() {
+  using namespace openrc::game;
+
+  RuntimeGameplaySessionV1 runtime(foundation());
+  expect(runtime.snapshot().session.level_instance_sequence == 1U &&
+             runtime.entity_gameplay() == nullptr,
+         "the no-content fixture did not start at global level instance one");
+
+  runtime.load_level(foundation(8U), entity_gameplay_content(8U));
+  const auto first_content = runtime.snapshot();
+  const auto first_entity_id =
+      *runtime.entity_gameplay()->find_entity_id(20U);
+  expect(first_content.session.level_instance_sequence == 2U &&
+             first_content.active_level == ActiveLevelV1{8U, 10U, 2U} &&
+             first_content.entity_gameplay &&
+             first_content.entity_gameplay->level_instance_sequence == 2U &&
+             first_entity_id.level_instance_sequence == 2U,
+         "new neutral content did not join the global second level instance");
+  runtime.restore_item_totals({{"items/bolts", 77U}});
+  const auto seeded = runtime.snapshot();
+  expect(seeded.item_totals ==
+                 std::vector<EntityGameplayItemTotalV1>{{"items/bolts", 77U}} &&
+             seeded.entity_gameplay &&
+             seeded.entity_gameplay->item_totals == seeded.item_totals,
+         "session and entity gameplay did not share restored inventory");
+
+  runtime.load_level(foundation(9U));
+  const auto absent = runtime.snapshot();
+  expect(absent.session.level_instance_sequence == 3U &&
+             absent.active_level == ActiveLevelV1{9U, 10U, 3U} &&
+             absent.item_totals == seeded.item_totals &&
+             runtime.item_total("items/bolts") == 77U &&
+             !absent.entity_gameplay && runtime.entity_gameplay() == nullptr,
+         "the intermediate no-content level lost global identity or inventory");
+
+  runtime.load_level(foundation(10U), entity_gameplay_content(10U));
+  const auto second_content = runtime.snapshot();
+  const auto second_entity_id =
+      *runtime.entity_gameplay()->find_entity_id(20U);
+  expect(second_content.session.level_instance_sequence == 4U &&
+             second_content.active_level == ActiveLevelV1{10U, 10U, 4U} &&
+             second_content.entity_gameplay &&
+             second_content.entity_gameplay->level_instance_sequence == 4U &&
+             second_content.item_totals == seeded.item_totals &&
+             second_content.entity_gameplay->item_totals ==
+                 seeded.item_totals &&
+             runtime.item_total("items/bolts") == 77U &&
+             second_entity_id.level_instance_sequence == 4U &&
+             second_entity_id != first_entity_id &&
+             runtime.entity_gameplay()->world().find_entity(first_entity_id) ==
+                 nullptr,
+         "re-enabled neutral content reused a stale entity identity or local "
+         "level instance");
+  assert_tick_invariants(second_content, 0U);
 }
 
 void test_level_replacement_retains_global_tick_sequence() {
@@ -613,7 +810,10 @@ int main() {
     test_optional_entity_gameplay_absence_is_compatible();
     test_collectibles_emit_once_in_deterministic_order_and_sum();
     test_collectible_tick_observes_post_movement_player_capsule();
+    test_primary_action_destroys_destructible_and_grants_drop();
+    test_damage_geometry_domain_is_shared_by_producer_and_consumer();
     test_item_total_restore_and_reload_preserve_persistence();
+    test_optional_entity_content_uses_global_level_instance_sequence();
     test_level_replacement_retains_global_tick_sequence();
     std::cout << "runtime_gameplay_tests: ok\n";
     return 0;

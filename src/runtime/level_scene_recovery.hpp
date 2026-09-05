@@ -53,6 +53,10 @@ struct LevelSceneRecoveryProfileV1 {
         MobySceneCoordinateDomainV1::world_units;
     TieSceneCoordinateDomainV1 tie_coordinate_domain =
         TieSceneCoordinateDomainV1::world_units;
+    // Strictly ascending compiler policy. These source classes are omitted
+    // from the flattened Moby family so independently addressable entity
+    // resources can own their presentation without double-rendering.
+    std::vector<std::uint32_t> excluded_moby_class_ids;
 };
 
 struct LevelSceneRecoveryResultV1 {
@@ -82,6 +86,7 @@ struct LevelSceneRecoveryResultV1 {
     std::uint64_t moby_model_count = 0U;
     std::uint64_t moby_rendered_model_count = 0U;
     std::uint64_t moby_placement_count = 0U;
+    std::uint64_t moby_excluded_placement_count = 0U;
     std::uint64_t moby_rendered_placement_count = 0U;
     std::uint64_t moby_animated_placement_count = 0U;
     std::uint64_t moby_missing_or_empty_placement_count = 0U;

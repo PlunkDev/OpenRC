@@ -35,14 +35,17 @@ openrc_core
 ├── neutral ActorLibraryV1 rigs/skinned models/materials plus canonical content digests
 ├── neutral EntitySceneV1 definitions and typed transform/render/actor/player bindings
 ├── neutral GameplaySceneV1 overlap collectibles and semantic inventory grants
+├── neutral DestructibleSceneV1 health, hit volumes, damage channels, and item drops
 ├── bounded bind-pose palette construction and CPU linear-blend actor skinning
 ├── actor bind-pose baking into ordinary static RenderSceneV1 instances
 ├── compiler-only RAC collectible adaptation into render/entity/gameplay resources
-├── planet-agnostic six-resource LevelPackageV1 compilation and cross-resource validation
+├── compiler-only RAC Bolt-Crate adaptation into render/entity/destructible resources
+├── planet-agnostic seven-resource LevelPackageV1 compilation and cross-resource validation
 ├── hardened PreparedGameV2 filesystem loading and transactional publication
 ├── deterministic fixed-step/input replay boundary and planet-agnostic world/session
 ├── deterministic character controller, checkpoints, respawn, and player simulation
-├── deterministic entity materialization, collection events, and persistent item totals
+├── deterministic primary-combat timing plus damage/destruction/drop processing
+├── deterministic entity materialization, interaction events, and persistent item totals
 ├── source-independent resolved-package foundation loader and player construction
 ├── bounded RacMobyClassV1 headers, packet ownership, and fixed asset ranges
 ├── regular Moby VIF/vertex-cache/strip/packet-local triangle recovery
@@ -56,7 +59,7 @@ openrc_core
 ├── exact SceneBlock task preamble/record execution with dual-bank frame input
 ├── stateful XGKICK GIF/GS primitive, raster, and texture-context snapshots
 ├── entry-16 source XYZ recovery with VIF/VU provenance and GS-color validation
-├── profile-bound reusable ISO/ELF/SceneBlock runtime loading and execution
+├── profile-bound reusable ISO/ELF/SceneBlock compiler diagnostics and execution
 ├── CompanionTerminalWadIndexV1 validation of the shared terminal WAD bank
 ├── bounded 2FIP indexed-texture parsing and RGBA/TGA conversion
 ├── neutral seven-region boundary-table parsing
@@ -79,7 +82,7 @@ openrc-cli
 ├── authoritative per-level collision/tree/surface diagnostics
 ├── single-level foundation package compilation and package-only movement smoke
 ├── all-level PreparedGameV2 foundation publication and published-root smoke
-├── real-data-verified all-level six-resource native-game publication and reuse
+├── exact-profile all-level seven-resource native-game publication and validation
 ├── static high-LOD Moby and TIE placement/bounds diagnostics
 ├── scene-animation and subtitle diagnostics
 ├── scene-block/VIF/VU/GS, 2FIP, MapArt, PS2D, VAGp, and SBlk diagnostics
@@ -93,25 +96,21 @@ openrc-launcher
 ├── disc inspection
 ├── asynchronous all-level native Prepare/Cancel and progress
 ├── persisted content-addressed PreparedGameV2 selection
+├── exact compiler/profile validation and stale-cache rejection before Play
 ├── data-directory access
 ├── verified adjacent package-only runtime process launch
 └── adjacent PE architecture and forbidden compiler-runtime import guard
 
 openrc-runtime
-├── current diagnostic named ISO/ELF/level/record/entry process contract
-├── exact ISO-to-prepared-ELF SHA-256 binding before scene access
-├── package-only PreparedGameV2 level/resource mounting
+├── prepared-root and level-only process contract
+├── package-only PreparedGameV2 level/resource mounting with no ISO/ELF reader
 ├── fixed-step movement, collision, jump/reset, and third-person camera
 ├── semantic player-slot → entity → actor-model → rig resolution
 ├── textured Ratchet high-LOD bind-pose CPU skinning at the player transform
 ├── authored entity/gameplay materialization and fixed-tick capsule/sphere collection
-├── semantic item totals, canonical collection events, and render-instance visibility
-├── emitted GS-triangle conversion with raster-context coordinates
-├── recovered-level 3D tfrag material batches with bounded debug orbit controls
-├── explicit world-to-SceneBlock ×1024 Moby/TIE conversion and bounded merge
-├── separate tfrag, static-Moby, and TIE UV/material texture regions
-├── D24 depth ordering and explicit untextured wireframe fallback
-├── Tab comparison against the decoded GS 2D output
+├── F/left-mouse primary action and neutral melee damage capsules
+├── canonical damage/destruction/drop events and render-instance visibility
+├── persistent semantic item totals
 └── native D3D11 submission, auto-fit resize, and WARP fallback
 ```
 
@@ -134,7 +133,7 @@ runnable package.
 compiler/
 ├── animation clips and remaining interaction/camera resource schemas
 ├── deterministic animation/interaction compilation for every supported level
-└── compatibility-aware package rebuild and cache migration
+└── optional cache migration beyond the current exact-profile rebuild path
 
 tools/
 ├── remaining audio, texture, terrain, and TOC-table decoders
@@ -156,19 +155,26 @@ runtime/
 The package-based end-user boundary does not own an ISO parser. Raw disc, ELF,
 VIF, VU, GIF, and GS formats terminate at the compiler boundary; package
 loaders consume only versioned neutral OpenRC resources in normal world units.
-The graphical `openrc-runtime` has crossed that boundary through its explicit
-`--prepared-root` path. The compiler emits exactly six
-resources per level: `world/collision`, `world/bootstrap`,
-`world/render-scene`, `actors/library`, `world/entities`, and
-`world/gameplay`. The runtime mounts those neutral schemas, resolves player
-presentation and collectible state through semantic keys and authored IDs, and
-never sees a RAC class ID, WAD offset, PS2 packet, source ISO, or boot ELF. The
-Launcher drives the shared all-level compiler once, remembers the exact
-content-addressed installation, validates Veldin before launch, and passes only
-the prepared root and level ID to Play. The ISO/ELF route remains an explicit
-developer diagnostic path. Fresh real-data preparation/reuse across all 19
-levels and package-only collectible D3D smokes on Veldin plus a second level
-verify the six-resource end-to-end path.
+The graphical `openrc-runtime` enforces that boundary as its only entrypoint:
+it requires `--prepared-root` and `--level` and has no direct ISO/ELF mode. The
+compiler emits exactly seven resources per level: `world/collision`,
+`world/bootstrap`, `world/render-scene`, `actors/library`, `world/entities`,
+`world/gameplay`, and `world/destructibles`. The runtime mounts those neutral
+schemas, resolves presentation and gameplay through semantic keys and authored
+IDs, and never sees a RAC class ID, WAD offset, PS2 packet, source ISO, or boot
+ELF. Source-backed recovery remains available only through compiler and
+diagnostic libraries/tools.
+
+The Launcher drives that shared all-level compiler, remembers the exact
+content-addressed installation, validates its compiler ID, profile version,
+manifest, package hashes, seven-resource shape, and cross-resource mount before
+Play, and passes only the prepared root and level ID to the runtime. A cache
+from the earlier six-resource profile is data from the same OpenRC installation,
+not a second client: it is rejected as stale and replaced through the normal
+Prepare flow. The seven-resource profile now has fresh real-data verification:
+all 19 levels compile and validate, the matching cache is reused on a second
+preparation, Veldin's two package-only gameplay smokes pass, and the D3D11 smoke
+proves a mounted crate is drawn before attack and omitted after destruction.
 
 This boundary is intentionally reusable beyond Veldin. Numeric IDs are scoped
 to canonical tables, while cross-resource relationships use stable semantic
@@ -180,11 +186,12 @@ The current player presentation exercises that design with Ratchet's decoded
 high-LOD textures, bind-space mesh, hierarchy, inverse binds, and skin weights.
 The CPU pose path composes the bind palette and follows the deterministic
 player/camera simulation, but no animation clip resource or playback state is
-connected yet. The first generic interaction path adds collectibles; broader
-entity behaviors, weapons, enemies, menus, and the original camera remain later
-runtime/compiler layers.
+connected yet. The generic interaction paths now cover collectibles and a
+neutral wrench-to-Bolt-Crate damage/destruction/drop loop. Finished attack and
+destruction presentation, broader entity behaviors, enemies, menus, and the
+original camera remain later runtime/compiler layers.
 
-## Gameplay and collectible boundary
+## Gameplay, combat, and destructible boundary
 
 `GameplaySceneV1` is deliberately narrower than a reconstructed RAC behavior
 system. It references `EntitySceneV1` authored IDs and stores a semantic item
@@ -209,6 +216,21 @@ is `openrc.currency/bolts`; `amount = 1` is an explicit compiler policy rather
 than a recovered per-placement value. See
 [GameplaySceneV1](GAMEPLAY_SCENE_V1.md) for the complete contract and current
 validation status.
+
+`PlayerCombatV1` turns the neutral `primary_action` input edge into a bounded,
+fixed-tick melee capsule using the post-movement player pose. The Windows
+frontend maps both `F` and the left mouse button to that action. Damage carries
+only a neutral channel, amount, source identity, and attack sequence; the
+runtime does not branch on a wrench or RAC class number.
+
+`DestructibleSceneV1` links that damage boundary to neutral entity IDs, health,
+accepted channels, local hit spheres, and ordered semantic drops. The current
+compiler-only RAC adapter maps static Moby class 500 to Bolt Crates, excludes
+them from the flattened static-Moby pass, and emits one shared model plus
+independent render/entity/destructible records for each placement. One health
+and one Bolt drop are explicit OpenRC policy rather than claimed recovered
+PVar behavior. Destroying a crate disables its render binding and grants the
+drop transactionally. See [DestructibleSceneV1](DESTRUCTIBLE_SCENE_V1.md).
 
 ## Native-code strategy decision
 
@@ -259,9 +281,9 @@ layers. Exact SceneBlock task execution now includes its constant seed,
 four-qword frame transform in both input banks, entry-specific DMA/VIF packet,
 entry-0 poststate, and carried BASE/OFFSET/DBF plus VIF/VU state. Complete
 XGKICK events feed a bounded stateful GIF/GS decoder which assembles typed
-vertices and primitive emissions. A profile-bound owning loader now shares
-that exact ISO/ELF verification and execution path with the first native D3D11
-viewer. For entry 16, a profile-bound recovery layer identifies the one V4-8
+vertices and primitive emissions. A profile-bound owning loader keeps exact
+ISO/ELF verification and execution on the compiler/diagnostic side of the
+prepared-package boundary. For entry 16, a profile-bound recovery layer identifies the one V4-8
 UNPACK whose output count matches the decoded GS submission count, then
 requires its complete index-to-descriptor-W-to-signed-XYZ/adjacent-RGBA chain
 to agree with every decoded GS color. The selected index address is therefore
@@ -269,9 +291,10 @@ derived per record instead of frozen to record 0's qword 250, and every hop
 retains its last VIF write. Full-level mode independently starts every record
 from the same validated entry-0/TOP=0 state, merges complete raster and source
 triangle batches under aggregate limits, and reports diagnostic GS-only records
-separately. The viewer can orbit the merged source mesh, but that orbit is
-isolated PC-side diagnostic state: it never rewrites the VU frame transform or
-claims to reproduce the original camera. Static Moby and TIE batches retain
+separately. The earlier developer viewer's orbit was isolated PC-side
+diagnostic state: it never rewrote the VU frame transform or claimed to
+reproduce the original camera. The public runtime no longer exposes that
+source-backed entrypoint. Static Moby and TIE batches retain
 their decoded material UVs and sample independent normalized texture banks
 through explicitly bounded D3D regions with depth ordering. The GIF/GS layer
 also retains both TEX0 and CLAMP contexts on every
@@ -357,11 +380,12 @@ Base pixels remain linear PSMT8 indices; the decoder swaps GS CLUT address bits
 3/4, expands PS2 alpha, and owns both indexed and RGBA output. Each model keeps
 its 16 local material slots, and the static scene builder retains UVs while
 resolving every triangle to a contiguous global-texture batch or an explicit
-untextured fallback. The runtime's static builder applies
+untextured fallback. The compiler-side static builder applies
 `T * S * Rz * Ry * Rx`. Its coordinate-domain policy is
-explicit: CLI diagnostics retain world units, while the current source viewer
-converts Moby output to 1,024 raw SceneBlock ITOF0 units per world unit before
-the bounded merge. Model loading and preparation also have aggregate workspace
+explicit: native-package compilation and CLI diagnostics retain world units;
+the former source-viewer adapter converted Moby output to 1,024 raw SceneBlock
+ITOF0 units per world unit before its bounded diagnostic merge. Model loading
+and preparation also have aggregate workspace
 caps rather than multiplying per-model limits by the class count.
 TIE classes use their own bounded high-LOD packet format. Their local positions
 already include the class scale; the static builder applies the complete
@@ -388,16 +412,18 @@ every package identity, size, digest, relative path, and nested resource before
 writing. A verified sibling staging tree is promoted with same-parent renames;
 replacement retains and restores the previous destination on cancellation or
 failure. It neither opens an ISO nor discovers overlay files. The current CLI
-compiler supplies all 19 six-resource level packages—collision,
-bootstrap, render scene, actor library, entity scene, and gameplay scene—to this
-publisher. Actor/entity mounting is accepted only as a complete pair; gameplay
-scene remains optional for old-package compatibility but requires entity scene
-when present. The runtime additionally validates level identity plus all
-player-slot, actor-model, rig, render-instance, transform, and collectible
-relationships before presenting content. Both the CLI and Launcher invoke the
-same compiler service, and the graphical runtime mounts the published result
-directly. Fresh all-level publication/reuse and graphical collection smokes on
-Veldin plus a second level are recorded as complete for the supported profile.
+compiler supplies all 19 seven-resource level packages—collision, bootstrap,
+render scene, actor library, entity scene, gameplay scene, and destructible
+scene—to this publisher. Actor/entity mounting is accepted only as a complete
+pair. Gameplay and destructible scenes remain optional only in the generic
+loader for older or independently authored packages; the exact current native
+profile requires both. The runtime validates level identity plus all
+player-slot, actor-model, rig, render-instance, transform, collectible, and
+destructible relationships before presenting content. Both the CLI and
+Launcher invoke the same compiler service, and the graphical runtime mounts
+the published result directly. The current seven-resource profile has fresh
+all-level publication/reuse evidence plus package-only and graphical Veldin
+attack/destruction smoke coverage.
 
 ## Configuration and generated data
 
@@ -414,4 +440,8 @@ roaming `launcher.ini` is copied there automatically and retained as a backup;
 the one-line settings format is migrated without losing the ISO selection.
 Content-addressed native installations live below the local
 `prepared-v2/openrc-rac-2002` directory. Game data must never be written to the
-roaming configuration directory.
+roaming configuration directory. The saved prepared root is a versioned cache,
+not an installed copy of another client. On restore and before Play, the
+Launcher checks it against the current exact compiler/profile contract; stale,
+partial, or damaged data is disabled and rebuilt in place through Prepare
+without discarding unrelated preferences.

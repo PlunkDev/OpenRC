@@ -32,6 +32,7 @@ struct MobySceneGeometryLimitsV1 {
 struct MobySceneGeometryStatsV1 {
     std::uint64_t model_count = 0U;
     std::uint64_t placement_count = 0U;
+    std::uint64_t excluded_placement_count = 0U;
     std::uint64_t rendered_model_count = 0U;
     std::uint64_t rendered_placement_count = 0U;
     std::uint64_t missing_model_placement_count = 0U;
@@ -74,6 +75,18 @@ public:
 [[nodiscard]] MobySceneGeometryV1 build_moby_scene_geometry_v1(
     std::span<const RacLevelMobyModelV1> models,
     std::span<const RacGameplayMobyInstanceV1> placements,
+    MobySceneCoordinateDomainV1 coordinate_domain,
+    MobySceneGeometryLimitsV1 limits);
+
+// Same reconstruction with an explicit compiler-owned exclusion set. Class
+// IDs must be strictly ascending and unique. Excluded placements remain
+// counted in placement_count and are reported separately, but contribute no
+// geometry; this lets a later entity compiler materialize independently
+// addressable objects without leaving duplicate baked geometry behind.
+[[nodiscard]] MobySceneGeometryV1 build_filtered_moby_scene_geometry_v1(
+    std::span<const RacLevelMobyModelV1> models,
+    std::span<const RacGameplayMobyInstanceV1> placements,
+    std::span<const std::uint32_t> excluded_class_ids,
     MobySceneCoordinateDomainV1 coordinate_domain,
     MobySceneGeometryLimitsV1 limits);
 

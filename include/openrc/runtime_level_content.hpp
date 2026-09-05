@@ -3,6 +3,7 @@
 #include "openrc/actor_pose.hpp"
 #include "openrc/content_api.hpp"
 #include "openrc/runtime_actor_library.hpp"
+#include "openrc/runtime_destructible_scene_resource.hpp"
 #include "openrc/runtime_entity_scene.hpp"
 #include "openrc/runtime_gameplay_scene_resource.hpp"
 #include "openrc/runtime_level_foundation.hpp"
@@ -45,6 +46,7 @@ struct RuntimeLevelContentV1 {
   std::optional<ActorLibraryV1> actor_library;
   std::optional<EntitySceneV1> entity_scene;
   std::optional<GameplaySceneV1> gameplay_scene;
+  std::optional<DestructibleSceneV1> destructible_scene;
 
   [[nodiscard]] bool operator==(const RuntimeLevelContentV1 &) const = default;
 };
@@ -55,6 +57,7 @@ struct RuntimeLevelContentLimitsV1 {
   ActorLibraryIoLimitsV1 actor_library;
   EntitySceneIoLimitsV1 entity_scene;
   GameplaySceneIoLimitsV1 gameplay_scene;
+  DestructibleSceneIoLimitsV1 destructible_scene;
 };
 
 class RuntimeLevelContentError final : public std::runtime_error {
@@ -144,6 +147,20 @@ make_runtime_level_content_limits_v1() {
               UINT64_C(128) * 1024U * 1024U,
           },
       },
+      DestructibleSceneIoLimitsV1{
+          UINT64_C(256) * 1024U * 1024U,
+          DestructibleSceneLimitsV1{
+              1'000'000U,
+              1'000'000U,
+              4096U,
+              256U,
+              UINT64_C(128) * 1024U * 1024U,
+              UINT32_MAX,
+              UINT32_MAX,
+              1'000'000.0F,
+              1'000'000.0F,
+          },
+      },
   };
 }
 
@@ -152,8 +169,13 @@ make_runtime_level_content_limits_v1() {
 // optional feature pair: old packages may omit both, but a package may never
 // expose only half of the actor/entity contract. GameplaySceneV1 is another
 // optional extension for old-package compatibility, but requires an entity
-// scene whenever present. The content API policy is explicit and shared by
-// all resource loaders.
+// scene whenever present. DestructibleSceneV1 follows the same optional
+// compatibility rule, requires definitions and transforms from EntitySceneV1,
+// and may not target an entity which is also a gameplay collectible. A render
+// binding remains optional for intentionally invisible semantic entities;
+// EntityGameplayRuntimeV1 validates uniform scale and the composed world-space
+// hit sphere before transactional materialization. The content API policy is
+// explicit and shared by all resource loaders.
 [[nodiscard]] RuntimeLevelContentV1
 load_runtime_level_content_v1(const ResolvedLevelPackageV1 &package,
                               RuntimeLevelContentLimitsV1 limits);

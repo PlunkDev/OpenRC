@@ -81,11 +81,20 @@ make_checked_level_player(const RuntimeLevelFoundationV1 &foundation,
   }
 }
 
+[[nodiscard]] SpawnPointIdV1 resolve_runtime_spawn_point_id(
+    const RuntimeLevelFoundationV1 &foundation,
+    const std::optional<SpawnPointIdV1> requested_spawn_point_id) noexcept {
+  return requested_spawn_point_id.value_or(
+      foundation.bootstrap.default_spawn_id);
+}
+
 void validate_state(
     const RuntimeLevelFoundationV1 &foundation,
     const RuntimeGameplayProfileV1 &profile, const GameSessionV1 &session,
     const WorldV1 &world, const PlayerSimulationV1 &player,
     const GameInputStateV1 &input, const FixedStepAccumulatorV1 &fixed_step,
+    const PlayerCombatV1 &combat,
+    const std::vector<EntityGameplayItemTotalV1> &item_totals,
     const std::optional<EntityGameplayRuntimeV1> &entity_gameplay) {
   const auto player_snapshot = player.snapshot();
   const auto session_snapshot = session.snapshot();
@@ -106,7 +115,8 @@ void validate_state(
   }
   if (player_snapshot.next_tick_index != expected_tick ||
       input.next_tick_index() != expected_tick ||
-      fixed_step.next_tick_index() != expected_tick) {
+      fixed_step.next_tick_index() != expected_tick ||
+      combat.snapshot().next_tick_index != expected_tick) {
     fail("Runtime gameplay fixed-tick sequences diverged");
   }
   if (fixed_step.config() != profile.fixed_step ||
@@ -114,13 +124,20 @@ void validate_state(
           profile.fixed_step.ticks_per_second ||
       player.profile().character != profile.character ||
       player.profile().death_height_world !=
-          foundation.bootstrap.death_height_world) {
+          foundation.bootstrap.death_height_world ||
+      combat.profile() != profile.combat) {
     fail("Runtime gameplay policy diverged from the active player");
   }
   if (entity_gameplay &&
       (!entity_gameplay->loaded() ||
-       entity_gameplay->next_tick_index() != expected_tick)) {
-    fail("Runtime entity gameplay fixed-tick sequence diverged");
+       entity_gameplay->next_tick_index() != expected_tick ||
+       !entity_gameplay->world().active_level() ||
+       entity_gameplay->world().active_level()->level_id !=
+           active_level->level_id ||
+       entity_gameplay->world().active_level()->instance_sequence !=
+           active_level->instance_sequence ||
+       entity_gameplay->item_totals() != item_totals)) {
+    fail("Runtime entity gameplay level or fixed-tick sequence diverged");
   }
 }
 
@@ -128,6 +145,8 @@ void validate_state(
     const GameSessionV1 &session, const WorldV1 &world,
     const PlayerSimulationV1 &player, const GameInputStateV1 &input,
     const FixedStepAccumulatorV1 &fixed_step,
+    const PlayerCombatV1 &combat,
+    const std::vector<EntityGameplayItemTotalV1> &item_totals,
     const std::optional<EntityGameplayRuntimeV1> &entity_gameplay) {
   std::optional<EntityGameplaySnapshotV1> entity_gameplay_snapshot;
   if (entity_gameplay) {
@@ -150,6 +169,8 @@ void validate_state(
       fixed_step.interpolation_numerator(),
       fixed_step.total_dropped_step_count(),
       fixed_step.total_discarded_elapsed_nanoseconds(),
+      combat.snapshot(),
+      item_totals,
       std::move(entity_gameplay_snapshot),
   };
 }
@@ -157,14 +178,25 @@ void validate_state(
 void load_entity_gameplay_content(EntityGameplayRuntimeV1 &runtime,
                                   const RuntimeGameplayEntityContentV1 &content,
                                   const std::uint32_t foundation_level_id,
-                                  const std::uint64_t next_tick_index) {
+                                  const std::uint64_t next_tick_index,
+                                  const std::uint64_t
+                                      level_instance_sequence) {
   if (content.entity_scene.level_id != foundation_level_id ||
-      content.gameplay_scene.level_id != foundation_level_id) {
+      content.gameplay_scene.level_id != foundation_level_id ||
+      (content.destructible_scene &&
+       content.destructible_scene->level_id != foundation_level_id)) {
     fail("Runtime entity/gameplay content belongs to a different foundation");
   }
   try {
-    runtime.load_scene(content.entity_scene, content.gameplay_scene,
-                       content.limits, next_tick_index);
+    if (content.destructible_scene) {
+      runtime.load_scene(content.entity_scene, content.gameplay_scene,
+                         *content.destructible_scene, content.limits,
+                         next_tick_index, level_instance_sequence);
+    } else {
+      runtime.load_scene(content.entity_scene, content.gameplay_scene,
+                         content.limits, next_tick_index,
+                         level_instance_sequence);
+    }
   } catch (const EntityGameplayRuntimeError &error) {
     fail("Cannot load runtime entity/gameplay content: " +
          std::string(error.what()));
@@ -222,9 +254,23 @@ RuntimeGameplayProfileV1 make_runtime_gameplay_profile_v1() {
   character.collision_layers = kCollisionAllLayersMaskV1;
   character.query_limits = CollisionQueryLimitsV1{4096U, 8192U};
 
+  PlayerCombatProfileV1 combat;
+  combat.semantic_key = "openrc.attack/wrench-primary";
+  combat.source_authored_id = 0U;
+  combat.damage_channel = kDamageChannelMeleeV1;
+  combat.damage = 1U;
+  combat.startup_ticks = 2U;
+  combat.active_ticks = 3U;
+  combat.recovery_ticks = 13U;
+  combat.forward_start = 0.20;
+  combat.forward_end = 1.40;
+  combat.vertical_offset = 0.85;
+  combat.radius = 0.55;
+
   return RuntimeGameplayProfileV1{
       FixedStepConfigV1{60U, 8U, 250'000'000U},
       character,
+      std::move(combat),
   };
 }
 
@@ -244,6 +290,12 @@ void validate_runtime_gameplay_profile_v1(
     validate_character_controller_profile_v1(profile.character);
   } catch (const CharacterControllerError &error) {
     fail("Invalid runtime gameplay character policy: " +
+         std::string(error.what()));
+  }
+  try {
+    validate_player_combat_profile_v1(profile.combat);
+  } catch (const PlayerCombatError &error) {
+    fail("Invalid runtime gameplay combat policy: " +
          std::string(error.what()));
   }
 
@@ -276,17 +328,30 @@ RuntimeGameplaySessionV1::RuntimeGameplaySessionV1(
       profile_(validated_profile(std::move(options.profile))),
       session_(options.deterministic_seed),
       player_(make_checked_level_player(foundation_, profile_,
-                                        options.spawn_point_id, 0U)),
-      input_(0U), fixed_step_(profile_.fixed_step) {
-  const auto request =
-      session_.request_level(foundation_.level_id, options.spawn_point_id,
-                             options.level_request_reason);
+                                        resolve_runtime_spawn_point_id(
+                                            foundation_,
+                                            options.spawn_point_id),
+                                        0U)),
+      input_(0U), fixed_step_(profile_.fixed_step), combat_(profile_.combat) {
+  const auto resolved_spawn_point_id = resolve_runtime_spawn_point_id(
+      foundation_, options.spawn_point_id);
+  const auto request = session_.request_level(
+      foundation_.level_id, resolved_spawn_point_id,
+      options.level_request_reason);
   world_.load_level(session_, request);
   if (options.entity_gameplay) {
+    const auto &active_level = world_.active_level();
+    if (!active_level) {
+      fail("Runtime gameplay lost its initial active-level identity");
+    }
     entity_gameplay_.emplace();
     load_entity_gameplay_content(*entity_gameplay_, *options.entity_gameplay,
                                  foundation_.level_id,
-                                 session_.next_tick_index());
+                                 session_.next_tick_index(),
+                                 active_level->instance_sequence);
+    if (entity_gameplay_->item_totals() != item_totals_) {
+      fail("Runtime gameplay initialized inconsistent persistent item totals");
+    }
   }
   validate_tick_invariants();
 }
@@ -312,36 +377,59 @@ void RuntimeGameplaySessionV1::load_level_impl(
     std::optional<RuntimeGameplayEntityContentV1> entity_gameplay,
     const std::optional<SpawnPointIdV1> spawn_point_id,
     const LevelRequestReasonV1 reason) {
+  const auto resolved_spawn_point_id =
+      resolve_runtime_spawn_point_id(foundation, spawn_point_id);
   auto next_player = make_checked_level_player(
-      foundation, profile_, spawn_point_id, session_.next_tick_index());
+      foundation, profile_, resolved_spawn_point_id,
+      session_.next_tick_index());
   auto next_session = session_;
   auto next_world = world_;
   auto next_input = input_;
+  const auto previous_combat = combat_.snapshot();
+  auto next_combat = PlayerCombatV1(
+      profile_.combat,
+      PlayerCombatSnapshotV1{session_.next_tick_index(),
+                             previous_combat.attack_sequence,
+                             PlayerCombatPhaseV1::idle, 0U});
   auto next_entity_gameplay = entity_gameplay_;
+  auto next_item_totals = item_totals_;
 
+  const auto request = next_session.request_level(
+      foundation.level_id, resolved_spawn_point_id, reason);
+  next_world.load_level(next_session, request);
+  const auto &next_active_level = next_world.active_level();
+  if (!next_active_level) {
+    fail("Runtime gameplay lost its replacement active-level identity");
+  }
   if (entity_gameplay) {
     if (!next_entity_gameplay) {
       next_entity_gameplay.emplace();
     }
-    load_entity_gameplay_content(*next_entity_gameplay, *entity_gameplay,
-                                 foundation.level_id,
-                                 session_.next_tick_index());
+    load_entity_gameplay_content(
+        *next_entity_gameplay, *entity_gameplay, foundation.level_id,
+        next_session.next_tick_index(),
+        next_active_level->instance_sequence);
+    try {
+      next_entity_gameplay->restore_item_totals(next_item_totals);
+    } catch (const EntityGameplayRuntimeError &error) {
+      fail("Cannot carry persistent item totals into runtime gameplay: " +
+           std::string(error.what()));
+    }
   } else {
     next_entity_gameplay.reset();
   }
-
-  const auto request =
-      next_session.request_level(foundation.level_id, spawn_point_id, reason);
-  next_world.load_level(next_session, request);
   next_input.reset(next_session.next_tick_index());
   validate_state(foundation, profile_, next_session, next_world, next_player,
-                 next_input, fixed_step_, next_entity_gameplay);
+                 next_input, fixed_step_, next_combat, next_item_totals,
+                 next_entity_gameplay);
 
   foundation_ = std::move(foundation);
   session_ = std::move(next_session);
   world_ = std::move(next_world);
   player_ = std::move(next_player);
   input_ = std::move(next_input);
+  combat_ = std::move(next_combat);
+  item_totals_ = std::move(next_item_totals);
   entity_gameplay_ = std::move(next_entity_gameplay);
   validate_tick_invariants();
 }
@@ -377,7 +465,9 @@ RuntimeGameplayFrameAdvanceV1 RuntimeGameplaySessionV1::advance_frame_impl(
   auto next_input = input_;
   auto next_player = player_;
   auto next_session = session_;
+  auto next_combat = combat_;
   auto next_entity_gameplay = entity_gameplay_;
+  auto next_item_totals = item_totals_;
   if (new_sample) {
     next_input.submit_sample(*new_sample);
   }
@@ -398,15 +488,30 @@ RuntimeGameplayFrameAdvanceV1 RuntimeGameplaySessionV1::advance_frame_impl(
                                     movement_mapper);
     const auto player_step =
         next_player.fixed_update(foundation_.collision_world, command);
+    PlayerCombatStepV1 combat_step;
+    try {
+      combat_step = next_combat.fixed_update(command, next_player.snapshot());
+    } catch (const PlayerCombatError &error) {
+      fail("Runtime player combat tick failed: " +
+           std::string(error.what()));
+    }
     std::vector<EntityGameplayEventV1> gameplay_events;
     if (next_entity_gameplay) {
       const auto player_snapshot = next_player.snapshot();
       try {
-        gameplay_events = next_entity_gameplay->fixed_tick(
-            tick_index, EntityGameplayPlayerCapsuleV1{
-                            player_snapshot.character.feet_position,
-                            profile_.character.capsule_radius,
-                            profile_.character.capsule_height});
+        const auto player_capsule = EntityGameplayPlayerCapsuleV1{
+            player_snapshot.character.feet_position,
+            profile_.character.capsule_radius,
+            profile_.character.capsule_height};
+        if (combat_step.damage_pulse) {
+          gameplay_events = next_entity_gameplay->fixed_tick(
+              tick_index, player_capsule,
+              std::span<const GameplayDamagePulseV1>(
+                  &*combat_step.damage_pulse, 1U));
+        } else {
+          gameplay_events =
+              next_entity_gameplay->fixed_tick(tick_index, player_capsule);
+        }
       } catch (const EntityGameplayRuntimeError &error) {
         fail("Runtime entity gameplay tick failed: " +
              std::string(error.what()));
@@ -414,20 +519,29 @@ RuntimeGameplayFrameAdvanceV1 RuntimeGameplaySessionV1::advance_frame_impl(
     }
     next_session.commit_simulation_tick(command);
     result.ticks.push_back(RuntimeGameplayTickV1{command, player_step,
+                                                 std::move(combat_step),
                                                  std::move(gameplay_events)});
   }
 
+  if (next_entity_gameplay) {
+    next_item_totals = next_entity_gameplay->item_totals();
+  }
+
   validate_state(foundation_, profile_, next_session, world_, next_player,
-                 next_input, next_fixed_step, next_entity_gameplay);
+                 next_input, next_fixed_step, next_combat,
+                 next_item_totals, next_entity_gameplay);
   result.snapshot = make_runtime_gameplay_snapshot(
       next_session, world_, next_player, next_input, next_fixed_step,
-      next_entity_gameplay);
+      next_combat, next_item_totals, next_entity_gameplay);
 
   static_assert(
       std::is_nothrow_move_assignable_v<FixedStepAccumulatorV1> &&
       std::is_nothrow_move_assignable_v<GameInputStateV1> &&
       std::is_nothrow_move_assignable_v<PlayerSimulationV1> &&
       std::is_nothrow_move_assignable_v<GameSessionV1> &&
+      std::is_nothrow_move_assignable_v<PlayerCombatV1> &&
+      std::is_nothrow_move_assignable_v<
+          std::vector<EntityGameplayItemTotalV1>> &&
       std::is_nothrow_move_assignable_v<
           std::optional<EntityGameplayRuntimeV1>> &&
       std::is_nothrow_move_constructible_v<RuntimeGameplayFrameAdvanceV1>);
@@ -435,6 +549,8 @@ RuntimeGameplayFrameAdvanceV1 RuntimeGameplaySessionV1::advance_frame_impl(
   input_ = std::move(next_input);
   player_ = std::move(next_player);
   session_ = std::move(next_session);
+  combat_ = std::move(next_combat);
+  item_totals_ = std::move(next_item_totals);
   entity_gameplay_ = std::move(next_entity_gameplay);
   return result;
 }
@@ -452,17 +568,23 @@ void RuntimeGameplaySessionV1::restore_item_totals(
     fail("Runtime gameplay cannot restore item totals without neutral content");
   }
   try {
-    entity_gameplay_->restore_item_totals(std::move(totals));
+    // Pass an lvalue so the entity runtime validates and commits a copy first;
+    // moving the same canonical vector into session ownership cannot fail.
+    entity_gameplay_->restore_item_totals(totals);
   } catch (const EntityGameplayRuntimeError &error) {
     fail("Cannot restore runtime gameplay item totals: " +
          std::string(error.what()));
   }
+  static_assert(std::is_nothrow_move_assignable_v<
+                std::vector<EntityGameplayItemTotalV1>>);
+  item_totals_ = std::move(totals);
   validate_tick_invariants();
 }
 
 RuntimeGameplaySnapshotV1 RuntimeGameplaySessionV1::snapshot() const {
   return make_runtime_gameplay_snapshot(session_, world_, player_, input_,
-                                        fixed_step_, entity_gameplay_);
+                                        fixed_step_, combat_, item_totals_,
+                                        entity_gameplay_);
 }
 
 std::uint64_t
@@ -472,7 +594,14 @@ RuntimeGameplaySessionV1::interpolation_numerator() const noexcept {
 
 std::uint64_t RuntimeGameplaySessionV1::item_total(
     const std::string_view item_key) const noexcept {
-  return entity_gameplay_ ? entity_gameplay_->item_total(item_key) : 0U;
+  const auto found = std::lower_bound(
+      item_totals_.begin(), item_totals_.end(), item_key,
+      [](const EntityGameplayItemTotalV1 &total, const std::string_view key) {
+        return total.item_key < key;
+      });
+  return found != item_totals_.end() && found->item_key == item_key
+             ? found->amount
+             : 0U;
 }
 
 const EntityGameplayRuntimeV1 *
@@ -502,9 +631,13 @@ const PlayerSimulationV1 &RuntimeGameplaySessionV1::player() const noexcept {
   return player_;
 }
 
+const PlayerCombatV1 &RuntimeGameplaySessionV1::combat() const noexcept {
+  return combat_;
+}
+
 void RuntimeGameplaySessionV1::validate_tick_invariants() const {
   validate_state(foundation_, profile_, session_, world_, player_, input_,
-                 fixed_step_, entity_gameplay_);
+                 fixed_step_, combat_, item_totals_, entity_gameplay_);
 }
 
 } // namespace openrc::game

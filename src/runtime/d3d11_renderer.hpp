@@ -10,14 +10,12 @@
 
 #include <cstdint>
 #include <memory>
-#include <span>
 
 namespace openrc {
 struct ActorAffineTransformV1;
 struct ActorModelV1;
 struct ActorRigV1;
 struct CollisionVectorV1;
-struct RacLevelMobyTextureV1;
 struct RenderSceneV1;
 }
 
@@ -27,37 +25,10 @@ struct ThirdPersonCameraViewV1;
 
 namespace openrc::runtime {
 
-struct MobySceneMaterialBatchV1;
-struct SceneGeometry3dV1;
-struct SceneGeometryV1;
-struct SceneMaterialBatchV1;
-
-struct D3d11ObjectTextureSourceV1 {
-    // Explicit region in the merged source-space triangle list. Keeping both
-    // bounds prevents one object family from accidentally claiming the suffix
-    // that belongs to a later family.
-    std::uint64_t first_triangle = 0U;
-    std::uint64_t triangle_count = 0U;
-    std::span<const MobySceneMaterialBatchV1> material_batches;
-    std::span<const RacLevelMobyTextureV1> textures;
-};
-
-struct D3d11TerrainTextureSourceV1 {
-    // Terrain is the prefix of the merged source-space geometry.
-    std::uint64_t triangle_count = 0U;
-    std::span<const SceneMaterialBatchV1> material_batches;
-    std::span<const RacLevelMobyTextureV1> textures;
-};
-
-struct D3d11SourceTextureSourcesV1 {
-    D3d11TerrainTextureSourceV1 terrain;
-    std::span<const D3d11ObjectTextureSourceV1> objects;
-};
-
 class D3d11Renderer final {
 public:
     // Prepared-package runtime path. It consumes only the neutral render
-    // resource and does not require an ISO, ELF, or RAC decoder structures.
+    // resource.
     D3d11Renderer(HWND window, const openrc::RenderSceneV1& scene);
     // Prepared actor path. Player ownership is resolved by the runtime before
     // entering the renderer; this overload receives only neutral rig/model
@@ -68,14 +39,6 @@ public:
         const openrc::ActorRigV1& player_rig,
         const openrc::ActorModelV1& player_model,
         const openrc::ActorAffineTransformV1& model_to_entity);
-    D3d11Renderer(HWND window, const SceneGeometryV1& geometry);
-    D3d11Renderer(HWND window,
-                  const SceneGeometryV1& raster_geometry,
-                  const SceneGeometry3dV1& source_geometry);
-    D3d11Renderer(HWND window,
-                  const SceneGeometryV1& raster_geometry,
-                  const SceneGeometry3dV1& source_geometry,
-                  D3d11SourceTextureSourcesV1 textures);
     ~D3d11Renderer();
 
     D3d11Renderer(const D3d11Renderer&) = delete;
@@ -89,9 +52,9 @@ public:
     // of busy-spinning.
     bool render();
 
-    // Package-only gameplay presentation. The camera is supplied explicitly
-    // by the fixed-tick frontend; the renderer owns only projection and a
-    // deliberately synthetic player marker while actor rendering is absent.
+    // Package-only gameplay presentation. The fixed-tick frontend supplies
+    // the camera and player transform. The renderer presents the neutral
+    // actor model when supplied, with a synthetic player marker as fallback.
     void set_gameplay_presentation(
         const openrc::game::ThirdPersonCameraViewV1& camera,
         const openrc::CollisionVectorV1& feet_position,
@@ -104,15 +67,13 @@ public:
     void set_render_instance_enabled(std::uint32_t instance_id, bool enabled);
     [[nodiscard]] bool
     render_instance_enabled(std::uint32_t instance_id) const;
-
-    // Diagnostic source-space controls. Angles are radians and wheel_steps is
-    // positive when zooming in. They never modify or rerun the recovered VU
-    // frame transform.
-    void orbit(float yaw_delta, float pitch_delta);
-    void zoom(float wheel_steps);
-    void reset_camera();
-    void toggle_view_mode();
-    [[nodiscard]] bool is_3d_view() const noexcept;
+    // Reports whether at least one DrawIndexed call for the neutral instance
+    // was submitted by the most recent render attempt. A render attempt that
+    // cannot begin (for example, for a zero-sized target) clears the result.
+    // This lets the graphical package smoke test prove an entity crossed the
+    // renderer boundary before gameplay hid it.
+    [[nodiscard]] bool last_frame_render_instance_submitted(
+        std::uint32_t instance_id) const;
 
 private:
     struct Implementation;

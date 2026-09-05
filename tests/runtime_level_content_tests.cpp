@@ -88,6 +88,20 @@ constexpr openrc::GameplaySceneIoLimitsV1 kGameplaySceneLimits{
         1024U,
     },
 };
+constexpr openrc::DestructibleSceneIoLimitsV1 kDestructibleSceneLimits{
+    1U << 20U,
+    {
+        16U,
+        64U,
+        8U,
+        64U,
+        1024U,
+        10'000U,
+        10'000U,
+        1000.0F,
+        1000.0F,
+    },
+};
 constexpr openrc::game::RuntimeLevelContentLimitsV1 kRuntimeLimits{
     {
         kContentApiVersion,
@@ -98,6 +112,7 @@ constexpr openrc::game::RuntimeLevelContentLimitsV1 kRuntimeLimits{
     kActorLibraryLimits,
     kEntitySceneLimits,
     kGameplaySceneLimits,
+    kDestructibleSceneLimits,
 };
 
 void expect(const bool condition, const std::string &message) {
@@ -283,6 +298,23 @@ actor_vertex(const float x, const float y, const float u, const float v) {
   return result;
 }
 
+[[nodiscard]] openrc::DestructibleSceneV1 make_destructible_scene() {
+  openrc::DestructibleDefinitionV1 destructible;
+  destructible.authored_id = 40U;
+  destructible.max_health = 100U;
+  destructible.accepted_damage_channels =
+      openrc::game::kDamageChannelProjectileV1 |
+      openrc::game::kDamageChannelExplosiveV1;
+  destructible.local_hit_center = {0.25F, -0.5F, 1.0F};
+  destructible.hit_radius = 1.5F;
+  destructible.drops = {{"currency/bolt", 25U, 0U}};
+
+  openrc::DestructibleSceneV1 result;
+  result.level_id = kLevelId;
+  result.destructibles.push_back(std::move(destructible));
+  return result;
+}
+
 [[nodiscard]] openrc::LevelPackageResourceV1 make_resource(
     const std::string_view resource_id, const std::string_view type_id,
     const std::uint32_t schema_version, std::vector<std::byte> payload) {
@@ -353,6 +385,16 @@ void add_gameplay_scene_resource(openrc::ResolvedLevelPackageV1 &package,
       openrc::encode_gameplay_scene_v1(scene, kGameplaySceneLimits)));
 }
 
+void add_destructible_scene_resource(
+    openrc::ResolvedLevelPackageV1 &package,
+    const openrc::DestructibleSceneV1 &scene) {
+  package.resources.push_back(make_resource(
+      openrc::kDestructibleSceneResourceIdV1,
+      openrc::kDestructibleSceneResourceTypeIdV1,
+      openrc::kDestructibleSceneResourceSchemaVersionV1,
+      openrc::encode_destructible_scene_v1(scene, kDestructibleSceneLimits)));
+}
+
 [[nodiscard]] openrc::ResolvedLevelPackageV1
 make_package_with_actor_entities() {
   auto result = make_package();
@@ -365,6 +407,13 @@ make_package_with_actor_entities() {
 make_package_with_actor_entities_and_gameplay() {
   auto result = make_package_with_actor_entities();
   add_gameplay_scene_resource(result, make_gameplay_scene());
+  return result;
+}
+
+[[nodiscard]] openrc::ResolvedLevelPackageV1
+make_package_with_actor_entities_and_destructible() {
+  auto result = make_package_with_actor_entities();
+  add_destructible_scene_resource(result, make_destructible_scene());
   return result;
 }
 
@@ -399,7 +448,7 @@ void test_mounts_complete_content_from_one_package() {
              content.foundation.collision_world == make_collision_world() &&
              content.render_scene == make_render_scene() &&
              !content.actor_library && !content.entity_scene &&
-             !content.gameplay_scene,
+             !content.gameplay_scene && !content.destructible_scene,
          "combined runtime loader changed or disconnected mounted content");
 }
 
@@ -414,7 +463,7 @@ void test_mounts_complete_actor_entity_feature_pair() {
              *content.entity_scene ==
                  openrc::canonicalize_entity_scene_v1(
                      make_entity_scene(), kEntitySceneLimits.scene) &&
-             !content.gameplay_scene,
+             !content.gameplay_scene && !content.destructible_scene,
          "combined runtime loader changed the mounted actor/entity pair");
 }
 
@@ -426,8 +475,23 @@ void test_mounts_gameplay_scene_with_entity_contract() {
              content.gameplay_scene.has_value() &&
              *content.gameplay_scene ==
                  openrc::canonicalize_gameplay_scene_v1(
-                     make_gameplay_scene(), kGameplaySceneLimits.scene),
+                     make_gameplay_scene(), kGameplaySceneLimits.scene) &&
+             !content.destructible_scene,
          "combined runtime loader changed the mounted gameplay scene");
+}
+
+void test_mounts_destructible_scene_with_entity_contract() {
+  const auto content = openrc::game::load_runtime_level_content_v1(
+      make_package_with_actor_entities_and_destructible(), kRuntimeLimits);
+  expect(content.actor_library.has_value() &&
+             content.entity_scene.has_value() &&
+             !content.gameplay_scene &&
+             content.destructible_scene.has_value() &&
+             *content.destructible_scene ==
+                 openrc::canonicalize_destructible_scene_v1(
+                     make_destructible_scene(),
+                     kDestructibleSceneLimits.scene),
+         "combined runtime loader changed the mounted destructible scene");
 }
 
 void test_rejects_gameplay_without_entity_scene() {
@@ -501,6 +565,94 @@ void test_rejects_wrong_or_invalid_gameplay_scene() {
             make_package_with_actor_entities_and_gameplay(), gameplay_limits));
       },
       "gameplay scene", "combined loader ignored gameplay-scene limits");
+}
+
+void test_rejects_destructible_without_entity_scene() {
+  auto package = make_package();
+  add_destructible_scene_resource(package, make_destructible_scene());
+  expect_runtime_error(
+      [&] {
+        static_cast<void>(openrc::game::load_runtime_level_content_v1(
+            package, kRuntimeLimits));
+      },
+      "without its entity scene",
+      "combined loader accepted destructibles without an entity scene");
+}
+
+void test_rejects_destructible_without_definition_or_transform() {
+  auto missing_definition_scene = make_destructible_scene();
+  missing_definition_scene.destructibles[0U].authored_id = 99U;
+  auto missing_definition = make_package_with_actor_entities();
+  add_destructible_scene_resource(missing_definition,
+                                  missing_definition_scene);
+  expect_runtime_error(
+      [&] {
+        static_cast<void>(openrc::game::load_runtime_level_content_v1(
+            missing_definition, kRuntimeLimits));
+      },
+      "missing entity definition",
+      "combined loader accepted a destructible without an entity definition");
+
+  auto missing_transform_scene = make_destructible_scene();
+  missing_transform_scene.destructibles[0U].authored_id = 5U;
+  auto missing_transform = make_package_with_actor_entities();
+  add_destructible_scene_resource(missing_transform, missing_transform_scene);
+  expect_runtime_error(
+      [&] {
+        static_cast<void>(openrc::game::load_runtime_level_content_v1(
+            missing_transform, kRuntimeLimits));
+      },
+      "without a transform",
+      "combined loader accepted a destructible entity without a transform");
+}
+
+void test_rejects_collectible_destructible_conflict() {
+  auto package = make_package_with_actor_entities_and_gameplay();
+  add_destructible_scene_resource(package, make_destructible_scene());
+  expect_runtime_error(
+      [&] {
+        static_cast<void>(openrc::game::load_runtime_level_content_v1(
+            package, kRuntimeLimits));
+      },
+      "both a gameplay collectible and a destructible",
+      "combined loader accepted one entity as collectible and destructible");
+}
+
+void test_rejects_wrong_or_invalid_destructible_scene() {
+  auto wrong_level_scene = make_destructible_scene();
+  wrong_level_scene.level_id = kLevelId + 1U;
+  auto wrong_level = make_package_with_actor_entities();
+  add_destructible_scene_resource(wrong_level, wrong_level_scene);
+  expect_runtime_error(
+      [&] {
+        static_cast<void>(openrc::game::load_runtime_level_content_v1(
+            wrong_level, kRuntimeLimits));
+      },
+      "destructible scene",
+      "combined loader accepted a destructible scene for another level");
+
+  auto corrupt = make_package_with_actor_entities_and_destructible();
+  corrupt_and_rehash(
+      find_resource(corrupt, openrc::kDestructibleSceneResourceIdV1));
+  expect_runtime_error(
+      [&] {
+        static_cast<void>(openrc::game::load_runtime_level_content_v1(
+            corrupt, kRuntimeLimits));
+      },
+      "destructible scene",
+      "combined loader accepted a corrupt freshly hashed destructible scene");
+
+  auto destructible_limits = kRuntimeLimits;
+  destructible_limits.destructible_scene.max_encoded_bytes =
+      openrc::kDestructibleSceneIoHeaderBytesV1;
+  expect_runtime_error(
+      [&] {
+        static_cast<void>(openrc::game::load_runtime_level_content_v1(
+            make_package_with_actor_entities_and_destructible(),
+            destructible_limits));
+      },
+      "destructible scene",
+      "combined loader ignored destructible-scene limits");
 }
 
 void test_rejects_missing_render_scene() {
@@ -841,9 +993,14 @@ int main() {
     test_mounts_complete_content_from_one_package();
     test_mounts_complete_actor_entity_feature_pair();
     test_mounts_gameplay_scene_with_entity_contract();
+    test_mounts_destructible_scene_with_entity_contract();
     test_rejects_gameplay_without_entity_scene();
     test_rejects_gameplay_without_definition_or_transform();
     test_rejects_wrong_or_invalid_gameplay_scene();
+    test_rejects_destructible_without_entity_scene();
+    test_rejects_destructible_without_definition_or_transform();
+    test_rejects_collectible_destructible_conflict();
+    test_rejects_wrong_or_invalid_destructible_scene();
     test_rejects_missing_render_scene();
     test_rejects_implicit_and_incompatible_content_api();
     test_rejects_corrupt_foundation_resources();

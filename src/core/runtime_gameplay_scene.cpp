@@ -12,15 +12,16 @@
 #include <vector>
 
 namespace openrc::game {
+namespace {
 
-CollisionVectorV1 world_collectible_center_v1(
+[[nodiscard]] CollisionVectorV1 world_local_center(
     const WorldTransformV1 &transform,
-    const GameplayCollectibleV1 &collectible) noexcept {
-  const auto local_x = static_cast<double>(collectible.local_center[0U]) *
+    const std::array<float, 3U> &local_center) noexcept {
+  const auto local_x = static_cast<double>(local_center[0U]) *
                        static_cast<double>(transform.scale[0U]);
-  const auto local_y = static_cast<double>(collectible.local_center[1U]) *
+  const auto local_y = static_cast<double>(local_center[1U]) *
                        static_cast<double>(transform.scale[1U]);
-  const auto local_z = static_cast<double>(collectible.local_center[2U]) *
+  const auto local_z = static_cast<double>(local_center[2U]) *
                        static_cast<double>(transform.scale[2U]);
   const auto qx = static_cast<double>(transform.rotation[0U]);
   const auto qy = static_cast<double>(transform.rotation[1U]);
@@ -38,6 +39,20 @@ CollisionVectorV1 world_collectible_center_v1(
       static_cast<double>(transform.position[1U]) + rotated_y,
       static_cast<double>(transform.position[2U]) + rotated_z,
   };
+}
+
+} // namespace
+
+CollisionVectorV1 world_collectible_center_v1(
+    const WorldTransformV1 &transform,
+    const GameplayCollectibleV1 &collectible) noexcept {
+  return world_local_center(transform, collectible.local_center);
+}
+
+CollisionVectorV1 world_destructible_center_v1(
+    const WorldTransformV1 &transform,
+    const DestructibleDefinitionV1 &destructible) noexcept {
+  return world_local_center(transform, destructible.local_hit_center);
 }
 
 namespace {
@@ -137,15 +152,37 @@ void validate_inventory_key_union(
 void validate_inventory_union(
     const std::vector<EntityGameplayItemTotalV1> &totals,
     const GameplaySceneV1 &scene,
+    const DestructibleSceneV1 &destructible_scene,
     const EntityGameplayInventoryLimitsV1 &limits) {
   std::vector<std::string_view> keys;
-  keys.reserve(totals.size() + scene.collectibles.size());
+  std::uint64_t drop_count = 0U;
+  for (const auto &destructible : destructible_scene.destructibles) {
+    if (destructible.drops.size() >
+        std::numeric_limits<std::uint64_t>::max() - drop_count) {
+      fail("Destructible drop count overflows uint64_t");
+    }
+    drop_count += destructible.drops.size();
+  }
+  if (drop_count > keys.max_size() || totals.size() > keys.max_size() ||
+      scene.collectibles.size() > keys.max_size() - totals.size() ||
+      drop_count > keys.max_size() - totals.size() -
+                       scene.collectibles.size()) {
+    fail("Entity-gameplay inventory key union exceeds its host container");
+  }
+  keys.reserve(totals.size() + scene.collectibles.size() +
+               static_cast<std::size_t>(drop_count));
   for (const auto &total : totals) {
     keys.push_back(total.item_key);
   }
   for (const auto &collectible : scene.collectibles) {
     validate_item_key(collectible.item_key, limits.max_item_key_bytes);
     keys.push_back(collectible.item_key);
+  }
+  for (const auto &destructible : destructible_scene.destructibles) {
+    for (const auto &drop : destructible.drops) {
+      validate_item_key(drop.item_key, limits.max_item_key_bytes);
+      keys.push_back(drop.item_key);
+    }
   }
   validate_inventory_key_union(std::move(keys), limits);
 }
@@ -164,13 +201,13 @@ void add_item_total(std::vector<EntityGameplayItemTotalV1> &totals,
   if (candidate != totals.end() && candidate->item_key == item_key) {
     if (amount >
         std::numeric_limits<std::uint64_t>::max() - candidate->amount) {
-      fail("Collectible item total would overflow uint64_t");
+      fail("Entity-gameplay item total would overflow uint64_t");
     }
     candidate->amount += amount;
     return;
   }
   if (totals.size() >= limits.max_item_totals) {
-    fail("Collectible would exceed the item-total limit");
+    fail("Entity-gameplay grant would exceed the item-total limit");
   }
   totals.insert(candidate, EntityGameplayItemTotalV1{item_key, amount});
 }
@@ -231,14 +268,21 @@ void validate_player_capsule(const EntityGameplayPlayerCapsuleV1 &player) {
   }
 }
 
-struct WorldCollectibleSphere {
+struct WorldSphereV1 {
   double x = 0.0;
   double y = 0.0;
   double z = 0.0;
   double radius = 0.0;
 };
 
-[[nodiscard]] WorldCollectibleSphere
+[[nodiscard]] double maximum_absolute_scale(
+    const WorldTransformV1 &transform) noexcept {
+  return std::max({std::abs(static_cast<double>(transform.scale[0U])),
+                   std::abs(static_cast<double>(transform.scale[1U])),
+                   std::abs(static_cast<double>(transform.scale[2U]))});
+}
+
+[[nodiscard]] WorldSphereV1
 world_collectible_sphere(const WorldTransformV1 &transform,
                          const GameplayCollectibleV1 &collectible) noexcept {
   // WorldTransformV1 stores an X/Y/Z/W unit quaternion. The local center uses
@@ -246,15 +290,22 @@ world_collectible_sphere(const WorldTransformV1 &transform,
   // non-uniformly scaled sphere is conservatively represented by its largest
   // absolute scale so collection never misses the authored ellipsoid.
   const auto center = world_collectible_center_v1(transform, collectible);
-  const auto maximum_scale =
-      std::max({std::abs(static_cast<double>(transform.scale[0U])),
-                std::abs(static_cast<double>(transform.scale[1U])),
-                std::abs(static_cast<double>(transform.scale[2U]))});
-  return WorldCollectibleSphere{
+  return WorldSphereV1{
       center.x,
       center.y,
       center.z,
-      static_cast<double>(collectible.collection_radius) * maximum_scale};
+      static_cast<double>(collectible.collection_radius) *
+          maximum_absolute_scale(transform)};
+}
+
+[[nodiscard]] WorldSphereV1 world_destructible_sphere(
+    const WorldTransformV1 &transform,
+    const DestructibleDefinitionV1 &destructible) noexcept {
+  const auto center = world_destructible_center_v1(transform, destructible);
+  return WorldSphereV1{
+      center.x, center.y, center.z,
+      static_cast<double>(destructible.hit_radius) *
+          static_cast<double>(transform.scale[0U])};
 }
 
 [[nodiscard]] bool overlaps(const EntityGameplayPlayerCapsuleV1 &player,
@@ -268,7 +319,71 @@ world_collectible_sphere(const WorldTransformV1 &transform,
   const auto dy = sphere.y - player.feet_position.y;
   const auto dz = sphere.z - closest_z;
   const auto radius = player.radius + sphere.radius;
-  return dx * dx + dy * dy + dz * dz <= radius * radius;
+  return std::hypot(dx, dy, dz) <= radius;
+}
+
+void validate_damage_pulses(
+    const std::span<const GameplayDamagePulseV1> pulses) {
+  if (pulses.size() > kEntityGameplayMaximumDamagePulsesPerTickV1) {
+    fail("Entity gameplay received too many damage pulses in one tick");
+  }
+  for (std::size_t index = 0U; index < pulses.size(); ++index) {
+    const auto &pulse = pulses[index];
+    if (!is_valid_gameplay_damage_pulse_v1(pulse)) {
+      fail("Entity gameplay received an invalid damage pulse");
+    }
+    if (index != 0U) {
+      const auto &previous = pulses[index - 1U];
+      if (previous.attack_sequence > pulse.attack_sequence ||
+          (previous.attack_sequence == pulse.attack_sequence &&
+           previous.source_authored_id >= pulse.source_authored_id)) {
+        fail("Entity-gameplay damage pulses are duplicate or out of order");
+      }
+    }
+  }
+}
+
+[[nodiscard]] bool overlaps(
+    const GameplayDamagePulseV1 &pulse, const WorldTransformV1 &transform,
+    const DestructibleDefinitionV1 &destructible) noexcept {
+  const auto sphere = world_destructible_sphere(transform, destructible);
+  const auto segment_x = pulse.capsule_end.x - pulse.capsule_start.x;
+  const auto segment_y = pulse.capsule_end.y - pulse.capsule_start.y;
+  const auto segment_z = pulse.capsule_end.z - pulse.capsule_start.z;
+  const auto start_to_center_x = sphere.x - pulse.capsule_start.x;
+  const auto start_to_center_y = sphere.y - pulse.capsule_start.y;
+  const auto start_to_center_z = sphere.z - pulse.capsule_start.z;
+  const auto start_projection = start_to_center_x * segment_x +
+                                start_to_center_y * segment_y +
+                                start_to_center_z * segment_z;
+  const auto radius = pulse.radius + sphere.radius;
+  if (start_projection <= 0.0) {
+    return std::hypot(start_to_center_x, start_to_center_y,
+                      start_to_center_z) <= radius;
+  }
+
+  const auto end_to_center_x = sphere.x - pulse.capsule_end.x;
+  const auto end_to_center_y = sphere.y - pulse.capsule_end.y;
+  const auto end_to_center_z = sphere.z - pulse.capsule_end.z;
+  const auto end_projection = end_to_center_x * segment_x +
+                              end_to_center_y * segment_y +
+                              end_to_center_z * segment_z;
+  if (end_projection >= 0.0) {
+    return std::hypot(end_to_center_x, end_to_center_y, end_to_center_z) <=
+           radius;
+  }
+
+  // The perpendicular distance to the segment's interior is |v x d| / |d|.
+  // Comparing the products avoids constructing start + t*d, whose low bits
+  // disappear for a small target inside a very long, boundary-valid segment.
+  const auto cross_x = start_to_center_y * segment_z -
+                       start_to_center_z * segment_y;
+  const auto cross_y = start_to_center_z * segment_x -
+                       start_to_center_x * segment_z;
+  const auto cross_z = start_to_center_x * segment_y -
+                       start_to_center_y * segment_x;
+  return std::hypot(cross_x, cross_y, cross_z) <=
+         radius * std::hypot(segment_x, segment_y, segment_z);
 }
 
 } // namespace
@@ -276,7 +391,20 @@ world_collectible_sphere(const WorldTransformV1 &transform,
 void EntityGameplayRuntimeV1::load_scene(
     const EntitySceneV1 &entity_scene, const GameplaySceneV1 &gameplay_scene,
     const EntityGameplayRuntimeLimitsV1 limits,
-    const std::uint64_t first_tick_index) {
+    const std::uint64_t first_tick_index,
+    const std::optional<std::uint64_t> required_level_instance_sequence) {
+  DestructibleSceneV1 empty_destructibles;
+  empty_destructibles.level_id = entity_scene.level_id;
+  load_scene(entity_scene, gameplay_scene, empty_destructibles, limits,
+             first_tick_index, required_level_instance_sequence);
+}
+
+void EntityGameplayRuntimeV1::load_scene(
+    const EntitySceneV1 &entity_scene, const GameplaySceneV1 &gameplay_scene,
+    const DestructibleSceneV1 &destructible_scene,
+    const EntityGameplayRuntimeLimitsV1 limits,
+    const std::uint64_t first_tick_index,
+    const std::optional<std::uint64_t> required_level_instance_sequence) {
   try {
     validate_entity_scene_v1(entity_scene, limits.entity_scene);
   } catch (const EntitySceneError &error) {
@@ -289,11 +417,29 @@ void EntityGameplayRuntimeV1::load_scene(
     fail("Cannot load entity gameplay: invalid GameplaySceneV1: " +
          std::string(error.what()));
   }
-  if (entity_scene.level_id != gameplay_scene.level_id) {
-    fail("EntitySceneV1 and GameplaySceneV1 describe different levels");
+  try {
+    validate_destructible_scene_v1(destructible_scene,
+                                   limits.destructible_scene);
+  } catch (const DestructibleSceneError &error) {
+    fail("Cannot load entity gameplay: invalid DestructibleSceneV1: " +
+         std::string(error.what()));
+  }
+  if (entity_scene.level_id != gameplay_scene.level_id ||
+      entity_scene.level_id != destructible_scene.level_id) {
+    fail("Entity, gameplay, and destructible scenes describe different "
+         "levels");
+  }
+  if (limits.max_damage_sources_per_destructible == 0U) {
+    fail("Entity gameplay requires a non-zero per-destructible damage-source "
+         "limit");
+  }
+  if (required_level_instance_sequence &&
+      *required_level_instance_sequence == 0U) {
+    fail("Entity gameplay cannot materialize level-instance sequence zero");
   }
   validate_item_totals(item_totals_, limits.inventory);
-  validate_inventory_union(item_totals_, gameplay_scene, limits.inventory);
+  validate_inventory_union(item_totals_, gameplay_scene, destructible_scene,
+                           limits.inventory);
 
   // Cross-resource validation precedes all mutation, including staged WorldV1
   // creation, so a bad gameplay reference cannot partially replace a level.
@@ -306,17 +452,66 @@ void EntityGameplayRuntimeV1::load_scene(
       fail("GameplaySceneV1 collectible entity has no authored transform");
     }
   }
+  for (const auto &destructible : destructible_scene.destructibles) {
+    if (find_definition(entity_scene, destructible.authored_id) == nullptr) {
+      fail("DestructibleSceneV1 references a missing entity definition");
+    }
+    const auto *const transform =
+        find_transform(entity_scene, destructible.authored_id);
+    if (transform == nullptr) {
+      fail("DestructibleSceneV1 entity has no authored transform");
+    }
+    const auto &scale = transform->transform.scale;
+    if (!(scale[0U] > 0.0F) || scale[0U] != scale[1U] ||
+        scale[0U] != scale[2U]) {
+      fail("DestructibleSceneV1 requires a positive uniform entity scale");
+    }
+    const auto world_sphere =
+        world_destructible_sphere(transform->transform, destructible);
+    if (!is_gameplay_damage_geometry_value_v1(world_sphere.x) ||
+        !is_gameplay_damage_geometry_value_v1(world_sphere.y) ||
+        !is_gameplay_damage_geometry_value_v1(world_sphere.z) ||
+        !is_gameplay_damage_radius_v1(world_sphere.radius)) {
+      fail("DestructibleSceneV1 world hit sphere is outside the deterministic "
+           "damage geometry domain");
+    }
+    const auto collectible = std::lower_bound(
+        gameplay_scene.collectibles.begin(),
+        gameplay_scene.collectibles.end(), destructible.authored_id,
+        [](const GameplayCollectibleV1 &candidate, const std::uint32_t id) {
+          return candidate.authored_id < id;
+        });
+    if (collectible != gameplay_scene.collectibles.end() &&
+        collectible->authored_id == destructible.authored_id) {
+      fail("One authored entity cannot be both a V1 collectible and "
+           "destructible");
+    }
+  }
 
   LoadedStateV1 staged;
   if (state_) {
     staged.session = GameSessionV1(state_->session.snapshot());
+  } else if (required_level_instance_sequence &&
+             *required_level_instance_sequence > 1U) {
+    const auto previous_sequence = *required_level_instance_sequence - 1U;
+    GameSessionSnapshotV1 seed;
+    seed.next_level_request_sequence = previous_sequence;
+    seed.next_level_commit_sequence = previous_sequence;
+    seed.level_instance_sequence = previous_sequence;
+    seed.active_level_id = entity_scene.level_id;
+    staged.session = GameSessionV1(seed);
   }
   staged.level_id = entity_scene.level_id;
   staged.next_tick_index = first_tick_index;
   staged.inventory_limits = limits.inventory;
+  staged.max_damage_sources_per_destructible =
+      limits.max_damage_sources_per_destructible;
 
-  const auto reason = state_ ? LevelRequestReasonV1::transition
-                             : LevelRequestReasonV1::new_game;
+  const auto reason =
+      state_ || (required_level_instance_sequence &&
+                 *required_level_instance_sequence > 1U)
+          ? LevelRequestReasonV1::transition
+          : LevelRequestReasonV1::new_game;
   try {
     const auto request = staged.session.request_level(entity_scene.level_id,
                                                       std::nullopt, reason);
@@ -324,6 +519,13 @@ void EntityGameplayRuntimeV1::load_scene(
   } catch (const GameWorldError &error) {
     fail("Cannot create the entity-gameplay WorldV1 level: " +
          std::string(error.what()));
+  }
+  const auto &active_level = staged.world.active_level();
+  if (!active_level ||
+      (required_level_instance_sequence &&
+       active_level->instance_sequence !=
+           *required_level_instance_sequence)) {
+    fail("Entity gameplay materialized the wrong level-instance sequence");
   }
 
   std::vector<std::string> archetype_keys;
@@ -378,6 +580,21 @@ void EntityGameplayRuntimeV1::load_scene(
     record->collectible = collectible;
   }
 
+  for (const auto &destructible : destructible_scene.destructibles) {
+    const auto record = std::lower_bound(
+        staged.entities.begin(), staged.entities.end(),
+        destructible.authored_id,
+        [](const EntityRecordV1 &entity, const std::uint32_t id) {
+          return entity.authored_id < id;
+        });
+    if (record == staged.entities.end() ||
+        record->authored_id != destructible.authored_id) {
+      fail("A validated destructible disappeared during materialization");
+    }
+    record->destructible = destructible;
+    record->health = destructible.max_health;
+  }
+
   static_assert(std::is_nothrow_move_constructible_v<LoadedStateV1> &&
                 std::is_nothrow_move_assignable_v<LoadedStateV1>);
   state_ = std::move(staged);
@@ -386,10 +603,18 @@ void EntityGameplayRuntimeV1::load_scene(
 std::vector<EntityGameplayEventV1> EntityGameplayRuntimeV1::fixed_tick(
     const std::uint64_t tick_index,
     const EntityGameplayPlayerCapsuleV1 &player) {
+  return fixed_tick(tick_index, player, {});
+}
+
+std::vector<EntityGameplayEventV1> EntityGameplayRuntimeV1::fixed_tick(
+    const std::uint64_t tick_index,
+    const EntityGameplayPlayerCapsuleV1 &player,
+    const std::span<const GameplayDamagePulseV1> damage_pulses) {
   if (!state_) {
     fail("Entity gameplay cannot tick before a level is loaded");
   }
   validate_player_capsule(player);
+  validate_damage_pulses(damage_pulses);
   if (tick_index != state_->next_tick_index) {
     fail("Entity gameplay received an out-of-order fixed tick");
   }
@@ -438,6 +663,122 @@ std::vector<EntityGameplayEventV1> EntityGameplayRuntimeV1::fixed_tick(
     entity.collected = true;
   }
 
+  // Damage is evaluated against immutable authored transforms. The outer
+  // authored-entity order makes event order independent of the number and
+  // allocation layout of incoming pulses.
+  for (auto &entity : staged.entities) {
+    if (!entity.enabled || entity.destroyed || !entity.destructible) {
+      continue;
+    }
+    if (!entity.authored_transform) {
+      fail("A materialized destructible lost its immutable transform");
+    }
+    if (staged.world.find_entity(entity.entity_id) == nullptr) {
+      fail("An enabled destructible is missing from WorldV1");
+    }
+
+    for (const auto &pulse : damage_pulses) {
+      if ((entity.destructible->accepted_damage_channels &
+           pulse.damage_channel) == 0U ||
+          !overlaps(pulse, *entity.authored_transform,
+                    *entity.destructible)) {
+        continue;
+      }
+
+      const auto source_sequence = std::lower_bound(
+          entity.damage_source_sequences.begin(),
+          entity.damage_source_sequences.end(), pulse.source_authored_id,
+          [](const EntityGameplayDamageSourceSequenceV1 &candidate,
+             const std::uint32_t source_authored_id) {
+            return candidate.source_authored_id < source_authored_id;
+          });
+      if (source_sequence != entity.damage_source_sequences.end() &&
+          source_sequence->source_authored_id == pulse.source_authored_id) {
+        if (pulse.attack_sequence < source_sequence->last_attack_sequence) {
+          fail("A damage source regressed its attack sequence for a "
+               "destructible");
+        }
+        if (pulse.attack_sequence == source_sequence->last_attack_sequence) {
+          continue;
+        }
+        source_sequence->last_attack_sequence = pulse.attack_sequence;
+      } else {
+        if (entity.damage_source_sequences.size() >=
+            staged.max_damage_sources_per_destructible) {
+          fail("A destructible exceeds its damage-source replay-history "
+               "limit");
+        }
+        entity.damage_source_sequences.insert(
+            source_sequence,
+            EntityGameplayDamageSourceSequenceV1{pulse.source_authored_id,
+                                                  pulse.attack_sequence});
+      }
+
+      const auto applied_damage = std::min(entity.health, pulse.damage);
+      if (applied_damage == 0U) {
+        fail("An enabled destructible has no remaining health");
+      }
+      entity.health -= applied_damage;
+
+      EntityGameplayEventV1 damaged;
+      damaged.kind = EntityGameplayEventKindV1::entity_damaged;
+      damaged.tick_index = tick_index;
+      damaged.authored_id = entity.authored_id;
+      damaged.attack_sequence = pulse.attack_sequence;
+      damaged.source_authored_id = pulse.source_authored_id;
+      damaged.damage = applied_damage;
+      damaged.remaining_health = entity.health;
+      events.push_back(std::move(damaged));
+
+      if (entity.health != 0U) {
+        continue;
+      }
+      if (!staged.world.destroy_entity(entity.entity_id)) {
+        fail("A destructible could not be destroyed exactly once");
+      }
+      entity.enabled = false;
+      entity.destroyed = true;
+
+      EntityGameplayEventV1 destroyed;
+      destroyed.kind = EntityGameplayEventKindV1::entity_destroyed;
+      destroyed.tick_index = tick_index;
+      destroyed.authored_id = entity.authored_id;
+      destroyed.attack_sequence = pulse.attack_sequence;
+      destroyed.source_authored_id = pulse.source_authored_id;
+      destroyed.damage = applied_damage;
+      destroyed.remaining_health = 0U;
+      events.push_back(std::move(destroyed));
+
+      for (std::size_t drop_index = 0U;
+           drop_index < entity.destructible->drops.size(); ++drop_index) {
+        const auto &drop = entity.destructible->drops[drop_index];
+        add_item_total(next_item_totals, drop.item_key, drop.amount,
+                       staged.inventory_limits);
+
+        EntityGameplayEventV1 granted;
+        granted.kind = EntityGameplayEventKindV1::item_granted;
+        granted.tick_index = tick_index;
+        granted.authored_id = entity.authored_id;
+        granted.item_key = drop.item_key;
+        granted.amount = drop.amount;
+        granted.drop_ordinal = static_cast<std::uint32_t>(drop_index);
+        events.push_back(std::move(granted));
+      }
+      // A destroyed entity cannot accept any later pulse in this tick.
+      break;
+    }
+  }
+
+  // Collection and destruction are evaluated in separate passes so their
+  // failure handling stays simple. Restore the public global authored-ID
+  // contract while retaining damage -> destroy -> sorted-drop order for all
+  // events belonging to the same entity.
+  std::stable_sort(events.begin(), events.end(),
+                   [](const EntityGameplayEventV1 &left,
+                      const EntityGameplayEventV1 &right) {
+                     return left.authored_id < right.authored_id;
+                   });
+
   ++staged.next_tick_index;
   // No operation after this point may fail: committing both staged values is
   // the strong-transaction boundary for WorldV1, flags, inventory, and tick.
@@ -462,6 +803,11 @@ void EntityGameplayRuntimeV1::restore_item_totals(
   for (const auto &entity : state_->entities) {
     if (entity.collectible) {
       keys.push_back(entity.collectible->item_key);
+    }
+    if (entity.destructible) {
+      for (const auto &drop : entity.destructible->drops) {
+        keys.push_back(drop.item_key);
+      }
     }
   }
   validate_inventory_key_union(std::move(keys), state_->inventory_limits);
@@ -495,9 +841,18 @@ EntityGameplaySnapshotV1 EntityGameplayRuntimeV1::snapshot() const {
   result.item_totals = item_totals_;
   result.entities.reserve(state_->entities.size());
   for (const auto &entity : state_->entities) {
-    result.entities.push_back(EntityGameplayEntitySnapshotV1{
-        entity.authored_id, entity.entity_id, entity.authored_transform,
-        entity.enabled, entity.collected});
+    EntityGameplayEntitySnapshotV1 snapshot;
+    snapshot.authored_id = entity.authored_id;
+    snapshot.entity_id = entity.entity_id;
+    snapshot.authored_transform = entity.authored_transform;
+    snapshot.enabled = entity.enabled;
+    snapshot.collected = entity.collected;
+    snapshot.destroyed = entity.destroyed;
+    if (entity.destructible) {
+      snapshot.health = entity.health;
+      snapshot.damage_source_sequences = entity.damage_source_sequences;
+    }
+    result.entities.push_back(std::move(snapshot));
   }
   return result;
 }
@@ -549,6 +904,25 @@ bool EntityGameplayRuntimeV1::collected(const std::uint32_t authored_id) const {
   return record->collected;
 }
 
+bool EntityGameplayRuntimeV1::destroyed(const std::uint32_t authored_id) const {
+  const auto *const record = find_record(authored_id);
+  if (record == nullptr) {
+    fail("Entity gameplay has no such authored entity");
+  }
+  return record->destroyed;
+}
+
+std::optional<std::uint32_t>
+EntityGameplayRuntimeV1::health(const std::uint32_t authored_id) const {
+  const auto *const record = find_record(authored_id);
+  if (record == nullptr) {
+    fail("Entity gameplay has no such authored entity");
+  }
+  return record->destructible
+             ? std::optional<std::uint32_t>(record->health)
+             : std::nullopt;
+}
+
 std::uint64_t EntityGameplayRuntimeV1::item_total(
     const std::string_view item_key) const noexcept {
   const auto candidate = std::lower_bound(
@@ -559,6 +933,11 @@ std::uint64_t EntityGameplayRuntimeV1::item_total(
   return candidate != item_totals_.end() && candidate->item_key == item_key
              ? candidate->amount
              : 0U;
+}
+
+const std::vector<EntityGameplayItemTotalV1> &
+EntityGameplayRuntimeV1::item_totals() const noexcept {
+  return item_totals_;
 }
 
 std::uint64_t EntityGameplayRuntimeV1::next_tick_index() const {

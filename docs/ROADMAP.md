@@ -95,6 +95,10 @@ fidelity, but does not block movement on Veldin.
 
 ## Stage 2 — Native level viewer
 
+This records the source-backed diagnostic viewer used to validate recovery.
+That direct ISO/ELF entrypoint is no longer part of `openrc-runtime`; its
+decoders remain compiler/diagnostic-side evidence feeding neutral packages.
+
 - [x] bind a prepared ELF back to the selected ISO before native execution
 - [x] open a D3D11 window and submit the first decoded SceneBlock triangle batch
 - [x] connect launcher Play to the adjacent native runtime
@@ -161,9 +165,12 @@ fidelity, but does not block movement on Veldin.
 - [x] add a compiler-only RAC collectible adapter and reusable bind-pose actor
   baking into static `RenderSceneV1` instances; class 13 uses high-confidence
   community Bolt metadata while `amount = 1` remains an explicit OpenRC policy
-- [x] complete and verify six-resource transactional publication for all 19
-  levels: collision, bootstrap, recovered textured render scene, actor library,
-  entity scene, and gameplay scene
+- [x] complete and verify the earlier six-resource transactional publication
+  baseline for all 19 levels: collision, bootstrap, recovered textured render
+  scene, actor library, entity scene, and gameplay scene
+- [x] extend the current native compiler/profile contract to exactly seven
+  resources by adding neutral `DestructibleSceneV1`, cross-resource validation,
+  and stale six-resource cache rejection
 - [x] mount and render a PreparedGameV2 level in the graphical runtime without
   reopening the source ISO or boot ELF
 - [x] define canonical, bounded `ActorLibraryV1` and `EntitySceneV1` schemas
@@ -177,6 +184,12 @@ fidelity, but does not block movement on Veldin.
   overflow-safe semantic `u64` item totals, transactional reload, and snapshots
 - [x] pass a fresh supported-image preparation/reuse smoke and a package-only
   Veldin D3D smoke proving collectible visibility and inventory end to end
+- [x] add deterministic primary-combat timing, neutral melee damage,
+  destruction/drop transactions, render hiding, and F/left-mouse input
+- [x] add a compiler-only class-500 Bolt-Crate adapter with one shared model and
+  stable per-placement entity/render/destructible identities
+- [x] pass a fresh supported-image all-level preparation/reuse validation and
+  package-only Veldin graphical smoke for the seven-resource crate/wrench path
 - [ ] decode, package, select, and play Ratchet's animations through the
   generic actor pipeline
 - [x] connect Win32 keyboard input and a deterministic third-person camera to
@@ -186,16 +199,18 @@ fidelity, but does not block movement on Veldin.
 - [x] switch Launcher Prepare/Play to one-time all-level PreparedGameV2
   compilation and package-only runtime launch, persisting the exact native
   installation independently of the ISO
-- [ ] reconstruct basic interactions, one weapon, and one enemy type
+- [x] reconstruct one basic interaction through the neutral crate/wrench loop
+- [ ] reconstruct one weapon and one enemy type
 - [ ] load and save isolated test state
 - [x] make package-only gameplay smoke on Veldin and at least one second planet
   a checked regression using the same published-package code path
 
-The six-resource package and first neutral collectible path are verified on
-fresh prepared data, but that milestone is not a declaration that Veldin is
-finished. Animation playback, original pickup presentation, broader interactive
-entities, one weapon/enemy loop, original camera behavior, menus, and full
-scene-family coverage remain open.
+The seven-resource collectible and crate/wrench profile is verified on fresh
+prepared data across all 19 levels, including deterministic reuse, package-only
+Veldin gameplay, and visible-to-destroyed D3D11 smoke. This does not declare
+Veldin finished: animation playback, original pickup and destruction
+presentation, broader interactive entities, one weapon/enemy loop, original
+camera behavior, menus, and full scene-family coverage remain open.
 
 ## Stage 4 — Game-complete runtime
 
@@ -221,10 +236,13 @@ Before the first public build is called usable, OpenRC must provide this flow:
    content-addressed native packages for every supported level.
 3. **Play** starts the native runtime from those packages with no ISO path,
    ELF path, record number, or other developer flag.
-4. Updates can rebuild incompatible packages safely without losing saves or
+4. There is one Launcher and one runtime; prepared packages are a versioned
+   local cache, never a second client.
+5. The Launcher rejects stale compiler/profile identities before Play, and the
+   normal Prepare flow rebuilds incompatible packages without losing saves or
    user settings under the `PlunkDev/OpenRC` data directories.
-5. Mods are explicit ordered overlays on documented OpenRC resource schemas;
+6. Mods are explicit ordered overlays on documented OpenRC resource schemas;
    original game data is never redistributed or modified in place.
-6. Portable builds contain no dynamic compiler-runtime DLL dependency, and a
+7. Portable builds contain no dynamic compiler-runtime DLL dependency, and a
    redistribution license, clean setup guide, diagnostics, and recovery path
    are present before inviting ordinary players.

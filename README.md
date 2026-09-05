@@ -110,13 +110,16 @@ both in progress. The repository currently provides:
 - a versioned `GameplaySceneV1` resource whose authored-entity references,
   local overlap spheres, semantic item keys, amounts, canonical binary I/O, and
   explicit bounds contain no RAC class IDs or source-format dispatch;
+- a versioned `DestructibleSceneV1` resource with authored-entity references,
+  bounded local hit spheres, health, accepted damage channels, and ordered
+  semantic item drops, likewise independent of RAC/PS2 formats;
 - reusable bind-pose palette construction, CPU linear-blend skinning, and
   static actor-to-RenderScene baking with general affine joint transforms and
   inverse-transpose normal handling;
 - an in-progress deterministic native-game compiler path for all 19 reference
-  levels, targeting exactly six neutral resources per level—collision,
-  bootstrap, render scene, actor library, entity scene, and gameplay scene—in
-  one transactional PreparedGameV2 installation;
+  levels, targeting exactly seven neutral resources per level—collision,
+  bootstrap, render scene, actor library, entity scene, gameplay scene, and
+  destructible scene—in one transactional PreparedGameV2 installation;
 - a hardened PreparedGameV2 filesystem reader and transactional publisher for
   explicit caller-supplied level packages, with no implicit mod discovery;
 - a planet-agnostic game session/entity world, quantized replay-input boundary,
@@ -124,9 +127,13 @@ both in progress. The repository currently provides:
 - a deterministic character controller and player simulation with movement,
   gravity, jumping, ground/wall handling, checkpoints, and fall reset, together
   with a source-independent loader for resolved foundation packages;
-- a deterministic authored-entity/collectible runtime with transactional scene
-  loads, fixed-tick capsule/sphere overlap, collect-once events, render-instance
-  visibility, and generic `u64` semantic item totals that survive level reloads;
+- a deterministic authored-entity gameplay runtime with transactional scene
+  loads, fixed-tick collectible overlap, neutral damage/destruction events,
+  render-instance visibility, and generic `u64` semantic item totals that
+  survive level reloads;
+- a source-independent fixed-tick combat producer whose current primary wrench
+  profile drives bounded melee damage capsules without placing RAC class logic
+  in the runtime;
 - ELF32/MIPS span/path parsing with program/section inventory, a typed DVP
   overlay table mapped from LMA/VMA records to the real code bytes, and bounded
   IOP/IRX module, relocation, and import metadata;
@@ -151,22 +158,16 @@ both in progress. The repository currently provides:
 - exact entry-16 source-geometry recovery through each record's matched V4-8
   index stream and index-to-descriptor-to-position chain, retaining VIF write
   provenance and validating every recovered RGBA value against decoded GS;
-- a profile-bound SceneBlock runtime loader that revalidates the user's ISO
-  against its prepared boot ELF before exposing reusable decoded level data;
-- a native Windows D3D11 level-viewer window that independently executes and
-  merges every supported SceneBlock record in the selected level, defaults to
-  an auto-fit recovered-level 3D orbit view, renders recovered tfrag terrain
-  plus static high-LOD Moby and TIE placements with their independent decoded
-  texture banks and material UVs, uses a depth buffer plus an explicit
-  wireframe fallback for unresolved gaps, retains the aggregate decoded GS
-  projection for comparison, and falls back from hardware rendering to WARP;
+- a profile-bound compiler/diagnostic SceneBlock loader that revalidates the
+  user's ISO against its prepared boot ELF before exposing reusable decoded
+  level data on the source side of the package boundary;
 - a package-only graphical runtime path that mounts PreparedGameV2, verifies
   the selected level and its neutral resources, and renders without reopening
   the source ISO or boot ELF, with deterministic fixed-step movement, collision,
   jumping, fall/reset handling, a third-person camera, and Ratchet's textured
   high-LOD model CPU-skinned in its bind pose at the simulated player transform,
-  plus real-data-verified Bolt collection, semantic inventory, and static
-  instance visibility;
+  plus neutral Bolt collection and destructible state, semantic inventory,
+  static-instance visibility, and a primary melee action;
 - recognition of the PAL (`SCES-50916`) reference executable and detection of
   the NTSC-U/C (`SCUS-97199`) release;
 - a native Windows launcher with disc inspection, asynchronous one-time
@@ -184,9 +185,11 @@ both in progress. The repository currently provides:
   material-slot mapping, neutral collision compilation/I/O and queries,
   level-bootstrap/foundation compilation, PreparedGameV2 filesystem
   loading/publication, deterministic character/player simulation, runtime
-  foundation/content loading, ActorLibrary/EntityScene/GameplayScene canonical
-  I/O and package attachment, actor pose/skinning and static bind-pose baking,
-  semantic player-actor resolution, deterministic collectible state,
+  foundation/content loading,
+  ActorLibrary/EntityScene/GameplayScene/DestructibleScene canonical I/O and
+  package attachment, actor pose/skinning and static bind-pose baking,
+  semantic player-actor resolution, deterministic collectible/destructible
+  state and primary-combat timing,
   portable-PE validation,
   scene-animation/subtitle, EE/R5900 boundaries, scene-block, scene-block
   VIF/VU execution and phase grouping, DVP VU microprogram decoding/execution,
@@ -202,26 +205,31 @@ boot ELF are not passed to or reopened by the runtime.
 
 Prepared-game mode is now an early playable Veldin prototype. Use `W/A/S/D` to
 move relative to the camera, the arrow keys to rotate and pitch it, `Space` to
-jump, and `R` to reset to the authored checkpoint. The runtime now resolves
-Ratchet through the neutral entity-scene and actor-library keys, CPU-skins his
-textured high-LOD mesh in the bind pose, and places it at the deterministic
-player transform. Animation playback is not connected yet, so this is a moving
-bind pose rather than finished character presentation.
+jump, `F` or the left mouse button for the primary wrench attack, and `R` to
+reset to the authored checkpoint. The runtime resolves Ratchet through neutral
+entity-scene and actor-library keys, CPU-skins his textured high-LOD mesh in
+the bind pose, and places it at the deterministic player transform. Animation
+playback is not connected yet, so the primary action currently has gameplay
+timing and a melee hit volume but not finished wrench animation or presentation.
 
-The first collectible path is now verified end to end for the supported PAL
-v2.00 image. A fresh preparation and reuse pass validated all 19 six-resource
-packages; package-only smoke on Veldin and a second level collected a real Bolt,
-credited `openrc.currency/bolts`, hid its bound render instance, and completed a
-D3D11 draw without reopening the ISO or boot ELF. The map still lacks animated and
-specialized object families, broader interactions, weapons, enemies, menus, and
-the original camera behavior; Veldin is therefore not yet a complete playable
-level.
+The current seven-resource profile is verified end to end for the supported
+PAL v2.00 image: fresh compilation and exact validation cover all 19 levels,
+a second preparation reuses the same verified cache, and package-only gameplay
+smokes pass for both Veldin level IDs. The D3D11 smoke additionally proves that
+a real mounted Bolt Crate is submitted while visible, receives the neutral
+primary attack, grants its drop, and is absent from the next rendered frame.
+The map still lacks
+animated and specialized object families, finished attack presentation,
+enemies, menus, the original camera behavior, and several progression
+interactions, so Veldin is not yet a complete playable level.
 
-The ISO/ELF-backed recovered-level viewer remains available through explicit
-developer command-line arguments. In that diagnostic mode, drag with the left
-mouse button or use the arrow keys to orbit, use the mouse wheel or `+/-` to
-zoom, press `R` to reset the orbit, and press `Tab` to compare decoded GS 2D
-output.
+There is one Launcher and one runtime. The prepared installation is a
+versioned local cache made from the player's disc, not another client. The
+Launcher validates the exact compiler/profile identity before enabling Play;
+an old, incomplete, or damaged cache is rejected and the normal **Prepare
+game** flow rebuilds that same local installation. Only compiler and diagnostic
+tools accept ISO/ELF inputs. The public runtime accepts a prepared root and
+level ID only.
 
 ## Build on Windows
 
@@ -306,7 +314,6 @@ build/Debug/openrc-cli.exe elf path/to/prepared/files/SCES_509.16
 build/Debug/openrc-cli.exe r5900-boundaries path/to/prepared/files/SCES_509.16
 build/Debug/openrc-cli.exe dvp-vu path/to/prepared/files/SCES_509.16 2,6,8,10,14,16,20 11,12,13,14,15,16,17,18
 build/Debug/openrc-cli.exe dvp-vu-run path/to/prepared/files/SCES_509.16 2 11,12,13,14,15,16,17,18 0
-build/Debug/openrc-runtime.exe --disc-image local/ratchet-and-clank.iso --boot-executable path/to/prepared/files/SCES_509.16 --level 0 --record all --entry-pair 16
 ```
 
 The new native foundation path can be exercised separately from the graphical
@@ -333,31 +340,33 @@ boot ELF only during compilation; smoke/loading and the graphical runtime use
 the published root alone:
 
 ```powershell
-$nativeRoot = Join-Path (Get-Location) "local/native-game-v1"
+$nativeRoot = Join-Path (Get-Location) "local/native-game-current"
 build/Debug/openrc-cli.exe prepare-native-game local/ratchet-and-clank.iso path/to/prepared/files/SCES_509.16 $nativeRoot
+build/Debug/openrc-cli.exe validate-native-game $nativeRoot
 build/Debug/openrc-cli.exe prepared-native-level-smoke $nativeRoot 0
 build/Debug/openrc-runtime.exe --prepared-root $nativeRoot --level 0
 ```
 
 This is the package boundary used by the Launcher and intended for future mod
 tooling. It contains neutral OpenRC resources rather than copied source WAD
-records. The compiler emits six resources in every level
-package:
+records. The current compiler emits seven resources in every level package:
 `world/collision`, `world/bootstrap`, `world/render-scene`, `actors/library`,
-`world/entities`, and `world/gameplay`. RAC/PS2 decoding stops in the compiler;
-the runtime resolves documented semantic keys, authored IDs, and versioned
-resource schemas instead of disc class IDs or offsets.
+`world/entities`, `world/gameplay`, and `world/destructibles`. RAC/PS2 decoding
+stops in the compiler; the runtime resolves documented semantic keys, authored
+IDs, and versioned resource schemas instead of disc class IDs or offsets.
 
 For the supported RAC1 profile, the compiler-only adapter currently treats
 static Moby class 13 as the Bolt collectible using high-confidence community
 metadata. It bakes the high-LOD model in bind pose into ordinary static render
 instances and links those instances to neutral entities and overlap
 collectibles. Each grants `amount = 1` to `openrc.currency/bolts`; that amount
-is an explicit OpenRC policy, not a recovered per-placement value. Fresh
-all-level preparation/reuse and package-only graphical collection smokes on
-Veldin plus a second level verify this six-resource path. Ratchet animation, original
-pickup presentation, broader gameplay interactions, menus, and the remaining
-gameplay systems are still in progress.
+is an explicit OpenRC policy, not a recovered per-placement value. The current
+seven-resource profile additionally maps static Moby class 500 to neutral Bolt
+Crates with one health and one Bolt drop as explicit OpenRC policy. All-level
+preparation/reuse, package-only Veldin gameplay, and D3D11 visible-to-destroyed
+crate smoke have passed. Ratchet and wrench animation, original pickup and
+destruction presentation, enemies, menus, and the remaining gameplay systems
+are still in progress.
 
 The `wad-bundle` LBA and sector count above identify a container in the exact
 PAL v2.00 reference image; they are not assumed for other revisions.
@@ -402,9 +411,11 @@ primitive emissions. Its optional TGA is an auto-fit diagnostic wireframe. The
 current identity frame transform is deterministic debug input, not a claim to
 reproduce the game's live camera.
 
-The explicit ISO/ELF-backed D3D11 path is still a diagnostic level viewer, not
-the package-only playable prototype described above. For the confirmed entry-16
-path it follows the game's VU-memory
+The following source-recovery results document compiler-side evidence, not a
+second player or a public runtime mode. The old direct ISO/ELF D3D11 diagnostic
+entrypoint has been removed; `openrc-runtime` accepts only neutral prepared
+packages. For the confirmed entry-16 path, the retained recovery pipeline
+follows the game's VU-memory
 indirection and recovers signed source XYZ for each GS vertex, while using only
 the already-decoded emitted triangle topology. It also snapshots both GS
 texture contexts, decodes TEX0/CLAMP writes, converts complete STQ to logical
@@ -417,16 +428,16 @@ records emit no XGKICK in this pass and 62 stop on still-indeterminate runtime
 state, so this is an honest supported-record aggregate rather than a claim that
 every gameplay render pass is reconstructed. The original record-0 proof still
 contains 80 submitted vertices, 73 unique descriptors, and 71 unique source
-positions. The runtime decodes Veldin's 78-entry tfrag bank (878,592 indexed
+positions. The source-side tooling decodes Veldin's 78-entry tfrag bank (878,592 indexed
 pixels) and submits contiguous recovered material batches through the D3D11
 texture path; any unresolved material remains a wireframe instead of receiving
-a guessed image. An isolated debug orbit can inspect the merged 3D mesh, while
-`Tab` retains the aggregate GS-output comparison. The DVP VU layer still does
+a guessed image. The former isolated debug orbit and GS-output comparison were
+development aids for this evidence. The DVP VU layer still does
 not emulate bit-exact VU floating point or live PATH1 arbitration, and this is
 not yet a classified collision or playable scene representation.
 
-For full-level entry-16 views, the runtime additionally loads the independently
-indexed gameplay and level-core Moby assets. It carries the 512-entry vertex
+For full-level entry-16 recovery, the compiler-side pipeline additionally loads
+the independently indexed gameplay and level-core Moby assets. It carries the 512-entry vertex
 cache and texture state across each high-LOD packet sequence, applies each
 static placement's verified `T * S * Rz * Ry * Rx` transform, then explicitly
 converts world coordinates to the current SceneBlock diagnostic domain at
@@ -476,7 +487,7 @@ reference sweep resolves every one. Animated coordinates remain diagnostic
 until skeleton bind transforms are applied.
 
 `level-moby-scene` runs the same production loader and static-placement builder
-used by the native viewer without opening D3D. It reports the rendered,
+used by native-package compilation without opening D3D. It reports the rendered,
 animated, missing, and empty Moby placement counts plus compacted geometry
 bounds, and separately reports decoded/instantiated TIE geometry and bounds.
 Across all 19 levels it builds 9,122 static placements into 3,214,949 vertices
@@ -563,6 +574,7 @@ Machine-specific data, cache, extracted files, and logs live below:
 - [ActorLibraryV1 resource](docs/ACTOR_LIBRARY_V1.md)
 - [EntitySceneV1 resource](docs/ENTITY_SCENE_V1.md)
 - [GameplaySceneV1 resource](docs/GAMEPLAY_SCENE_V1.md)
+- [DestructibleSceneV1 resource](docs/DESTRUCTIBLE_SCENE_V1.md)
 - [PreparedGameV2 and LevelPackageV1](docs/PREPARED_GAME_V2.md)
 - [Reference build](docs/REFERENCE_BUILD.md)
 - [Legal and project boundaries](docs/LEGAL.md)

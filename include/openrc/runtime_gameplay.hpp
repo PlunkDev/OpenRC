@@ -2,6 +2,7 @@
 
 #include "openrc/fixed_step.hpp"
 #include "openrc/game_world.hpp"
+#include "openrc/player_combat.hpp"
 #include "openrc/runtime_gameplay_scene.hpp"
 #include "openrc/runtime_level_foundation.hpp"
 
@@ -22,6 +23,7 @@ inline constexpr std::uint32_t kRuntimeGameplayMaximumStepsPerAdvanceV1 = 256U;
 struct RuntimeGameplayProfileV1 {
   FixedStepConfigV1 fixed_step;
   CharacterControllerProfileV1 character;
+  PlayerCombatProfileV1 combat;
 
   [[nodiscard]] bool
   operator==(const RuntimeGameplayProfileV1 &) const = default;
@@ -52,11 +54,23 @@ make_runtime_entity_gameplay_limits_v1() {
           256U,
           UINT64_C(128) * 1024U * 1024U,
       },
+      DestructibleSceneLimitsV1{
+          1'000'000U,
+          1'000'000U,
+          4096U,
+          256U,
+          UINT64_C(128) * 1024U * 1024U,
+          UINT32_MAX,
+          UINT32_MAX,
+          1'000'000.0F,
+          1'000'000.0F,
+      },
       EntityGameplayInventoryLimitsV1{
           1'000'000U,
           256U,
           UINT64_C(128) * 1024U * 1024U,
       },
+      4096U,
   };
 }
 
@@ -68,6 +82,8 @@ struct RuntimeGameplayEntityContentV1 {
   GameplaySceneV1 gameplay_scene;
   EntityGameplayRuntimeLimitsV1 limits =
       make_runtime_entity_gameplay_limits_v1();
+  // Older prepared packages legitimately omit this optional resource.
+  std::optional<DestructibleSceneV1> destructible_scene;
 
   [[nodiscard]] bool
   operator==(const RuntimeGameplayEntityContentV1 &) const = default;
@@ -100,6 +116,7 @@ using RuntimeMovementMapperV1 = std::function<RuntimeMovementAxesV1(
 struct RuntimeGameplayTickV1 {
   GameInputCommandV1 input;
   PlayerSimulationStepV1 player;
+  PlayerCombatStepV1 combat;
   // Canonical authored-ID order, produced after this tick's player movement.
   std::vector<EntityGameplayEventV1> gameplay_events;
 
@@ -118,6 +135,10 @@ struct RuntimeGameplaySnapshotV1 {
   std::uint64_t interpolation_numerator = 0U;
   std::uint64_t total_dropped_step_count = 0U;
   std::uint64_t total_discarded_elapsed_nanoseconds = 0U;
+  PlayerCombatSnapshotV1 combat;
+  // Session-owned canonical inventory survives levels which intentionally
+  // omit optional entity-gameplay content.
+  std::vector<EntityGameplayItemTotalV1> item_totals;
   std::optional<EntityGameplaySnapshotV1> entity_gameplay;
 
   [[nodiscard]] bool
@@ -194,6 +215,7 @@ public:
   [[nodiscard]] const GameSessionV1 &session() const noexcept;
   [[nodiscard]] const WorldV1 &world() const noexcept;
   [[nodiscard]] const PlayerSimulationV1 &player() const noexcept;
+  [[nodiscard]] const PlayerCombatV1 &combat() const noexcept;
 
 private:
   [[nodiscard]] RuntimeGameplayFrameAdvanceV1
@@ -214,6 +236,8 @@ private:
   PlayerSimulationV1 player_;
   GameInputStateV1 input_;
   FixedStepAccumulatorV1 fixed_step_;
+  PlayerCombatV1 combat_;
+  std::vector<EntityGameplayItemTotalV1> item_totals_;
   std::optional<EntityGameplayRuntimeV1> entity_gameplay_;
 };
 

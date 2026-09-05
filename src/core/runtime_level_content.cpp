@@ -277,6 +277,44 @@ void validate_gameplay_entity_contract(const GameplaySceneV1 &gameplay_scene,
   }
 }
 
+void validate_destructible_entity_contract(
+    const DestructibleSceneV1 &destructible_scene,
+    const EntitySceneV1 &entity_scene,
+    const GameplaySceneV1 *const gameplay_scene,
+    const std::uint32_t package_level_id) {
+  if (destructible_scene.level_id != package_level_id ||
+      entity_scene.level_id != package_level_id ||
+      (gameplay_scene != nullptr &&
+       gameplay_scene->level_id != package_level_id)) {
+    fail("Mounted destructible/entity/gameplay scenes have inconsistent level "
+         "identity");
+  }
+
+  for (const auto &destructible : destructible_scene.destructibles) {
+    if (find_definition(entity_scene, destructible.authored_id) == nullptr) {
+      fail("Destructible scene references a missing entity definition");
+    }
+    if (find_entity_transform(entity_scene, destructible.authored_id) ==
+        nullptr) {
+      fail("Destructible scene references an entity without a transform");
+    }
+    if (gameplay_scene == nullptr) {
+      continue;
+    }
+    const auto collectible = std::lower_bound(
+        gameplay_scene->collectibles.begin(),
+        gameplay_scene->collectibles.end(), destructible.authored_id,
+        [](const GameplayCollectibleV1 &candidate, const std::uint32_t id) {
+          return candidate.authored_id < id;
+        });
+    if (collectible != gameplay_scene->collectibles.end() &&
+        collectible->authored_id == destructible.authored_id) {
+      fail("One entity cannot be both a gameplay collectible and a "
+           "destructible");
+    }
+  }
+}
+
 } // namespace
 
 RuntimeLevelContentV1
@@ -330,6 +368,16 @@ load_runtime_level_content_v1(const ResolvedLevelPackageV1 &package,
          std::string(error.what()));
   }
 
+  try {
+    result.destructible_scene =
+        load_optional_runtime_destructible_scene_resource_v1(
+            package, limits.foundation.required_content_api_version,
+            limits.destructible_scene);
+  } catch (const RuntimeDestructibleSceneResourceError &error) {
+    fail("Cannot mount the runtime destructible scene: " +
+         std::string(error.what()));
+  }
+
   if (result.foundation.level_id != package.level_id ||
       result.foundation.content_api_version != package.content_api_version) {
     fail("Mounted runtime level content has inconsistent package identity");
@@ -348,6 +396,15 @@ load_runtime_level_content_v1(const ResolvedLevelPackageV1 &package,
     validate_gameplay_entity_contract(*result.gameplay_scene,
                                       *result.entity_scene,
                                       package.level_id);
+  }
+  if (result.destructible_scene && !result.entity_scene) {
+    fail("Runtime destructible scene is present without its entity scene");
+  }
+  if (result.destructible_scene) {
+    validate_destructible_entity_contract(
+        *result.destructible_scene, *result.entity_scene,
+        result.gameplay_scene ? &*result.gameplay_scene : nullptr,
+        package.level_id);
   }
   return result;
 }

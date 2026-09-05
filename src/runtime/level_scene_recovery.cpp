@@ -384,14 +384,17 @@ void attach_static_environment_geometry(
         LevelSceneRecordSelectionV1::all_records) {
         return;
     }
-    auto moby = build_moby_scene_geometry_v1(
+    auto moby = build_filtered_moby_scene_geometry_v1(
         assets.models,
         assets.gameplay.static_mobies,
+        profile.excluded_moby_class_ids,
         profile.moby_coordinate_domain,
         limits.moby_geometry);
     geometry.moby_model_count = moby.stats.model_count;
     geometry.moby_rendered_model_count = moby.stats.rendered_model_count;
     geometry.moby_placement_count = moby.stats.placement_count;
+    geometry.moby_excluded_placement_count =
+        moby.stats.excluded_placement_count;
     geometry.moby_rendered_placement_count =
         moby.stats.rendered_placement_count;
     geometry.moby_animated_placement_count =
@@ -646,6 +649,20 @@ void validate_level_scene_recovery_request_v1(
         !is_known_coordinate_domain(profile.tie_coordinate_domain)) {
         throw std::runtime_error(
             "The level-scene coordinate-domain profile is invalid");
+    }
+    if (profile.excluded_moby_class_ids.size() >
+        limits.level_assets.level_core.max_moby_classes) {
+        throw std::runtime_error(
+            "The level-scene Moby exclusion profile exceeds its class limit");
+    }
+    for (std::size_t index = 1U;
+         index < profile.excluded_moby_class_ids.size(); ++index) {
+        if (profile.excluded_moby_class_ids[index - 1U] >=
+            profile.excluded_moby_class_ids[index]) {
+            throw std::runtime_error(
+                "The level-scene Moby exclusion profile is duplicate or out "
+                "of order");
+        }
     }
 }
 

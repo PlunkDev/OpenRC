@@ -7,11 +7,13 @@
 #include "openrc/disc.hpp"
 #include "openrc/hash.hpp"
 #include "openrc/level_actor_library_compile.hpp"
+#include "openrc/level_destructible_scene_compile.hpp"
 #include "openrc/level_entity_scene_compile.hpp"
 #include "openrc/level_gameplay_scene_compile.hpp"
 #include "openrc/level_render_scene_compile.hpp"
 #include "openrc/rac_actor_library_compile.hpp"
 #include "openrc/rac_collectible_scene_compile.hpp"
+#include "openrc/rac_destructible_scene_compile.hpp"
 #include "openrc/rac_level_foundation_compile.hpp"
 #include "openrc/rac_level_moby_assets.hpp"
 #include "openrc/runtime_level_content.hpp"
@@ -20,6 +22,7 @@
 #include <algorithm>
 #include <array>
 #include <climits>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -61,6 +64,8 @@ constexpr std::uint64_t kMaximumPlayerActorPayloadBytes =
 constexpr std::uint64_t kMaximumEntityScenePayloadBytes = 64U * 1024U * 1024U;
 constexpr std::uint64_t kMaximumGameplayScenePayloadBytes =
     64U * 1024U * 1024U;
+constexpr std::uint64_t kMaximumDestructibleScenePayloadBytes =
+    64U * 1024U * 1024U;
 constexpr std::uint64_t kMaximumTwoFipPixels = 16U * 1024U * 1024U;
 constexpr std::string_view kPlayerRigKey = "actors/ratchet/rig";
 constexpr std::string_view kPlayerHighModelKey = "actors/ratchet/high";
@@ -70,6 +75,9 @@ constexpr std::string_view kBoltRigKey = "actors/collectibles/bolt/rig";
 constexpr std::string_view kBoltHighModelKey = "actors/collectibles/bolt/high";
 constexpr std::string_view kBoltArchetypeKey = "openrc.collectible/bolt";
 constexpr std::string_view kBoltItemKey = "openrc.currency/bolts";
+constexpr std::uint32_t kBoltCrateSourceClassId = 500U;
+constexpr std::string_view kBoltCrateArchetypeKey =
+    "openrc.breakable/bolt-crate";
 
 constexpr RacMobyModelGeometryLimitsV1 kMobyModelGeometryLimits{
     {kMaximumDecodedWadBytes, 4096U, 4096U, 4096U, 1'000'000U, 4096U,
@@ -545,6 +553,23 @@ make_bolt_collectible_profile(const RacLevelMobyAssetsV1 &assets) {
   };
 }
 
+[[nodiscard]] constexpr DestructibleSceneIoLimitsV1
+make_native_destructible_scene_io_limits() {
+  return DestructibleSceneIoLimitsV1{
+      kMaximumDestructibleScenePayloadBytes,
+      DestructibleSceneLimitsV1{
+          65'536U,
+          65'536U,
+          16U,
+          256U,
+          UINT64_C(16) * 1024U * 1024U,
+          UINT32_MAX,
+          UINT32_MAX,
+          1'000'000.0F,
+          1'000'000.0F,
+      }};
+}
+
 [[nodiscard]] RacCollectibleSceneCompileLimitsV1
 make_collectible_scene_compile_limits(
     const RenderSceneLimitsV1 render_scene_limits) {
@@ -555,6 +580,57 @@ make_collectible_scene_compile_limits(
       render_scene_limits,
       make_native_entity_scene_io_limits().scene,
       make_native_gameplay_scene_io_limits().scene,
+  };
+}
+
+[[nodiscard]] const RacLevelMobyModelV1 &
+require_unique_static_moby_model(const RacLevelMobyAssetsV1 &assets,
+                                 const std::uint32_t class_id,
+                                 const std::string_view description) {
+  const RacLevelMobyModelV1 *result = nullptr;
+  for (const auto &model : assets.models) {
+    if (model.class_id != class_id) {
+      continue;
+    }
+    if (result != nullptr) {
+      fail("The RAC1 level contains more than one retained " +
+           std::string(description) + " model source");
+    }
+    result = &model;
+  }
+  if (result == nullptr || result->source_bytes.empty() ||
+      result->source_class.input_bytes != result->source_bytes.size() ||
+      result->joint_count != 0U || result->source_class.joint_count != 0U ||
+      result->high_lod.vertices.empty() ||
+      result->high_lod.triangles.empty()) {
+    fail("The RAC1 level has no complete retained static " +
+         std::string(description) + " model source");
+  }
+  return *result;
+}
+
+[[nodiscard]] RacDestructibleCompileProfileV1
+make_bolt_crate_destructible_profile() {
+  return RacDestructibleCompileProfileV1{
+      kBoltCrateSourceClassId,
+      std::string(kBoltCrateArchetypeKey),
+      1U,
+      game::kDamageChannelMeleeV1 | game::kDamageChannelProjectileV1 |
+          game::kDamageChannelExplosiveV1,
+      {DestructibleDropV1{std::string(kBoltItemKey), 1U, 0U}},
+  };
+}
+
+[[nodiscard]] RacDestructibleSceneCompileLimitsV1
+make_destructible_scene_compile_limits(
+    const RenderSceneLimitsV1 render_scene_limits) {
+  return RacDestructibleSceneCompileLimitsV1{
+      65'536U,
+      1'000'000U,
+      1'000'000U,
+      render_scene_limits,
+      make_native_entity_scene_io_limits().scene,
+      make_native_destructible_scene_io_limits().scene,
   };
 }
 
@@ -598,6 +674,96 @@ find_unique_resource(const LevelPackageV1 &package,
     result = &resource;
   }
   return result;
+}
+
+template <typename Item>
+[[nodiscard]] const Item *
+find_authored_record(const std::vector<Item> &items,
+                     const std::uint32_t authored_id) {
+  const auto found = std::lower_bound(
+      items.begin(), items.end(), authored_id,
+      [](const Item &candidate, const std::uint32_t id) {
+        return candidate.authored_id < id;
+      });
+  return found != items.end() && found->authored_id == authored_id
+             ? &*found
+             : nullptr;
+}
+
+[[nodiscard]] bool approximately_equal_native_transform(
+    const float actual, const double expected) noexcept {
+  constexpr double kToleranceFactor =
+      64.0 * static_cast<double>(std::numeric_limits<float>::epsilon());
+  const auto scale = std::max(
+      {1.0, std::abs(static_cast<double>(actual)), std::abs(expected)});
+  return std::abs(static_cast<double>(actual) - expected) <=
+         kToleranceFactor * scale;
+}
+
+[[nodiscard]] bool native_render_transform_matches_entity(
+    const RenderSceneAffine3x4V1 &render,
+    const game::WorldTransformV1 &entity) noexcept {
+  const auto x = static_cast<double>(entity.rotation[0U]);
+  const auto y = static_cast<double>(entity.rotation[1U]);
+  const auto z = static_cast<double>(entity.rotation[2U]);
+  const auto w = static_cast<double>(entity.rotation[3U]);
+  const auto sx = static_cast<double>(entity.scale[0U]);
+  const auto sy = static_cast<double>(entity.scale[1U]);
+  const auto sz = static_cast<double>(entity.scale[2U]);
+  const std::array<double, 12U> expected{
+      (1.0 - 2.0 * (y * y + z * z)) * sx,
+      2.0 * (x * y - z * w) * sy,
+      2.0 * (x * z + y * w) * sz,
+      static_cast<double>(entity.position[0U]),
+      2.0 * (x * y + z * w) * sx,
+      (1.0 - 2.0 * (x * x + z * z)) * sy,
+      2.0 * (y * z - x * w) * sz,
+      static_cast<double>(entity.position[1U]),
+      2.0 * (x * z - y * w) * sx,
+      2.0 * (y * z + x * w) * sy,
+      (1.0 - 2.0 * (x * x + y * y)) * sz,
+      static_cast<double>(entity.position[2U]),
+  };
+  for (std::size_t index = 0U; index < expected.size(); ++index) {
+    if (!approximately_equal_native_transform(render.values[index],
+                                              expected[index])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+[[nodiscard]] bool native_crate_mesh_fits_hit_sphere(
+    const RenderSceneMeshV1 &mesh,
+    const DestructibleDefinitionV1 &destructible) noexcept {
+  if (mesh.vertices.empty()) {
+    return false;
+  }
+  const auto center_x =
+      static_cast<double>(destructible.local_hit_center[0U]);
+  const auto center_y =
+      static_cast<double>(destructible.local_hit_center[1U]);
+  const auto center_z =
+      static_cast<double>(destructible.local_hit_center[2U]);
+  const auto radius = static_cast<double>(destructible.hit_radius);
+  constexpr double kToleranceFactor =
+      64.0 * static_cast<double>(std::numeric_limits<float>::epsilon());
+  for (const auto &vertex : mesh.vertices) {
+    const auto vertex_x = static_cast<double>(vertex.x);
+    const auto vertex_y = static_cast<double>(vertex.y);
+    const auto vertex_z = static_cast<double>(vertex.z);
+    const auto scale =
+        std::max({1.0, std::abs(center_x), std::abs(center_y),
+                  std::abs(center_z), std::abs(vertex_x), std::abs(vertex_y),
+                  std::abs(vertex_z), radius});
+    const auto slack = kToleranceFactor * scale;
+    if (std::hypot(vertex_x - center_x, vertex_y - center_y,
+                   vertex_z - center_z) >
+        radius + slack) {
+      return false;
+    }
+  }
+  return true;
 }
 
 [[nodiscard]] bool exact_upsert_resource_contract(
@@ -765,7 +931,8 @@ exact_player_actor_provenance(const LevelPackageV1 &package,
       const auto &transform = scene.transforms[index - 1U];
       const auto &render = scene.render_bindings[index - 1U];
       if (definition.authored_id == 0U ||
-          definition.archetype_key != kBoltArchetypeKey ||
+          (definition.archetype_key != kBoltArchetypeKey &&
+           definition.archetype_key != kBoltCrateArchetypeKey) ||
           definition.flags != kEntityDefinitionInitiallyEnabledV1 ||
           transform.authored_id != definition.authored_id ||
           render.authored_id != definition.authored_id) {
@@ -815,13 +982,28 @@ exact_player_actor_provenance(const LevelPackageV1 &package,
         gameplay_resource->payload, make_native_gameplay_scene_io_limits());
     const auto entities = decode_entity_scene_v1(
         entity_resource->payload, make_native_entity_scene_io_limits());
-    if (gameplay.level_id != level_id || entities.level_id != level_id ||
-        gameplay.collectibles.size() + 1U != entities.definitions.size()) {
+    if (gameplay.level_id != level_id || entities.level_id != level_id) {
       return false;
     }
-    for (std::size_t index = 0U; index < gameplay.collectibles.size(); ++index) {
-      const auto &collectible = gameplay.collectibles[index];
-      if (collectible.authored_id != entities.definitions[index + 1U].authored_id ||
+    std::size_t bolt_definition_count = 0U;
+    for (const auto &definition : entities.definitions) {
+      if (definition.archetype_key == kBoltArchetypeKey) {
+        ++bolt_definition_count;
+      }
+    }
+    if (bolt_definition_count != gameplay.collectibles.size()) {
+      return false;
+    }
+    for (const auto &collectible : gameplay.collectibles) {
+      const auto definition = std::lower_bound(
+          entities.definitions.begin(), entities.definitions.end(),
+          collectible.authored_id,
+          [](const EntityDefinitionV1 &candidate, const std::uint32_t id) {
+            return candidate.authored_id < id;
+          });
+      if (definition == entities.definitions.end() ||
+          definition->authored_id != collectible.authored_id ||
+          definition->archetype_key != kBoltArchetypeKey ||
           collectible.item_key != kBoltItemKey || collectible.amount != 1U ||
           collectible.flags != 0U) {
         return false;
@@ -835,6 +1017,146 @@ exact_player_actor_provenance(const LevelPackageV1 &package,
   } catch (const EntitySceneIoError &) {
     return false;
   } catch (const EntitySceneError &) {
+    return false;
+  }
+}
+
+[[nodiscard]] bool exact_destructible_provenance(
+    const LevelPackageV1 &package, const std::uint32_t level_id,
+    const std::uint64_t source_image_bytes,
+    const PreparedContentDigestV1 &source_image_sha256) {
+  const auto *const entity_resource =
+      find_unique_resource(package, kEntitySceneResourceIdV1);
+  const auto *const render_resource =
+      find_unique_resource(package, kRenderSceneResourceIdV1);
+  const auto *const destructible_resource =
+      find_unique_resource(package, kDestructibleSceneResourceIdV1);
+  if (entity_resource == nullptr || render_resource == nullptr ||
+      !exact_upsert_resource_contract(
+          destructible_resource, kDestructibleSceneResourceTypeIdV1,
+          kDestructibleSceneResourceSchemaVersionV1) ||
+      destructible_resource->provenance.size() != 3U) {
+    return false;
+  }
+
+  bool found_entity = false;
+  bool found_image = false;
+  bool found_compiler = false;
+  for (const auto &provenance : destructible_resource->provenance) {
+    found_entity |= exact_provenance(
+        provenance, LevelPackageProvenanceKindV1::prepared_resource,
+        kEntitySceneResourceIdV1,
+        static_cast<std::uint64_t>(entity_resource->payload.size()),
+        entity_resource->payload_sha256);
+    found_image |= exact_provenance(
+        provenance, LevelPackageProvenanceKindV1::iso_range,
+        "rac1/disc-image", source_image_bytes, source_image_sha256);
+    found_compiler |= exact_provenance(
+        provenance, LevelPackageProvenanceKindV1::generated,
+        kLevelDestructibleSceneCompilePassV1, 0U,
+        PreparedContentDigestV1{});
+  }
+  if (!found_entity || !found_image || !found_compiler) {
+    return false;
+  }
+
+  try {
+    const auto destructibles = decode_destructible_scene_v1(
+        destructible_resource->payload,
+        make_native_destructible_scene_io_limits());
+    const auto entities = decode_entity_scene_v1(
+        entity_resource->payload, make_native_entity_scene_io_limits());
+    const auto render = decode_render_scene_v1(
+        render_resource->payload, make_render_scene_io_limits());
+    if (destructibles.level_id != level_id || entities.level_id != level_id) {
+      return false;
+    }
+    std::size_t crate_definition_count = 0U;
+    for (const auto &definition : entities.definitions) {
+      if (definition.archetype_key == kBoltCrateArchetypeKey) {
+        ++crate_definition_count;
+      }
+    }
+    if (destructibles.destructibles.empty() ||
+        crate_definition_count != destructibles.destructibles.size()) {
+      return false;
+    }
+    const auto accepted_channels =
+        game::kDamageChannelMeleeV1 | game::kDamageChannelProjectileV1 |
+        game::kDamageChannelExplosiveV1;
+    const DestructibleDefinitionV1 *shared_hit_sphere = nullptr;
+    std::optional<std::uint32_t> shared_mesh_id;
+    std::vector<bool> claimed_render_instances(render.instances.size(), false);
+    for (const auto &destructible : destructibles.destructibles) {
+      const auto *const definition = find_authored_record(
+          entities.definitions, destructible.authored_id);
+      const auto *const transform =
+          find_authored_record(entities.transforms, destructible.authored_id);
+      const auto *const binding = find_authored_record(
+          entities.render_bindings, destructible.authored_id);
+      if (definition == nullptr || transform == nullptr || binding == nullptr ||
+          definition->archetype_key != kBoltCrateArchetypeKey ||
+          destructible.max_health != 1U ||
+          destructible.accepted_damage_channels != accepted_channels ||
+          destructible.flags != 0U || destructible.drops.size() != 1U ||
+          destructible.drops.front() !=
+              DestructibleDropV1{std::string(kBoltItemKey), 1U, 0U}) {
+        return false;
+      }
+      if (binding->render_instance_id >= render.instances.size() ||
+          claimed_render_instances[binding->render_instance_id]) {
+        return false;
+      }
+      claimed_render_instances[binding->render_instance_id] = true;
+      const auto &instance = render.instances[binding->render_instance_id];
+      if (instance.id != binding->render_instance_id ||
+          instance.mesh_id >= render.meshes.size() ||
+          !native_render_transform_matches_entity(instance.local_to_world,
+                                                  transform->transform) ||
+          !(transform->transform.scale[0U] > 0.0F) ||
+          transform->transform.scale[0U] != transform->transform.scale[1U] ||
+          transform->transform.scale[0U] != transform->transform.scale[2U]) {
+        return false;
+      }
+      if (!shared_mesh_id) {
+        shared_mesh_id = instance.mesh_id;
+      } else if (*shared_mesh_id != instance.mesh_id) {
+        return false;
+      }
+      if (shared_hit_sphere == nullptr) {
+        shared_hit_sphere = &destructible;
+      } else if (shared_hit_sphere->local_hit_center !=
+                     destructible.local_hit_center ||
+                 shared_hit_sphere->hit_radius != destructible.hit_radius) {
+        return false;
+      }
+    }
+    if (!shared_mesh_id || shared_hit_sphere == nullptr ||
+        !native_crate_mesh_fits_hit_sphere(render.meshes[*shared_mesh_id],
+                                           *shared_hit_sphere)) {
+      return false;
+    }
+    std::size_t shared_mesh_instance_count = 0U;
+    for (const auto &instance : render.instances) {
+      if (instance.mesh_id == *shared_mesh_id) {
+        ++shared_mesh_instance_count;
+      }
+    }
+    if (shared_mesh_instance_count != destructibles.destructibles.size()) {
+      return false;
+    }
+    return true;
+  } catch (const DestructibleSceneIoError &) {
+    return false;
+  } catch (const DestructibleSceneError &) {
+    return false;
+  } catch (const EntitySceneIoError &) {
+    return false;
+  } catch (const EntitySceneError &) {
+    return false;
+  } catch (const RenderSceneIoError &) {
+    return false;
+  } catch (const RenderSceneError &) {
     return false;
   }
 }
@@ -888,7 +1210,7 @@ exact_render_provenance(const LevelPackageV1 &package,
     const PreparedContentDigestV1 &source_image_sha256,
     const std::uint64_t boot_executable_bytes,
     const PreparedContentDigestV1 &boot_executable_sha256) {
-  return package.resources.size() == 6U &&
+  return package.resources.size() == 7U &&
          exact_foundation_provenance(package, level_id) &&
          exact_render_provenance(
              package, source_image_bytes, source_image_sha256,
@@ -896,7 +1218,69 @@ exact_render_provenance(const LevelPackageV1 &package,
          exact_player_actor_provenance(package, source_image_bytes,
                                        source_image_sha256) &&
          exact_entity_provenance(package, level_id) &&
-         exact_gameplay_provenance(package, level_id);
+         exact_gameplay_provenance(package, level_id) &&
+         exact_destructible_provenance(
+             package, level_id, source_image_bytes, source_image_sha256);
+}
+
+[[nodiscard]] bool exact_mountable_native_level_profile(
+    const LevelPackageV1 &package, const std::uint32_t level_id,
+    const std::uint64_t source_image_bytes,
+    const PreparedContentDigestV1 &source_image_sha256,
+    const std::uint64_t boot_executable_bytes,
+    const PreparedContentDigestV1 &boot_executable_sha256,
+    const PreparedGameV2FilesystemLimitsV1 limits) {
+  if (!exact_native_level_resource_profile(
+          package, level_id, source_image_bytes, source_image_sha256,
+          boot_executable_bytes, boot_executable_sha256)) {
+    return false;
+  }
+  try {
+    const auto resolved = resolve_level_package_v1(
+        package, std::span<const LevelPackageV1>{}, limits.level_package);
+    static_cast<void>(game::load_runtime_level_content_v1(
+        resolved, game::make_runtime_level_content_limits_v1()));
+    return true;
+  } catch (const LevelPackageV1Error &) {
+    return false;
+  } catch (const game::RuntimeLevelContentError &) {
+    return false;
+  }
+}
+
+struct NativeBootArtifactIdentityV1 {
+  std::uint64_t bytes = 0U;
+  PreparedContentDigestV1 sha256{};
+};
+
+[[nodiscard]] NativeBootArtifactIdentityV1
+native_boot_artifact_identity(const LevelPackageV1 &package) {
+  const auto *const render =
+      find_unique_resource(package, kRenderSceneResourceIdV1);
+  if (render == nullptr) {
+    fail("The current native publication has no render-scene resource");
+  }
+
+  const LevelPackageProvenanceV1 *identity = nullptr;
+  for (const auto &provenance : render->provenance) {
+    if (provenance.kind !=
+            LevelPackageProvenanceKindV1::prepared_resource ||
+        provenance.source_locator != "rac1/boot-executable") {
+      continue;
+    }
+    if (identity != nullptr || provenance.source_offset != 0U ||
+        provenance.source_bytes == 0U ||
+        is_zero_prepared_digest_v1(provenance.source_sha256)) {
+      fail("The current native publication has an ambiguous boot-executable "
+           "identity");
+    }
+    identity = &provenance;
+  }
+  if (identity == nullptr) {
+    fail("The current native publication has no boot-executable identity");
+  }
+  return NativeBootArtifactIdentityV1{identity->source_bytes,
+                                      identity->source_sha256};
 }
 
 [[nodiscard]] LevelPackageProvenanceV1 prepared_resource_provenance(
@@ -989,24 +1373,11 @@ load_matching_publication(const NativeGamePreparationRequestV1 &request,
           index < kDiscTocLevelCount &&
           reference.level_id == expected_level_id &&
           reference.package_path == level_package_path(expected_level_id) &&
-          exact_native_level_resource_profile(
+          exact_mountable_native_level_profile(
               package, expected_level_id, source_image_bytes,
               source_image_sha256, boot_executable_bytes,
-              boot_executable_sha256);
+              boot_executable_sha256, limits);
       matches = matches && package_matches;
-      if (!package_matches) {
-        continue;
-      }
-      try {
-        const auto resolved = resolve_level_package_v1(
-            package, std::span<const LevelPackageV1>{}, limits.level_package);
-        static_cast<void>(game::load_runtime_level_content_v1(
-            resolved, game::make_runtime_level_content_limits_v1()));
-      } catch (const LevelPackageV1Error &) {
-        matches = false;
-      } catch (const game::RuntimeLevelContentError &) {
-        matches = false;
-      }
     }
   } catch (const NativeGamePreparationCancelledV1 &) {
     throw;
@@ -1079,6 +1450,66 @@ struct PublishProgressContextV1 {
 }
 
 } // namespace
+
+void validate_current_native_game_publication_v1(
+    const PreparedGameV2RootV1 &prepared) {
+  const auto limits = make_native_game_prepared_game_limits_v1();
+  const auto &manifest = prepared.manifest;
+  if (manifest.content_api_version != kOpenRcContentApiVersionV1 ||
+      manifest.provenance.game_id != kNativeGameIdV1 ||
+      manifest.provenance.build_id != kNativeGameBuildIdV1 ||
+      manifest.provenance.compiler_id != kNativeGameCompilerIdV1 ||
+      manifest.provenance.compiler_version != kNativeGameCompilerVersionV1 ||
+      manifest.provenance.source_image_bytes == 0U ||
+      is_zero_prepared_digest_v1(
+          manifest.provenance.source_image_sha256) ||
+      manifest.provenance.prepared_game_v1_manifest_sha256.has_value() ||
+      !manifest.overlays.empty() ||
+      manifest.levels.size() != kDiscTocLevelCount) {
+    fail("The prepared game does not match the current native OpenRC profile");
+  }
+
+  std::uint64_t total_package_bytes = 0U;
+  for (std::size_t index = 0U; index < manifest.levels.size(); ++index) {
+    const auto &reference = manifest.levels[index];
+    const auto level_id = static_cast<std::uint32_t>(index);
+    if (reference.level_id != level_id ||
+        reference.package_path != level_package_path(level_id) ||
+        reference.package_bytes >
+            kNativeGamePreparedPackageMaxBytesV1 - total_package_bytes) {
+      fail("The prepared game does not contain the canonical bounded 19-level "
+           "set");
+    }
+    total_package_bytes += reference.package_bytes;
+  }
+
+  try {
+    auto package = load_prepared_game_level_package_v1(prepared, 0U, limits);
+    const auto boot = native_boot_artifact_identity(package);
+    for (std::uint32_t level_id = 0U; level_id < kDiscTocLevelCount;
+         ++level_id) {
+      if (level_id != 0U) {
+        package =
+            load_prepared_game_level_package_v1(prepared, level_id, limits);
+      }
+      if (!exact_mountable_native_level_profile(
+              package, level_id, manifest.provenance.source_image_bytes,
+              manifest.provenance.source_image_sha256, boot.bytes, boot.sha256,
+              limits)) {
+        fail("Prepared native level " + std::to_string(level_id) +
+             " does not match the current seven-resource runtime profile");
+      }
+    }
+  } catch (const NativeGamePreparationErrorV1 &) {
+    throw;
+  } catch (const PreparedGameV2FilesystemError &error) {
+    fail("Cannot verify the current native publication: " +
+         std::string(error.what()));
+  } catch (const LevelPackageV1Error &error) {
+    fail("Cannot verify the current native publication: " +
+         std::string(error.what()));
+  }
+}
 
 NativeGamePreparationResultV1
 prepare_native_game_v1(const NativeGamePreparationRequestV1 &request,
@@ -1154,8 +1585,12 @@ prepare_native_game_v1(const NativeGamePreparationRequestV1 &request,
   const auto player_actor_io_limits = make_player_actor_io_limits();
   const auto entity_scene_io_limits = make_native_entity_scene_io_limits();
   const auto gameplay_scene_io_limits = make_native_gameplay_scene_io_limits();
+  const auto destructible_scene_io_limits =
+      make_native_destructible_scene_io_limits();
   const auto collectible_scene_limits =
       make_collectible_scene_compile_limits(render_io_limits.scene);
+  const auto destructible_scene_limits =
+      make_destructible_scene_compile_limits(render_io_limits.scene);
 
   report_progress(control,
                   NativeGamePreparationPhaseV1::checking_existing_publication,
@@ -1218,18 +1653,12 @@ prepare_native_game_v1(const NativeGamePreparationRequestV1 &request,
                       level_id, level_id);
       auto package = compile_level_foundation(assets, package_limits);
 
-      stage = "compiling and attaching the neutral player actor";
-      report_progress(control,
-                      NativeGamePreparationPhaseV1::compiling_player_actor,
-                      level_id, level_id);
       std::optional<ActorLibraryV1> bolt_actor;
       if (has_static_moby_class(assets, kBoltSourceClassId)) {
         bolt_actor = compile_bolt_actor_library(assets);
       }
-      const auto player_actor = compile_player_actor_library(assets);
-      package = attach_actor_library_to_level_package_v1(
-          std::move(package), player_actor, actor_sources,
-          player_actor_io_limits, package_limits);
+      const auto has_bolt_crates =
+          has_static_moby_class(assets, kBoltCrateSourceClassId);
 
       stage = "recovering the complete level scene";
       report_progress(control,
@@ -1242,8 +1671,13 @@ prepare_native_game_v1(const NativeGamePreparationRequestV1 &request,
           runtime::LevelSceneRecordSelectionV1::all_records,
           0U,
           kSceneBlockSourceGeometryEntrypointV1};
+      auto level_recovery_profile = recovery_profile;
+      if (has_bolt_crates) {
+        level_recovery_profile.excluded_moby_class_ids.push_back(
+            kBoltCrateSourceClassId);
+      }
       const auto recovered = runtime::recover_level_scene_v1(
-          recovery_request, recovery_limits, recovery_profile);
+          recovery_request, recovery_limits, level_recovery_profile);
 
       stage = "compiling the neutral render scene";
       report_progress(control,
@@ -1252,13 +1686,15 @@ prepare_native_game_v1(const NativeGamePreparationRequestV1 &request,
       auto render_scene =
           runtime::compile_level_scene_render_v1(recovered, render_profile);
 
-      stage = "compiling neutral entities and collectible gameplay";
+      stage = "compiling neutral entities and gameplay";
       report_progress(control,
                       NativeGamePreparationPhaseV1::compiling_entity_scene,
                       level_id, level_id);
       auto entity_scene = make_player_entity_scene(level_id);
       GameplaySceneV1 gameplay_scene;
       gameplay_scene.level_id = level_id;
+      DestructibleSceneV1 destructible_scene;
+      destructible_scene.level_id = level_id;
       if (bolt_actor) {
         auto compiled = compile_rac_collectible_scene_v1(
             render_scene, entity_scene, gameplay_scene, *bolt_actor,
@@ -1271,6 +1707,31 @@ prepare_native_game_v1(const NativeGamePreparationRequestV1 &request,
         gameplay_scene = canonicalize_gameplay_scene_v1(
             std::move(gameplay_scene), gameplay_scene_io_limits.scene);
       }
+      if (has_bolt_crates) {
+        auto compiled = compile_rac_destructible_scene_v1(
+            render_scene, entity_scene, destructible_scene,
+            require_unique_static_moby_model(
+                assets, kBoltCrateSourceClassId, "Bolt Crate"),
+            assets.textures, assets.gameplay.static_mobies,
+            make_bolt_crate_destructible_profile(),
+            destructible_scene_limits);
+        render_scene = std::move(compiled.render_scene);
+        entity_scene = std::move(compiled.entity_scene);
+        destructible_scene = std::move(compiled.destructible_scene);
+      } else {
+        destructible_scene = canonicalize_destructible_scene_v1(
+            std::move(destructible_scene),
+            destructible_scene_io_limits.scene);
+      }
+
+      stage = "compiling and attaching the neutral player actor";
+      report_progress(control,
+                      NativeGamePreparationPhaseV1::compiling_player_actor,
+                      level_id, level_id);
+      const auto player_actor = compile_player_actor_library(assets);
+      package = attach_actor_library_to_level_package_v1(
+          std::move(package), player_actor, actor_sources,
+          player_actor_io_limits, package_limits);
 
       stage = "attaching and encoding the render scene";
       report_progress(control,
@@ -1300,6 +1761,23 @@ prepare_native_game_v1(const NativeGamePreparationRequestV1 &request,
       package = attach_gameplay_scene_to_level_package_v1(
           std::move(package), gameplay_scene, gameplay_sources,
           gameplay_scene_io_limits, package_limits);
+
+      const std::array<LevelPackageProvenanceV1, 2U> destructible_sources{
+          prepared_resource_provenance(
+              package, kEntitySceneResourceIdV1,
+              kEntitySceneResourceTypeIdV1,
+              kEntitySceneResourceSchemaVersionV1, "destructible-scene"),
+          actor_sources.front()};
+      package = attach_destructible_scene_to_level_package_v1(
+          std::move(package), destructible_scene, destructible_sources,
+          destructible_scene_io_limits, package_limits);
+      if (!exact_mountable_native_level_profile(
+              package, level_id, source_image_bytes, source_image_sha256,
+              boot_executable_bytes, boot_executable_sha256,
+              prepared_limits)) {
+        fail("The freshly compiled level does not satisfy the current exact "
+             "native runtime profile");
+      }
       auto package_bytes = encode_level_package_v1(package, package_limits);
       const auto package_byte_count =
           host_size_to_u64(package_bytes.size(), "A native level package");

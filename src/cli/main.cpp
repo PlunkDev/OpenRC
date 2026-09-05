@@ -512,8 +512,13 @@ struct CliEntityGameplaySmokeReportV1 {
     std::size_t entity_definition_count = 0U;
     std::size_t entity_render_binding_count = 0U;
     std::size_t collectible_count = 0U;
+    std::size_t destructible_count = 0U;
     std::optional<openrc::game::EntityGameplayEventV1> probe_event;
     std::uint64_t probe_item_total = 0U;
+    std::optional<openrc::game::EntityGameplayEventV1>
+        destructible_probe_event;
+    std::string destructible_drop_item_key;
+    std::uint64_t destructible_drop_item_total = 0U;
 };
 
 [[nodiscard]] CliPlayerSmokeReportV1 run_cli_player_smoke(
@@ -569,68 +574,143 @@ struct CliEntityGameplaySmokeReportV1 {
     result.entity_definition_count = content.entity_scene->definitions.size();
     result.entity_render_binding_count =
         content.entity_scene->render_bindings.size();
-    if (!content.gameplay_scene) {
-        return result;
+    openrc::GameplaySceneV1 gameplay_scene;
+    gameplay_scene.level_id = content.foundation.level_id;
+    if (content.gameplay_scene) {
+        gameplay_scene = *content.gameplay_scene;
+        result.collectible_count = gameplay_scene.collectibles.size();
     }
-    result.collectible_count = content.gameplay_scene->collectibles.size();
-    if (content.gameplay_scene->collectibles.empty()) {
-        return result;
-    }
-
-    const auto& collectible = content.gameplay_scene->collectibles.front();
-    const auto transform = std::lower_bound(
-        content.entity_scene->transforms.begin(),
-        content.entity_scene->transforms.end(),
-        collectible.authored_id,
-        [](const openrc::EntityTransformComponentV1& candidate,
-           const std::uint32_t authored_id) {
-            return candidate.authored_id < authored_id;
-        });
-    if (transform == content.entity_scene->transforms.end() ||
-        transform->authored_id != collectible.authored_id) {
-        throw std::runtime_error(
-            "The collectible smoke target has no authored transform");
+    if (content.destructible_scene) {
+        result.destructible_count =
+            content.destructible_scene->destructibles.size();
     }
 
     openrc::game::RuntimeGameplaySessionOptionsV1 options;
     options.entity_gameplay = openrc::game::RuntimeGameplayEntityContentV1{
         *content.entity_scene,
-        *content.gameplay_scene,
+        gameplay_scene,
         openrc::game::make_runtime_entity_gameplay_limits_v1(),
+        content.destructible_scene,
     };
     openrc::game::RuntimeGameplaySessionV1 session(content.foundation,
                                                    std::move(options));
-    auto checkpoint = session.player().snapshot().checkpoint;
-    checkpoint.checkpoint_id = collectible.authored_id;
-    checkpoint.feet_position = openrc::game::world_collectible_center_v1(
-        transform->transform, collectible);
-    checkpoint.facing_yaw_radians = 0.0;
-    session.set_checkpoint(checkpoint, true);
 
-    const auto frame = session.advance_frame(16'666'667U);
-    for (const auto& tick : frame.ticks) {
-        for (const auto& event : tick.gameplay_events) {
-            if (event.authored_id == collectible.authored_id) {
-                if (result.probe_event) {
-                    throw std::runtime_error(
-                        "The collectible smoke target emitted more than once");
+    if (!gameplay_scene.collectibles.empty()) {
+        const auto& collectible = gameplay_scene.collectibles.front();
+        const auto transform = std::lower_bound(
+            content.entity_scene->transforms.begin(),
+            content.entity_scene->transforms.end(), collectible.authored_id,
+            [](const openrc::EntityTransformComponentV1& candidate,
+               const std::uint32_t authored_id) {
+                return candidate.authored_id < authored_id;
+            });
+        if (transform == content.entity_scene->transforms.end() ||
+            transform->authored_id != collectible.authored_id) {
+            throw std::runtime_error(
+                "The collectible smoke target has no authored transform");
+        }
+        auto checkpoint = session.player().snapshot().checkpoint;
+        checkpoint.checkpoint_id = collectible.authored_id;
+        checkpoint.feet_position = openrc::game::world_collectible_center_v1(
+            transform->transform, collectible);
+        checkpoint.facing_yaw_radians = 0.0;
+        session.set_checkpoint(checkpoint, true);
+
+        const auto frame = session.advance_frame(16'666'667U);
+        for (const auto& tick : frame.ticks) {
+            for (const auto& event : tick.gameplay_events) {
+                if (event.authored_id == collectible.authored_id &&
+                    event.kind == openrc::game::EntityGameplayEventKindV1::
+                                      item_collected) {
+                    if (result.probe_event) {
+                        throw std::runtime_error(
+                            "The collectible smoke target emitted more than "
+                            "once");
+                    }
+                    result.probe_event = event;
                 }
-                result.probe_event = event;
             }
         }
+        if (!result.probe_event ||
+            result.probe_event->item_key != collectible.item_key ||
+            result.probe_event->amount != collectible.amount) {
+            throw std::runtime_error(
+                "The real mounted collectible did not emit its canonical "
+                "event");
+        }
+        result.probe_item_total = session.item_total(collectible.item_key);
+        if (result.probe_item_total < collectible.amount) {
+            throw std::runtime_error(
+                "The real mounted collectible did not update semantic "
+                "inventory");
+        }
     }
-    if (!result.probe_event ||
-        result.probe_event->kind !=
-            openrc::game::EntityGameplayEventKindV1::item_collected ||
-        result.probe_event->item_key != collectible.item_key ||
-        result.probe_event->amount != collectible.amount) {
-        throw std::runtime_error(
-            "The real mounted collectible did not emit its canonical event");
-    }
-    result.probe_item_total = session.item_total(collectible.item_key);
-    if (result.probe_item_total < collectible.amount) {
-        throw std::runtime_error(
-            "The real mounted collectible did not update semantic inventory");
+
+    if (content.destructible_scene &&
+        !content.destructible_scene->destructibles.empty()) {
+        const auto& destructible =
+            content.destructible_scene->destructibles.front();
+        const auto transform = std::lower_bound(
+            content.entity_scene->transforms.begin(),
+            content.entity_scene->transforms.end(), destructible.authored_id,
+            [](const openrc::EntityTransformComponentV1& candidate,
+               const std::uint32_t authored_id) {
+                return candidate.authored_id < authored_id;
+            });
+        if (transform == content.entity_scene->transforms.end() ||
+            transform->authored_id != destructible.authored_id ||
+            destructible.drops.empty()) {
+            throw std::runtime_error(
+                "The destructible smoke target is incomplete");
+        }
+        const auto center = openrc::game::world_destructible_center_v1(
+            transform->transform, destructible);
+        const auto& combat = session.profile().combat;
+        auto checkpoint = session.player().snapshot().checkpoint;
+        checkpoint.checkpoint_id = destructible.authored_id;
+        checkpoint.feet_position = {
+            center.x - (combat.forward_start + combat.forward_end) * 0.5,
+            center.y,
+            center.z - combat.vertical_offset,
+        };
+        checkpoint.facing_yaw_radians = 0.0;
+        session.set_checkpoint(checkpoint, true);
+
+        openrc::game::GameInputSampleV1 attack;
+        attack.held_buttons = openrc::game::game_button_mask_v1(
+            openrc::game::GameButtonV1::primary_action);
+        const auto frame = session.advance_frame(50'000'001U, attack);
+        for (const auto& tick : frame.ticks) {
+            for (const auto& event : tick.gameplay_events) {
+                if (event.authored_id == destructible.authored_id &&
+                    event.kind == openrc::game::EntityGameplayEventKindV1::
+                                      entity_destroyed) {
+                    if (result.destructible_probe_event) {
+                        throw std::runtime_error(
+                            "The destructible smoke target was destroyed more "
+                            "than once");
+                    }
+                    result.destructible_probe_event = event;
+                }
+            }
+        }
+        const auto* const runtime = session.entity_gameplay();
+        if (!result.destructible_probe_event || runtime == nullptr ||
+            !runtime->destroyed(destructible.authored_id) ||
+            runtime->enabled(destructible.authored_id) ||
+            runtime->health(destructible.authored_id) != 0U) {
+            throw std::runtime_error(
+                "The real mounted destructible did not reach canonical "
+                "destroyed state");
+        }
+        const auto& drop = destructible.drops.front();
+        result.destructible_drop_item_key = drop.item_key;
+        result.destructible_drop_item_total = session.item_total(drop.item_key);
+        if (result.destructible_drop_item_total < drop.amount) {
+            throw std::runtime_error(
+                "The destructible smoke target did not grant its semantic "
+                "drop");
+        }
     }
     return result;
 }
@@ -749,6 +829,9 @@ void print_usage() {
            "<absolute-root>\n"
         << "                                                    Compile and "
            "atomically publish all 19 renderable native levels\n"
+        << "  openrc-cli validate-native-game <absolute-root>\n"
+        << "                                                    Verify the exact "
+           "current 19-level native profile\n"
         << "  openrc-cli prepared-level-smoke <absolute-root> <level-id>\n"
         << "                                                    Run a "
            "published "
@@ -5127,6 +5210,40 @@ int run(const std::vector<std::filesystem::path>& arguments) {
             return kOperationError;
         }
     }
+    if (command == "validate-native-game") {
+        if (arguments.size() != 2U) {
+            std::cerr
+                << "error: validate-native-game expects an absolute prepared "
+                   "root\n";
+            return kUsageError;
+        }
+        try {
+            std::error_code error;
+            auto root = std::filesystem::absolute(arguments[1], error);
+            if (error) {
+                throw std::runtime_error(
+                    "Cannot resolve the native root: " + error.message());
+            }
+            root = root.lexically_normal();
+            const auto prepared = openrc::load_prepared_game_v2_root_v1(
+                root, openrc::make_native_game_prepared_game_limits_v1());
+            openrc::validate_current_native_game_publication_v1(prepared);
+            std::cout
+                << "OpenRC native game matches the current exact profile\n"
+                << "Root:                   " << openrc::path_to_utf8(root)
+                << '\n'
+                << "Levels:                 "
+                << prepared.manifest.levels.size() << '\n'
+                << "Compiler profile:       "
+                << prepared.manifest.provenance.compiler_version << '\n'
+                << "Manifest SHA-256:       "
+                << openrc::hex_digest(prepared.manifest_sha256) << '\n';
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << "error: " << error.what() << '\n';
+            return kOperationError;
+        }
+    }
     if (command == "prepared-level-smoke") {
         if (arguments.size() != 3U) {
             std::cerr
@@ -5271,6 +5388,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 << entity_gameplay_smoke.entity_render_binding_count << '\n'
                 << "Gameplay collectibles:  "
                 << entity_gameplay_smoke.collectible_count << '\n'
+                << "Gameplay destructibles: "
+                << entity_gameplay_smoke.destructible_count << '\n'
                 << "Spawn:                  " << smoke.spawn.feet_position.x
                 << ", " << smoke.spawn.feet_position.y << ", "
                 << smoke.spawn.feet_position.z << '\n'
@@ -5290,6 +5409,19 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                     << entity_gameplay_smoke.probe_item_total << '\n';
             } else {
                 std::cout << "Collectible probe:      none authored\n";
+            }
+            if (entity_gameplay_smoke.destructible_probe_event) {
+                std::cout
+                    << "Destructible probe:     ID "
+                    << entity_gameplay_smoke.destructible_probe_event
+                           ->authored_id
+                    << ", destroyed, "
+                    << entity_gameplay_smoke.destructible_drop_item_key
+                    << " total "
+                    << entity_gameplay_smoke.destructible_drop_item_total
+                    << '\n';
+            } else {
+                std::cout << "Destructible probe:     none authored\n";
             }
             return 0;
         } catch (const std::exception &error) {

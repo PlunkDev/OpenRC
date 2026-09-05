@@ -26,7 +26,10 @@ Allowed project material includes:
 
 OpenRC distributions will contain the launcher, tools, and runtime only. On first
 use, the user supplies a compatible disc image. Required data is extracted and
-converted locally under the OpenRC local-data directory.
+converted locally under the OpenRC local-data directory. That versioned prepared
+data is a cache owned by the same OpenRC installation, not a separately
+distributed client. Only compiler/tools code reads the disc or boot ELF; the
+runtime receives neutral prepared packages.
 
 ## Third-party code
 

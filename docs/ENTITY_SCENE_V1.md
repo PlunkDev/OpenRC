@@ -71,18 +71,22 @@ supported level. Authored ID 0 uses archetype `openrc.player/default`, player
 slot 0, and actor model `actors/ratchet/high`. The model-to-entity transform is
 identity; live placement comes from player simulation.
 
-The verified six-resource compiler path also adds one initially enabled
-definition, authored transform, and static render binding for each matching
-Bolt placement. Its stable authored ID is the zero-based ordinal in the complete
-source static-Moby table. Bolt behavior is not encoded here: the separate
+The earlier six-resource compiler path adds one initially enabled definition,
+authored transform, and static render binding for each matching Bolt placement.
+Its stable authored ID is the zero-based ordinal in the complete source
+static-Moby table. Bolt behavior is not encoded here: the separate
 [GameplaySceneV1](GAMEPLAY_SCENE_V1.md) resource references the same authored
 ID and assigns the overlap and semantic inventory grant. The Bolt model itself
 is baked in bind pose into `RenderSceneV1`, so these definitions do not require
 an actor binding or expose a RAC class ID to the runtime.
 
-Fresh preparation/reuse across all 19 levels and package-only graphical
-collection smokes on Veldin plus a second level verify that path for the
-supported PAL v2.00 profile. EntitySceneV1 still carries structural bindings
-only; crates, enemies, weapons, scripts, save persistence,
-menus, and reconstructed original camera behavior are not implemented merely
-because the first collectible entities are packaged.
+The current seven-resource compiler path also emits definitions, transforms,
+and render bindings for compiler-recognized Bolt Crates. The separate
+[DestructibleSceneV1](DESTRUCTIBLE_SCENE_V1.md) resource owns their health,
+damage channels, hit volumes, and drops; EntitySceneV1 remains only the shared
+identity and structural-binding layer. The seven-resource crate path now has
+fresh all-level preparation/reuse, package-only Veldin gameplay, and graphical
+visible-to-destroyed crate evidence. Enemies, weapons,
+scripts, save persistence, menus, and reconstructed original camera behavior
+are not implemented merely because these first interactive entities are
+packaged.
