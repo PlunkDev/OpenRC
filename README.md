@@ -97,6 +97,12 @@ both in progress. The repository currently provides:
 - a neutral `LevelBootstrapV1` carrying the authored player spawn and absolute
   death plane, plus a planet-agnostic foundation compiler that packages
   bootstrap and collision resources with complete source/generated provenance;
+- a versioned, planet-independent `RenderSceneV1` resource with canonical
+  textures, materials, meshes, instances, bounded binary I/O, and a native
+  D3D11 staging path;
+- deterministic native-game compilation for all 19 reference levels, packaging
+  collision, bootstrap, and recovered textured terrain/static scene data into
+  one transactional PreparedGameV2 installation;
 - a hardened PreparedGameV2 filesystem reader and transactional publisher for
   explicit caller-supplied level packages, with no implicit mod discovery;
 - a planet-agnostic game session/entity world, quantized replay-input boundary,
@@ -137,6 +143,9 @@ both in progress. The repository currently provides:
   texture banks and material UVs, uses a depth buffer plus an explicit
   wireframe fallback for unresolved gaps, retains the aggregate decoded GS
   projection for comparison, and falls back from hardware rendering to WARP;
+- a package-only graphical runtime path that mounts PreparedGameV2, verifies
+  the selected level and its neutral resources, and renders without reopening
+  the source ISO or boot ELF;
 - recognition of the PAL (`SCES-50916`) reference executable and detection of
   the NTSC-U/C (`SCUS-97199`) release;
 - a native Windows launcher with disc inspection, asynchronous Prepare,
@@ -172,12 +181,13 @@ to zoom, press `R` to reset, and press `Tab` to compare the decoded GS 2D
 output. This camera belongs only to the diagnostic viewer; it is not presented
 as Ratchet & Clank's original gameplay camera.
 
-The graphical runtime and Launcher do **not** consume PreparedGameV2 level
-packages yet. Their current Play path remains the ISO/ELF-backed diagnostic
-viewer described above. Foundation-package compilation, publication, loading,
-and player simulation are currently exercised through `openrc-cli` and core
-tests; the render scene, actor, entity, and camera resources still need to join
-that package boundary before the Launcher can switch over.
+The graphical runtime can now consume a PreparedGameV2 installation directly
+through `--prepared-root`; that path does not reopen the ISO or boot ELF. The
+Launcher has not switched to the new compiler/runtime route yet, so its current
+Prepare/Play buttons still start the ISO/ELF-backed diagnostic viewer described
+above. Actor animation, gameplay entities, the reconstructed camera, and the
+remaining specialized scene families still need to join the package boundary
+before this becomes a playable Veldin build.
 
 ## Build on Windows
 
@@ -282,6 +292,22 @@ and therefore read the supported ISO. `level-package-smoke` and
 `prepared-level-smoke` read only the resulting neutral package data. These
 headless smoke commands do not open the D3D11 viewer and are not an interactive
 game mode.
+
+The current complete native-scene preparation compiles and transactionally
+publishes all 19 levels. It needs the legally owned ISO and its already prepared
+boot ELF only during compilation; smoke/loading and the graphical runtime use
+the published root alone:
+
+```powershell
+$nativeRoot = Join-Path (Get-Location) "local/native-game-v1"
+build/Debug/openrc-cli.exe prepare-native-game local/ratchet-and-clank.iso path/to/prepared/files/SCES_509.16 $nativeRoot
+build/Debug/openrc-cli.exe prepared-native-level-smoke $nativeRoot 0
+build/Debug/openrc-runtime.exe --prepared-root $nativeRoot --level 0
+```
+
+This is the package boundary intended for the Launcher and future mod tooling.
+It contains neutral OpenRC resources rather than copied source WAD records. The
+Launcher integration and full gameplay systems are still in progress.
 
 The `wad-bundle` LBA and sector count above identify a container in the exact
 PAL v2.00 reference image; they are not assumed for other revisions.

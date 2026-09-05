@@ -486,7 +486,15 @@ SceneGeometry3dV1 build_scene_geometry_3d_v1(
             ++result.skipped_non_triangle_count;
             continue;
         }
-        for (std::size_t index = 0U; index < 3U; ++index) {
+        constexpr std::array<std::size_t, 3U> kForwardWinding{0U, 1U, 2U};
+        constexpr std::array<std::size_t, 3U> kReversedStripWinding{
+            1U, 0U, 2U};
+        const auto& winding =
+            primitive.topology == GifGsPrimitiveTopologyV1::triangle_strip &&
+                    primitive.strip_winding_reversed
+                ? kReversedStripWinding
+                : kForwardWinding;
+        for (const auto index : winding) {
             result.triangle_indices.push_back(
                 add_vertex(primitive.vertex_indices[index]));
         }

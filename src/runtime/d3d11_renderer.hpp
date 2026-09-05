@@ -1,10 +1,5 @@
 #pragma once
 
-#include "moby_scene_geometry.hpp"
-#include "scene_geometry.hpp"
-
-#include "openrc/rac_level_moby_texture.hpp"
-
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -17,7 +12,17 @@
 #include <memory>
 #include <span>
 
+namespace openrc {
+struct RacLevelMobyTextureV1;
+struct RenderSceneV1;
+}
+
 namespace openrc::runtime {
+
+struct MobySceneMaterialBatchV1;
+struct SceneGeometry3dV1;
+struct SceneGeometryV1;
+struct SceneMaterialBatchV1;
 
 struct D3d11ObjectTextureSourceV1 {
     // Explicit region in the merged source-space triangle list. Keeping both
@@ -43,6 +48,9 @@ struct D3d11SourceTextureSourcesV1 {
 
 class D3d11Renderer final {
 public:
+    // Prepared-package runtime path. It consumes only the neutral render
+    // resource and does not require an ISO, ELF, or RAC decoder structures.
+    D3d11Renderer(HWND window, const openrc::RenderSceneV1& scene);
     D3d11Renderer(HWND window, const SceneGeometryV1& geometry);
     D3d11Renderer(HWND window,
                   const SceneGeometryV1& raster_geometry,

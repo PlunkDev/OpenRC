@@ -295,6 +295,31 @@ void test_source_geometry_uses_gs_topology_without_screen_coordinates() {
            "source-space emitted triangle count is incorrect");
 }
 
+void test_source_triangle_strip_parity_is_canonicalized_to_ccw() {
+    openrc::GifGsDecodeResultV1 decoded;
+    decoded.vertices.resize(4U);
+    auto even = make_triangle(0U, 1U, 2U);
+    auto odd = make_triangle(1U, 2U, 3U);
+    odd.strip_winding_reversed = true;
+    decoded.primitives = {even, odd};
+
+    openrc::SceneBlockSourceGeometryV1 source;
+    source.vertices = {
+        make_source_vertex(0U, 0, 0, 0, {}),
+        make_source_vertex(1U, 1, 0, 0, {}),
+        make_source_vertex(2U, 0, 1, 0, {}),
+        make_source_vertex(3U, 1, 1, 0, {}),
+    };
+
+    const auto geometry =
+        openrc::runtime::build_scene_geometry_3d_v1(source, decoded);
+    expect(geometry.triangle_indices ==
+               std::vector<std::uint32_t>{0U, 1U, 2U, 2U, 1U, 3U},
+           "triangle-strip parity was not canonicalized to one CCW winding");
+    expect(geometry.emitted_triangle_count == 2U,
+           "triangle-strip parity conversion changed the triangle count");
+}
+
 void test_source_materials_use_stq_and_bounded_context_policy() {
     openrc::GifGsDecodeResultV1 decoded;
     decoded.vertices.resize(9U);
@@ -556,6 +581,7 @@ int main() {
         test_only_emitted_triangles_are_submitted();
         test_malformed_emitted_geometry_is_rejected();
         test_source_geometry_uses_gs_topology_without_screen_coordinates();
+        test_source_triangle_strip_parity_is_canonicalized_to_ccw();
         test_source_materials_use_stq_and_bounded_context_policy();
         test_source_geometry_requires_one_to_one_gs_provenance();
         test_raster_geometries_merge_indices_bounds_and_counters();

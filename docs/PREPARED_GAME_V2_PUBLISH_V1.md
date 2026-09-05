@@ -14,6 +14,14 @@ copies data that the caller did not supply. Optional overlay references remain
 manifest metadata. Overlay manifests and overlay packages are installed by a
 separate, explicit mod workflow.
 
+The caller owns serialization of publication operations and must keep the
+destination parent free from concurrent out-of-band mutation for the duration
+of the call. Portable C++ path operations cannot provide a universal directory
+handle transaction against an adversarial process replacing intermediate paths;
+all validation and rollback guarantees below apply within that exclusive-writer
+contract. A future Launcher service may enforce the same contract with a
+platform interprocess lock.
+
 ## Validation before writes
 
 The publisher serializes and parses the manifest through the canonical V2
@@ -39,6 +47,12 @@ Every existing ancestor, and an existing destination itself, must be a plain
 directory. Symbolic links, junctions, mount-style reparse points, ordinary
 files, and paths outside the explicit parent are rejected.
 
+Before an existing tree can be moved or any transaction tree can be removed,
+the publisher walks it without following links and rejects filesystem-boundary
+changes. Linux uses the kernel mount ID so same-device bind mounts are included;
+other POSIX hosts use the native device boundary, while Windows rejects every
+reparse entry. Failure to obtain the required boundary identity fails closed.
+
 Staging, backup, and failed-commit quarantine names are generated as siblings
 of the destination. The implementation checks the parent relation before every
 rename and only recursively removes publisher-owned sibling names beginning
@@ -56,9 +70,11 @@ size, hash, nested payload, and identity checks.
 Commit uses same-parent rename operations:
 
 1. an existing destination is renamed to a unique backup sibling;
-2. verified staging is renamed to the destination name;
-3. the destination is verified again through the hardened reader;
-4. only then is the old backup removed.
+2. the exact moved backup tree is revalidated so a last-moment path replacement
+   or unowned addition is restored rather than deleted;
+3. verified staging is renamed to the destination name;
+4. the destination is verified again through the hardened reader;
+5. only then is the old backup removed.
 
 Each rename is an atomic filesystem operation and no partially populated tree
 is promoted. Portable filesystems do not provide one universal atomic

@@ -1,8 +1,10 @@
+#include "level_scene_render_compile.hpp"
 #include "moby_scene_geometry.hpp"
 #include "tie_scene_geometry.hpp"
 
 #include "openrc/boundary_table.hpp"
 #include "openrc/companion_wad_index.hpp"
+#include "openrc/content_api.hpp"
 #include "openrc/disc.hpp"
 #include "openrc/disc_toc.hpp"
 #include "openrc/dvp_vu.hpp"
@@ -11,32 +13,35 @@
 #include "openrc/elf.hpp"
 #include "openrc/gif_gs.hpp"
 #include "openrc/hash.hpp"
+#include "openrc/level_render_scene_compile.hpp"
 #include "openrc/localized_subtitle_bank.hpp"
 #include "openrc/map_art.hpp"
 #include "openrc/paths.hpp"
 #include "openrc/player_simulation.hpp"
+#include "openrc/preparation.hpp"
 #include "openrc/prepared_game_v2_fs.hpp"
 #include "openrc/prepared_game_v2_publish.hpp"
-#include "openrc/preparation.hpp"
 #include "openrc/ps2_save_bundle.hpp"
 #include "openrc/rac_gameplay_bank.hpp"
 #include "openrc/rac_level_bootstrap_compile.hpp"
 #include "openrc/rac_level_collision_compile.hpp"
-#include "openrc/rac_level_foundation_compile.hpp"
 #include "openrc/rac_level_core.hpp"
+#include "openrc/rac_level_foundation_compile.hpp"
 #include "openrc/rac_moby_class.hpp"
 #include "openrc/rac_moby_model_geometry.hpp"
 #include "openrc/rac_moby_packet_geometry.hpp"
+#include "openrc/runtime_level_content.hpp"
 #include "openrc/runtime_level_foundation.hpp"
+#include "openrc/runtime_render_scene.hpp"
+#include "openrc/sblk.hpp"
+#include "openrc/sblk_audio.hpp"
+#include "openrc/sblk_wav.hpp"
 #include "openrc/scene_animation_bank.hpp"
 #include "openrc/scene_block_directory.hpp"
 #include "openrc/scene_block_task_execute.hpp"
 #include "openrc/scene_block_vif.hpp"
 #include "openrc/scene_block_vu.hpp"
 #include "openrc/scene_block_vu_phase.hpp"
-#include "openrc/sblk.hpp"
-#include "openrc/sblk_audio.hpp"
-#include "openrc/sblk_wav.hpp"
 #include "openrc/two_fip.hpp"
 #include "openrc/vagp.hpp"
 #include "openrc/wad.hpp"
@@ -125,9 +130,15 @@ constexpr std::uint64_t kMaximumCliCollisionPayloadBytes =
     32U * 1024U * 1024U;
 constexpr std::uint64_t kMaximumCliLevelFoundationPackageBytes =
     64U * 1024U * 1024U;
+constexpr std::uint64_t kMaximumCliRenderScenePayloadBytes =
+    UINT64_C(512) * 1024U * 1024U;
+constexpr std::uint64_t kMaximumCliNativeLevelPackageBytes =
+    UINT64_C(768) * 1024U * 1024U;
 constexpr std::uint64_t kMaximumCliPreparedFoundationBytes =
     512U * 1024U * 1024U;
-constexpr std::uint32_t kNativeContentApiVersionV1 = 1U;
+constexpr std::uint64_t kMaximumCliPreparedNativeBytes =
+    kMaximumCliNativeLevelPackageBytes *
+    static_cast<std::uint64_t>(openrc::kDiscTocLevelCount);
 constexpr std::string_view kSupportedRacBuildIdV1 =
     "SCES-50916-PAL-v2.00";
 constexpr std::size_t kMaximumCliDvpVuListItems = 128U;
@@ -249,6 +260,31 @@ make_cli_level_foundation_package_limits() {
         64U};
 }
 
+[[nodiscard]] constexpr openrc::LevelPackageV1Limits
+make_cli_native_level_package_limits() {
+    return openrc::LevelPackageV1Limits{kMaximumCliNativeLevelPackageBytes,
+                                        32U,
+                                        16U,
+                                        256U,
+                                        1024U,
+                                        kMaximumCliRenderScenePayloadBytes,
+                                        kMaximumCliNativeLevelPackageBytes -
+                                            openrc::kLevelPackageHeaderBytesV1,
+                                        64U};
+}
+
+[[nodiscard]] openrc::RenderSceneIoLimitsV1 make_cli_render_scene_io_limits() {
+    return openrc::RenderSceneIoLimitsV1{
+        kMaximumCliRenderScenePayloadBytes,
+        openrc::runtime::make_level_scene_render_compile_profile_v1()
+            .render_scene_limits};
+}
+
+[[nodiscard]] openrc::game::RuntimeLevelContentLimitsV1
+make_cli_runtime_level_content_limits() {
+    return openrc::game::make_runtime_level_content_limits_v1();
+}
+
 [[nodiscard]] constexpr openrc::PreparedGameV2FilesystemLimitsV1
 make_cli_prepared_foundation_limits() {
     return openrc::PreparedGameV2FilesystemLimitsV1{
@@ -263,8 +299,20 @@ make_cli_prepared_foundation_limits() {
         kMaximumCliPreparedFoundationBytes};
 }
 
+[[nodiscard]] constexpr openrc::PreparedGameV2FilesystemLimitsV1
+make_cli_prepared_native_limits() {
+    return openrc::PreparedGameV2FilesystemLimitsV1{
+        openrc::PreparedGameV2Limits{
+            1024U * 1024U,
+            static_cast<std::uint32_t>(openrc::kDiscTocLevelCount), 128U, 1024U,
+            kMaximumCliPreparedNativeBytes, 64U * 1024U * 1024U},
+        make_cli_native_level_package_limits(), kMaximumCliPreparedNativeBytes};
+}
+
 [[nodiscard]] openrc::RacLevelFoundationCompileLimitsV1
-make_cli_level_foundation_compile_limits() {
+make_cli_level_foundation_compile_limits(
+    const openrc::LevelPackageV1Limits package_limits =
+        make_cli_level_foundation_package_limits()) {
     const auto source_limits = make_cli_moby_asset_limits();
     return openrc::RacLevelFoundationCompileLimitsV1{
         source_limits.collision,
@@ -272,7 +320,7 @@ make_cli_level_foundation_compile_limits() {
         make_cli_collision_compile_limits(),
         make_cli_collision_payload_limits(),
         make_cli_bootstrap_payload_limits(),
-        make_cli_level_foundation_package_limits()};
+        package_limits};
 }
 
 [[nodiscard]] std::string level_source_locator(
@@ -292,18 +340,43 @@ make_cli_level_foundation_compile_limits() {
     return stream.str();
 }
 
+void require_publication_root_outside_source(
+    const std::filesystem::path &destination_root,
+    const std::filesystem::path &source, const char *const source_description) {
+    std::error_code filesystem_error;
+    const auto relative =
+        std::filesystem::relative(source, destination_root, filesystem_error);
+    if (filesystem_error) {
+        throw std::runtime_error(
+            std::string(
+                "Cannot compare the native publication root with the ") +
+            source_description + ": " + filesystem_error.message());
+    }
+    if (relative.empty() || relative.is_absolute()) {
+        return;
+    }
+    const auto first = relative.begin();
+    if (first != relative.end() && *first != "..") {
+        throw std::runtime_error(
+            std::string("The native publication root cannot contain the ") +
+            source_description);
+    }
+}
+
 [[nodiscard]] openrc::LevelPackageV1 compile_cli_level_foundation(
-    const openrc::RacLevelMobyAssetsV1& assets) {
+    const openrc::RacLevelMobyAssetsV1& assets,
+                             const openrc::LevelPackageV1Limits package_limits =
+                                 make_cli_level_foundation_package_limits()) {
     const openrc::RacLevelFoundationCompileRequestV1 request{
         assets.level_id,
-        kNativeContentApiVersionV1,
+        openrc::kOpenRcContentApiVersionV1,
         std::string(kSupportedRacBuildIdV1),
         {level_source_locator(assets.level_id, "core/collision"),
          assets.collision_source_bytes},
         {level_source_locator(assets.level_id, "gameplay"),
          assets.gameplay_source_bytes}};
     return openrc::compile_rac_level_foundation_package_v1(
-        request, make_cli_level_foundation_compile_limits());
+        request, make_cli_level_foundation_compile_limits(package_limits));
 }
 
 [[nodiscard]] openrc::game::PlayerSimulationProfileV1
@@ -391,64 +464,135 @@ void print_usage() {
     std::cout
         << "OpenRC command-line tools " << OPENRC_VERSION << "\n\n"
         << "Usage:\n"
-        << "  openrc-cli inspect <disc.iso>                    Inspect a PlayStation 2 disc image\n"
-        << "  openrc-cli inventory <disc.iso>                  List files stored in a disc image\n"
-        << "  openrc-cli toc <disc.iso>                        Inventory the Ratchet & Clank disc TOC\n"
-        << "  openrc-cli toc-assets <disc.iso>                 Validate local TOC asset tables\n"
-        << "  openrc-cli wad <disc.iso> <global-slot>          Decode one WadV1 (64 MiB cap)\n"
+        << "  openrc-cli inspect <disc.iso>                    Inspect a "
+           "PlayStation 2 disc image\n"
+        << "  openrc-cli inventory <disc.iso>                  List files "
+           "stored "
+           "in a disc image\n"
+        << "  openrc-cli toc <disc.iso>                        Inventory the "
+           "Ratchet & Clank disc TOC\n"
+        << "  openrc-cli toc-assets <disc.iso>                 Validate local "
+           "TOC asset tables\n"
+        << "  openrc-cli wad <disc.iso> <global-slot>          Decode one "
+           "WadV1 "
+           "(64 MiB cap)\n"
         << "  openrc-cli wad-payload-inventory <disc.iso> [output.tsv]\n"
-        << "                                                    Classify every decoded WadV1 payload\n"
-        << "  openrc-cli wad-families <disc.iso> [output.tsv]  Rank structural payload families for Veldin\n"
+        << "                                                    Classify every "
+           "decoded WadV1 payload\n"
+        << "  openrc-cli wad-families <disc.iso> [output.tsv]  Rank structural "
+           "payload families for Veldin\n"
         << "  openrc-cli wad-payload-export <disc.iso> <unique> <output.bin>\n"
-        << "                                                    Export one explicitly selected decoded payload\n"
+        << "                                                    Export one "
+           "explicitly selected decoded payload\n"
         << "  openrc-cli wad-scene-animation <disc.iso> <unique>\n"
-        << "                                                    Inspect camera and actor animation tracks\n"
-        << "  openrc-cli wad-gameplay <disc.iso> <unique>      Inspect RAC1 level objects and gameplay blocks\n"
-        << "  openrc-cli wad-moby-class <disc.iso> <unique>    Inspect one decoded RAC1 object model core\n"
-        << "  openrc-cli wad-subtitles <disc.iso> <unique>     Inspect a localized subtitle bank\n"
+        << "                                                    Inspect camera "
+           "and actor animation tracks\n"
+        << "  openrc-cli wad-gameplay <disc.iso> <unique>      Inspect RAC1 "
+           "level objects and gameplay blocks\n"
+        << "  openrc-cli wad-moby-class <disc.iso> <unique>    Inspect one "
+           "decoded RAC1 object model core\n"
+        << "  openrc-cli wad-subtitles <disc.iso> <unique>     Inspect a "
+           "localized subtitle bank\n"
         << "  openrc-cli vagp <disc.iso> <global-slot> [output.wav]\n"
-        << "                                                    Inspect/export VAGp as mono PCM\n"
-        << "  openrc-cli boundary <disc.iso> <global-slot>     Inspect a seven-region payload table\n"
+        << "                                                    Inspect/export "
+           "VAGp as mono PCM\n"
+        << "  openrc-cli boundary <disc.iso> <global-slot>     Inspect a "
+           "seven-region payload table\n"
         << "  openrc-cli map-art <disc.iso> <level-id> [output.tga]\n"
-        << "                                                    Inspect/export a 3-panel map preview\n"
-        << "  openrc-cli ps2-save <disc.iso>                   Inspect the PS2D save/icon bundle\n"
-        << "  openrc-cli sblk <disc.iso> <level-id>            Inspect a level SBlk audio bank\n"
-        << "  openrc-cli sblk-wav <disc.iso> <level-id> <block> <output.wav> spu-native-48000\n"
-        << "  openrc-cli sblk-wav <disc.iso> <level-id> <block> <output.wav> caller-supplied-hz <hz>\n"
-        << "                                                    Export one physical SBlk block with explicit rate policy\n"
-        << "  openrc-cli scene-blocks <disc.iso> <level-id>    Inspect a level scene-block directory\n"
-        << "  openrc-cli scene-block-vu-run <disc.iso> <elf> <level-id> <record> <entry-pair> [output.tga]\n"
-        << "                                                    Execute and optionally export an auto-fit wireframe\n"
-        << "  openrc-cli level-core <disc.iso> <level-id>      Link RAC1 model classes, assets, and placements\n"
-        << "  openrc-cli level-collision <disc.iso> <level-id> Inspect authoritative level collision\n"
+        << "                                                    Inspect/export "
+           "a "
+           "3-panel map preview\n"
+        << "  openrc-cli ps2-save <disc.iso>                   Inspect the "
+           "PS2D "
+           "save/icon bundle\n"
+        << "  openrc-cli sblk <disc.iso> <level-id>            Inspect a level "
+           "SBlk audio bank\n"
+        << "  openrc-cli sblk-wav <disc.iso> <level-id> <block> <output.wav> "
+           "spu-native-48000\n"
+        << "  openrc-cli sblk-wav <disc.iso> <level-id> <block> <output.wav> "
+           "caller-supplied-hz <hz>\n"
+        << "                                                    Export one "
+           "physical SBlk block with explicit rate policy\n"
+        << "  openrc-cli scene-blocks <disc.iso> <level-id>    Inspect a level "
+           "scene-block directory\n"
+        << "  openrc-cli scene-block-vu-run <disc.iso> <elf> <level-id> "
+           "<record> "
+           "<entry-pair> [output.tga]\n"
+        << "                                                    Execute and "
+           "optionally export an auto-fit wireframe\n"
+        << "  openrc-cli level-core <disc.iso> <level-id>      Link RAC1 model "
+           "classes, assets, and placements\n"
+        << "  openrc-cli level-collision <disc.iso> <level-id> Inspect "
+           "authoritative level collision\n"
         << "  openrc-cli level-player-smoke <disc.iso> <level-id>\n"
-        << "                                                    Run deterministic native movement on real collision\n"
-        << "  openrc-cli level-foundation-package <disc.iso> <level-id> <output.orlvl>\n"
-        << "                                                    Compile collision and spawn data into a native level package\n"
-        << "  openrc-cli level-package-smoke <input.orlvl>     Run native movement without the ISO\n"
-        << "  openrc-cli prepare-native-foundations <disc.iso> <absolute-root>\n"
-        << "                                                    Compile and publish all native collision/spawn packages\n"
+        << "                                                    Run "
+           "deterministic native movement on real collision\n"
+        << "  openrc-cli level-foundation-package <disc.iso> <level-id> "
+           "<output.orlvl>\n"
+        << "                                                    Compile "
+           "collision and spawn data into a native level package\n"
+        << "  openrc-cli level-native-package <disc.iso> <elf> <level-id> "
+           "<output.orlvl>\n"
+        << "                                                    Compile "
+           "collision, spawn, static scene, and textures\n"
+        << "  openrc-cli level-package-smoke <input.orlvl>     Run native "
+           "movement without the ISO\n"
+        << "  openrc-cli level-native-package-smoke <input.orlvl>\n"
+        << "                                                    Validate "
+           "movement and rendering data without the ISO\n"
+        << "  openrc-cli prepare-native-foundations <disc.iso> "
+           "<absolute-root>\n"
+        << "                                                    Compile and "
+           "publish all native collision/spawn packages\n"
+        << "  openrc-cli prepare-native-game <disc.iso> <prepared-elf> "
+           "<absolute-root>\n"
+        << "                                                    Compile and "
+           "atomically publish all 19 renderable native levels\n"
         << "  openrc-cli prepared-level-smoke <absolute-root> <level-id>\n"
-        << "                                                    Run a published native level without the ISO\n"
+        << "                                                    Run a "
+           "published "
+           "collision/spawn foundation without the ISO\n"
+        << "  openrc-cli prepared-native-level-smoke <absolute-root> "
+           "<level-id>\n"
+        << "                                                    Validate "
+           "published movement and rendering data without the ISO\n"
         << "  openrc-cli level-moby-scene <disc.iso> <level-id>\n"
-        << "                                                    Build static high-LOD Moby scene geometry\n"
-        << "  openrc-cli level-tfrag-texture <disc.iso> <level-id> <texture> [output.tga]\n"
-        << "                                                    Inspect/export a decoded terrain texture\n"
-        << "  openrc-cli level-moby-texture <disc.iso> <level-id> <texture> [output.tga]\n"
-        << "                                                    Decode/export one level Moby texture\n"
-        << "  openrc-cli companion-wads <disc.iso> <level-id>  Inspect the terminal common WAD index\n"
-        << "  openrc-cli wad-bundle <disc.iso> <lba> <sectors> Inspect a WadBundleV1 (64 MiB cap)\n"
+        << "                                                    Build static "
+           "high-LOD Moby scene geometry\n"
+        << "  openrc-cli level-tfrag-texture <disc.iso> <level-id> <texture> "
+           "[output.tga]\n"
+        << "                                                    Inspect/export "
+           "a "
+           "decoded terrain texture\n"
+        << "  openrc-cli level-moby-texture <disc.iso> <level-id> <texture> "
+           "[output.tga]\n"
+        << "                                                    Decode/export "
+           "one level Moby texture\n"
+        << "  openrc-cli companion-wads <disc.iso> <level-id>  Inspect the "
+           "terminal common WAD index\n"
+        << "  openrc-cli wad-bundle <disc.iso> <lba> <sectors> Inspect a "
+           "WadBundleV1 (64 MiB cap)\n"
         << "  openrc-cli twofip <disc.iso> <global-slot> [output.tga]\n"
-        << "                                                    Inspect/export 2FIP (16 Mi pixels)\n"
-        << "  openrc-cli prepare <disc.iso> [games-directory]  Extract and verify game files\n"
-        << "  openrc-cli elf <executable>                      Inspect a PlayStation 2 ELF\n"
-        << "  openrc-cli r5900-boundaries <executable>         Inventory EE calls and syscall sites\n"
+        << "                                                    Inspect/export "
+           "2FIP (16 Mi pixels)\n"
+        << "  openrc-cli prepare <disc.iso> [games-directory]  Extract and "
+           "verify game files\n"
+        << "  openrc-cli elf <executable>                      Inspect a "
+           "PlayStation 2 ELF\n"
+        << "  openrc-cli r5900-boundaries <executable>         Inventory EE "
+           "calls and syscall sites\n"
         << "  openrc-cli dvp-vu <elf> <entry-pairs> <overlay-sections>\n"
-        << "                                                    Decode decimal CSV VU/ELF lists\n"
-        << "  openrc-cli dvp-vu-run <elf> <entry-pair> <overlay-sections> <top-qword>\n"
-        << "                                                    Microcode-only run with unknown state\n"
-        << "  openrc-cli paths                                 Show application data directories\n"
-        << "  openrc-cli help                                  Show this help\n";
+        << "                                                    Decode decimal "
+           "CSV VU/ELF lists\n"
+        << "  openrc-cli dvp-vu-run <elf> <entry-pair> <overlay-sections> "
+           "<top-qword>\n"
+        << "                                                    Microcode-only "
+           "run with unknown state\n"
+        << "  openrc-cli paths                                 Show "
+           "application "
+           "data directories\n"
+        << "  openrc-cli help                                  Show this "
+           "help\n";
 }
 
 [[nodiscard]] std::optional<std::uint64_t> parse_decimal_argument(
@@ -1223,8 +1367,8 @@ struct WadPayloadCorpusReportV1 {
         counters.primary_extent_payloads + counters.bundle_record_payloads +
         counters.companion_record_payloads;
     if (counted_observations != inventory.observations.size()) {
-        throw std::runtime_error(
-            "The WadV1 source counters do not cover every retained observation");
+        throw std::runtime_error("The WadV1 source counters do not cover every "
+                                 "retained observation");
     }
     if (capture && !capture->captured) {
         throw std::runtime_error(
@@ -2568,7 +2712,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
         try {
             constexpr std::uint32_t kVeldinLevelId = 0U;
             std::cerr
-                << "Scanning every indexed WadV1 source and grouping structural families...\n";
+                << "Scanning every indexed WadV1 source and grouping "
+                         "structural families...\n";
             const auto report = inventory_disc_wad_payloads_v1(arguments[1]);
             const auto& families = report.families;
             const auto ranked = openrc::rank_unknown_wad_payload_families_v1(
@@ -2657,7 +2802,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
 
         try {
             std::cerr
-                << "Scanning every indexed WadV1 source with bounded decoders...\n";
+                << "Scanning every indexed WadV1 source with bounded "
+                         "decoders...\n";
             const auto report = inventory_disc_wad_payloads_v1(arguments[1]);
             const auto& inventory = report.inventory;
             std::vector<std::uint64_t> format_unique_counts(
@@ -2901,14 +3047,16 @@ int run(const std::vector<std::filesystem::path>& arguments) {
 
     if (command == "wad-bundle") {
         if (arguments.size() != 4) {
-            std::cerr << "error: wad-bundle expects an ISO path, LBA, and sector count\n";
+            std::cerr << "error: wad-bundle expects an ISO path, LBA, and "
+                         "sector count\n";
             return kUsageError;
         }
 
         const auto logical_block = parse_decimal_argument(arguments[2]);
         const auto sector_count = parse_decimal_argument(arguments[3]);
         if (!logical_block || !sector_count || *sector_count == 0) {
-            std::cerr << "error: LBA and sector count must be unsigned decimal numbers, "
+            std::cerr << "error: LBA and sector count must be unsigned decimal "
+                         "numbers, "
                          "and sector count must be non-zero\n";
             return kUsageError;
         }
@@ -2990,7 +3138,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
     if (command == "boundary") {
         if (arguments.size() != 3) {
             std::cerr
-                << "error: boundary expects an ISO path and a global TOC slot\n";
+                << "error: boundary expects an ISO path and a global TOC "
+                         "slot\n";
             return kUsageError;
         }
 
@@ -3059,7 +3208,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
         if (arguments.size() < 6U || arguments.size() > 7U) {
             std::cerr
                 << "error: sblk-wav expects an ISO path, level ID, physical "
-                   "block index, output path, and an explicit sample-rate policy\n";
+                   "block index, output path, and an explicit sample-rate "
+                   "policy\n";
             return kUsageError;
         }
 
@@ -3072,7 +3222,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
         }
         if (!block_value) {
             std::cerr
-                << "error: physical SBlk block index must be an unsigned decimal number\n";
+                << "error: physical SBlk block index must be an unsigned "
+                         "decimal number\n";
             return kUsageError;
         }
 
@@ -3090,14 +3241,16 @@ int run(const std::vector<std::filesystem::path>& arguments) {
         } else if (policy_name == "caller-supplied-hz") {
             if (arguments.size() != 7U) {
                 std::cerr
-                    << "error: caller-supplied-hz requires one non-zero Hz value\n";
+                    << "error: caller-supplied-hz requires one non-zero "
+                             "Hz value\n";
                 return kUsageError;
             }
             const auto hz = parse_decimal_argument(arguments[6]);
             if (!hz || *hz == 0U ||
                 *hz > std::numeric_limits<std::uint32_t>::max()) {
                 std::cerr
-                    << "error: sample rate must be a non-zero 32-bit unsigned decimal value\n";
+                    << "error: sample rate must be a non-zero 32-bit unsigned "
+                       "decimal value\n";
                 return kUsageError;
             }
             sample_rate.policy =
@@ -3370,8 +3523,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 static_cast<std::uint64_t>(subrange.byte_size);
             if (subrange_offset > primary_bytes.size() ||
                 subrange_size > primary_bytes.size() - subrange_offset) {
-                throw std::runtime_error(
-                    "The scene-block WadV1 subrange lies outside primary extent 0");
+                throw std::runtime_error("The scene-block WadV1 subrange lies "
+                                         "outside primary extent 0");
             }
 
             const auto logical_wad = std::span<const std::byte>(primary_bytes).subspan(
@@ -3392,7 +3545,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
             if (static_cast<std::uint64_t>(companion_count) !=
                 directory.record_count) {
                 throw std::runtime_error(
-                    "The scene-block record count does not match companion extent-3 table 0");
+                    "The scene-block record count does not match "
+                    "companion extent-3 table 0");
             }
             const auto envelope_bytes =
                 directory.chain_end - directory.directory_bytes;
@@ -3468,8 +3622,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                     openrc::kSceneBlockDirectoryV1Stride);
                 if (entry.block_bytes.size() < prefix_size ||
                     vif_size > entry.block_bytes.size() - prefix_size) {
-                    throw std::runtime_error(
-                        "A verified scene-block VIF range exceeds its owned envelope");
+                    throw std::runtime_error("A verified scene-block VIF range "
+                                             "exceeds its owned envelope");
                 }
                 const auto vif_bytes = std::span<const std::byte>(
                     entry.block_bytes).subspan(prefix_size, vif_size);
@@ -3538,8 +3692,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                         kVifOpcodes.end(),
                         vif_command.opcode);
                     if (opcode == kVifOpcodes.end()) {
-                        throw std::runtime_error(
-                            "The SceneBlock VIF parser returned an unknown opcode");
+                        throw std::runtime_error("The SceneBlock VIF parser "
+                                                 "returned an unknown opcode");
                     }
                     const auto opcode_index = static_cast<std::size_t>(
                         std::distance(kVifOpcodes.begin(), opcode));
@@ -3711,8 +3865,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                     .subranges[kSceneBlockSubrangeIndex];
             if (subrange.byte_size == 0U ||
                 subrange.signature != openrc::DiscTocSignature::wad) {
-                throw std::runtime_error(
-                    "The level's scene-block subrange is not a non-empty WadV1");
+                throw std::runtime_error("The level's scene-block subrange is "
+                                         "not a non-empty WadV1");
             }
             const auto& primary_extent =
                 level_layout->primary_extents.front();
@@ -3727,8 +3881,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 static_cast<std::uint64_t>(subrange.byte_size);
             if (subrange_offset > primary_bytes.size() ||
                 subrange_size > primary_bytes.size() - subrange_offset) {
-                throw std::runtime_error(
-                    "The scene-block WadV1 subrange lies outside primary extent 0");
+                throw std::runtime_error("The scene-block WadV1 subrange lies "
+                                         "outside primary extent 0");
             }
             const auto logical_wad =
                 std::span<const std::byte>(primary_bytes)
@@ -3748,7 +3902,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
             if (static_cast<std::uint64_t>(companion_count) !=
                 directory.record_count) {
                 throw std::runtime_error(
-                    "The scene-block record count does not match companion extent-3 table 0");
+                    "The scene-block record count does not match "
+                    "companion extent-3 table 0");
             }
             if (*record_value >= directory.entries.size()) {
                 throw std::runtime_error(
@@ -3765,8 +3920,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                     "The ISO boot executable has no SHA-256 identity");
             }
             if (elf_sha256 != disc_report.boot_sha256) {
-                throw std::runtime_error(
-                    "The supplied ELF does not match the boot executable in the ISO");
+                throw std::runtime_error("The supplied ELF does not match the "
+                                         "boot executable in the ISO");
             }
             const auto elf =
                 openrc::inspect_elf(std::span<const std::byte>(elf_bytes));
@@ -3811,8 +3966,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
             };
             if (selected_overlays.size() !=
                 kExpectedOverlayAddresses.size()) {
-                throw std::runtime_error(
-                    "DVP program 55907 does not have its exact eight overlay chunks");
+                throw std::runtime_error("DVP program 55907 does not have its "
+                                         "exact eight overlay chunks");
             }
             for (std::size_t index = 0U;
                  index < selected_overlays.size();
@@ -3821,8 +3976,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                         kExpectedOverlayAddresses[index] ||
                     selected_overlays[index].size !=
                         kExpectedOverlaySizes[index]) {
-                    throw std::runtime_error(
-                        "DVP program 55907 has an unexpected VU address layout");
+                    throw std::runtime_error("DVP program 55907 has an "
+                                             "unexpected VU address layout");
                 }
             }
 
@@ -3862,7 +4017,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 }
                 if (preamble_bytes) {
                     throw std::runtime_error(
-                        "The SceneBlock task preamble maps to multiple PT_LOAD segments");
+                        "The SceneBlock task preamble maps to multiple PT_LOAD "
+                        "segments");
                 }
                 const auto file_offset =
                     static_cast<std::uint64_t>(segment.file_offset) +
@@ -3872,8 +4028,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 if (file_offset > elf_bytes.size() ||
                     kTaskPreambleBytes > elf_bytes.size() - file_offset ||
                     file_offset > std::numeric_limits<std::size_t>::max()) {
-                    throw std::runtime_error(
-                        "The SceneBlock task preamble lies outside the ELF bytes");
+                    throw std::runtime_error("The SceneBlock task preamble "
+                                             "lies outside the ELF bytes");
                 }
                 preamble_bytes =
                     std::span<const std::byte>(elf_bytes)
@@ -3881,8 +4037,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                                  static_cast<std::size_t>(kTaskPreambleBytes));
             }
             if (!preamble_bytes) {
-                throw std::runtime_error(
-                    "The SceneBlock task preamble VA is not file-backed by PT_LOAD");
+                throw std::runtime_error("The SceneBlock task preamble VA is "
+                                         "not file-backed by PT_LOAD");
             }
             const auto preamble =
                 openrc::parse_scene_block_task_preamble_v1(*preamble_bytes);
@@ -4130,7 +4286,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
             if (arguments.size() == 7U) {
                 if (!gs_decode) {
                     throw std::runtime_error(
-                        "Cannot export a wireframe without a complete decoded GS stream");
+                        "Cannot export a wireframe without a complete decoded "
+                        "GS stream");
                 }
                 const auto image = make_gif_gs_wireframe_image(*gs_decode);
                 const auto tga = openrc::encode_two_fip_tga(image);
@@ -4174,8 +4331,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
             const auto assets = openrc::load_rac_level_moby_assets_v1(
                 arguments[1], level_id, make_cli_moby_asset_limits());
             if (*texture_value >= assets.tfrag_textures.textures.size()) {
-                throw std::runtime_error(
-                    "The texture index exceeds this level's tfrag texture bank");
+                throw std::runtime_error("The texture index exceeds this "
+                                         "level's tfrag texture bank");
             }
             const auto& texture = assets.tfrag_textures.textures[
                 static_cast<std::size_t>(*texture_value)];
@@ -4295,7 +4452,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
     if (command == "level-collision") {
         if (arguments.size() != 3U) {
             std::cerr
-                << "error: level-collision expects an ISO path and a level ID\n";
+                << "error: level-collision expects an ISO path and a "
+                         "level ID\n";
             return kUsageError;
         }
         const auto level_value = parse_decimal_argument(arguments[2]);
@@ -4440,6 +4598,168 @@ int run(const std::vector<std::filesystem::path>& arguments) {
         }
     }
 
+    if (command == "level-native-package") {
+        if (arguments.size() != 5U) {
+            std::cerr
+                << "error: level-native-package expects an ISO path, the "
+                   "matching boot ELF, a level ID, and a new output path\n";
+            return kUsageError;
+        }
+        const auto level_value = parse_decimal_argument(arguments[3]);
+        if (!level_value || *level_value >= openrc::kDiscTocLevelCount) {
+            std::cerr << "error: level ID must be a decimal number from 0 to "
+                      << (openrc::kDiscTocLevelCount - 1U) << '\n';
+            return kUsageError;
+        }
+        const auto level_id = static_cast<std::uint32_t>(*level_value);
+
+        try {
+            const auto disc = openrc::inspect_disc(
+                arguments[1]);
+            if (disc.game != openrc::GameId::ratchet_and_clank_2002 ||
+                !disc.supported_build) {
+                throw std::runtime_error(
+                    "The disc is not the supported RAC1 PAL v2.00 build");
+            }
+            if (disc.image_size > std::numeric_limits<std::uint64_t>::max()) {
+                throw std::runtime_error(
+                    "The source image size exceeds the package provenance "
+                    "format");
+            }
+
+            const auto boot_executable_size_before =
+                std::filesystem::file_size(arguments[2]);
+            if (boot_executable_size_before == 0U ||
+                boot_executable_size_before > kMaximumCliElfBytes) {
+                throw std::runtime_error(
+                    "The prepared boot ELF is empty or exceeds the 64 MiB "
+                    "compiler limit");
+            }
+
+            std::cout << "Hashing the source image and prepared boot ELF "
+                         "before native scene compilation...\n";
+            const auto source_digest_before =
+                openrc::sha256_file_digest(arguments[1]);
+            const auto boot_executable_digest_before =
+                openrc::sha256_file_digest(arguments[2]);
+            const auto source_size_before =
+                static_cast<std::uint64_t>(disc.image_size);
+
+            const auto package_limits = make_cli_native_level_package_limits();
+            const auto assets = openrc::load_rac_level_moby_assets_v1(
+                arguments[1], level_id, make_cli_moby_asset_limits());
+            auto package = compile_cli_level_foundation(assets, package_limits);
+
+            const openrc::runtime::LevelSceneRecoveryRequestV1 recovery_request{
+                arguments[1],
+                arguments[2], level_id,
+                openrc::runtime::LevelSceneRecordSelectionV1::all_records,
+                0U,
+                openrc::kSceneBlockSourceGeometryEntrypointV1};
+            const auto recovered = openrc::runtime::recover_level_scene_v1(
+                recovery_request,
+                openrc::runtime::make_level_scene_recovery_limits_v1(),
+                openrc::runtime::make_level_scene_recovery_profile_v1());
+            const auto render_profile =
+                openrc::runtime::make_level_scene_render_compile_profile_v1();
+            const auto render_scene =
+                openrc::runtime::compile_level_scene_render_v1(recovered,
+                                                               render_profile);
+
+            const std::array<openrc::LevelPackageProvenanceV1, 2U>
+                render_sources{
+                    openrc::LevelPackageProvenanceV1{
+                        openrc::LevelPackageProvenanceKindV1::iso_range,
+                        "rac1/disc-image",
+                        0U,
+                        source_size_before,
+                        source_digest_before,
+                    },
+                    openrc::LevelPackageProvenanceV1{
+                        openrc::LevelPackageProvenanceKindV1::prepared_resource,
+                        "rac1/boot-executable",
+                        0U,
+                        static_cast<std::uint64_t>(boot_executable_size_before),
+                        boot_executable_digest_before,
+                    },
+                };
+            package = openrc::attach_render_scene_to_level_package_v1(
+                std::move(package), render_scene, render_sources,
+                make_cli_render_scene_io_limits(), package_limits);
+            const auto package_bytes =
+                openrc::encode_level_package_v1(package, package_limits);
+
+            std::cout
+                << "Hashing the source image and prepared boot ELF "
+                         "after native scene compilation...\n";
+            const auto source_size_after =
+                std::filesystem::file_size(arguments[1]);
+            const auto boot_executable_size_after =
+                std::filesystem::file_size(arguments[2]);
+            const auto source_digest_after =
+                openrc::sha256_file_digest(arguments[1]);
+            const auto boot_executable_digest_after =
+                openrc::sha256_file_digest(arguments[2]);
+            if (source_size_after != source_size_before ||
+                source_digest_after != source_digest_before) {
+                throw std::runtime_error(
+                    "The source image changed during native scene "
+                    "compilation");
+            }
+            if (boot_executable_size_after != boot_executable_size_before ||
+                boot_executable_digest_after != boot_executable_digest_before) {
+                throw std::runtime_error(
+                    "The prepared boot ELF changed during native scene "
+                    "compilation");
+            }
+
+            std::uint64_t vertex_count = 0U;
+            std::uint64_t index_count = 0U;
+            for (const auto &mesh : render_scene.meshes) {
+                vertex_count += mesh.vertices.size();
+                index_count += mesh.triangle_indices.size();
+            }
+            std::uint64_t texture_bytes = 0U;
+            for (const auto &texture : render_scene.textures) {
+                for (const auto &mip : texture.mips) {
+                    texture_bytes += mip.rgba8.size();
+                }
+            }
+
+            write_new_binary_file(arguments[4], package_bytes);
+            std::cout << "OpenRC native renderable level package\n"
+                      << "Image:                  "
+                      << openrc::path_to_utf8(arguments[1]) << '\n'
+                      << "Level ID:               " << level_id << '\n'
+                      << "Resources:              " << package.resources.size()
+                      << '\n'
+                      << "Meshes/instances:       "
+                      << render_scene.meshes.size() << '/'
+                      << render_scene.instances.size() << '\n'
+                      << "Vertices/triangles:     " << vertex_count << '/'
+                      << (index_count / 3U) << '\n'
+                      << "Textures/materials:     "
+                      << render_scene.textures.size() << '/'
+                      << render_scene.materials.size() << '\n'
+                      << "Texture RGBA8 bytes:    " << texture_bytes << '\n'
+                      << "Skipped animated Mobies: "
+                      << recovered.moby_animated_placement_count << '\n'
+                      << "Package bytes:          " << package_bytes.size()
+                      << '\n'
+                      << "Package SHA-256:        "
+                      << openrc::hex_digest(
+                             openrc::prepared_content_sha256_v1(package_bytes))
+                      << '\n'
+                      << "Output:                 "
+                      << openrc::path_to_utf8(arguments[4])
+                << '\n';
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << "error: " << error.what() << '\n';
+            return kOperationError;
+        }
+    }
+
     if (command == "prepare-native-foundations") {
         if (arguments.size() != 3U) {
             std::cerr
@@ -4454,6 +4774,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
         }
 
         try {
+            require_publication_root_outside_source(arguments[2], arguments[1],
+                                                    "source ISO");
             const auto disc = openrc::inspect_disc(arguments[1]);
             if (disc.game != openrc::GameId::ratchet_and_clank_2002 ||
                 !disc.supported_build) {
@@ -4472,7 +4794,7 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 openrc::sha256_file_digest(arguments[1]);
 
             openrc::PreparedGameV2 manifest;
-            manifest.content_api_version = kNativeContentApiVersionV1;
+            manifest.content_api_version = openrc::kOpenRcContentApiVersionV1;
             manifest.provenance.game_id = "openrc-rac-2002";
             manifest.provenance.build_id = kSupportedRacBuildIdV1;
             manifest.provenance.compiler_id = "openrc-asset-compiler";
@@ -4491,21 +4813,19 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 const auto package = compile_cli_level_foundation(assets);
                 auto package_bytes = openrc::encode_level_package_v1(
                     package, make_cli_level_foundation_package_limits());
-                manifest.levels.push_back(
-                    openrc::PreparedGameLevelReferenceV2{
-                        level_id,
-                        level_package_path(level_id),
-                        package_bytes.size(),
-                        openrc::prepared_content_sha256_v1(package_bytes)});
+                manifest.levels.push_back(openrc::PreparedGameLevelReferenceV2{
+                    level_id, level_package_path(level_id),
+                    package_bytes.size(),
+                    openrc::prepared_content_sha256_v1(package_bytes)});
                 package_storage.push_back(std::move(package_bytes));
-                std::cout << "Compiled native level " << (level_id + 1U)
-                          << '/' << openrc::kDiscTocLevelCount << "\r"
-                          << std::flush;
+                std::cout << "Compiled native level " << (level_id + 1U) << '/'
+                          << openrc::kDiscTocLevelCount << "\r" << std::flush;
             }
             std::cout << '\n';
 
             const auto final_image_size =
-                std::filesystem::file_size(arguments[1]);
+                std::filesystem::file_size(
+                arguments[1]);
             std::cout
                 << "Hashing the source image after native compilation...\n";
             const auto source_digest_after =
@@ -4529,19 +4849,261 @@ int run(const std::vector<std::filesystem::path>& arguments) {
             const auto published = openrc::publish_prepared_game_v2_v1(
                 arguments[2], manifest, package_inputs,
                 make_cli_prepared_foundation_limits());
-            std::cout
-                << "OpenRC native foundation set published\n"
-                << "Root:                   "
-                << openrc::path_to_utf8(published.root) << '\n'
-                << "Levels:                 " << published.level_count << '\n'
-                << "Level package bytes:    " << published.package_bytes
-                << '\n'
-                << "Manifest SHA-256:       "
-                << openrc::hex_digest(published.manifest_sha256) << '\n'
-                << "Source image SHA-256:   "
-                << openrc::hex_digest(source_digest_before) << '\n';
+            std::cout << "OpenRC native foundation set published\n"
+                      << "Root:                   "
+                      << openrc::path_to_utf8(published.root) << '\n'
+                      << "Levels:                 " << published.level_count
+                      << '\n'
+                      << "Level package bytes:    " << published.package_bytes
+                      << '\n'
+                      << "Manifest SHA-256:       "
+                      << openrc::hex_digest(published.manifest_sha256) << '\n'
+                      << "Source image SHA-256:   "
+                      << openrc::hex_digest(source_digest_before)
+                << '\n';
             return 0;
         } catch (const std::exception& error) {
+            std::cerr << "error: " << error.what() << '\n';
+            return kOperationError;
+        }
+    }
+
+    if (command == "prepare-native-game") {
+        if (arguments.size() != 4U) {
+            std::cerr
+                << "error: prepare-native-game expects an ISO path, the "
+                   "matching prepared boot ELF, and an absolute output root\n";
+            return kUsageError;
+        }
+        if (!arguments[3].is_absolute()) {
+            std::cerr
+                << "error: the native prepared-game root must be absolute\n";
+            return kUsageError;
+        }
+
+        try {
+            require_publication_root_outside_source(arguments[3], arguments[1],
+                                                    "source ISO");
+            require_publication_root_outside_source(arguments[3], arguments[2],
+                                                    "prepared boot ELF");
+            const auto disc = openrc::inspect_disc(arguments[1]);
+            if (disc.game != openrc::GameId::ratchet_and_clank_2002 ||
+                !disc.supported_build) {
+                throw std::runtime_error(
+                    "The disc is not the supported RAC1 PAL v2.00 build");
+            }
+            if (disc.image_size > std::numeric_limits<std::uint64_t>::max()) {
+                throw std::runtime_error(
+                    "The source image size exceeds the prepared provenance "
+                    "format");
+            }
+
+            const auto boot_executable_size_before =
+                std::filesystem::file_size(arguments[2]);
+            if (boot_executable_size_before == 0U ||
+                boot_executable_size_before > kMaximumCliElfBytes) {
+                throw std::runtime_error(
+                    "The prepared boot ELF is empty or exceeds the 64 MiB "
+                    "compiler limit");
+            }
+
+            std::cout << "Hashing the source image and prepared boot ELF "
+                         "before native compilation...\n";
+            const auto source_digest_before =
+                openrc::sha256_file_digest(arguments[1]);
+            const auto boot_executable_digest_before =
+                openrc::sha256_file_digest(arguments[2]);
+            const auto source_size_before =
+                static_cast<std::uint64_t>(disc.image_size);
+
+            // These policies are intentionally constructed once and reused
+            // unchanged for every planet. A successful output therefore never
+            // depends on level-specific compiler exceptions.
+            const auto package_limits = make_cli_native_level_package_limits();
+            const auto prepared_limits = make_cli_prepared_native_limits();
+            const auto source_asset_limits = make_cli_moby_asset_limits();
+            const auto recovery_limits =
+                openrc::runtime::make_level_scene_recovery_limits_v1();
+            const auto recovery_profile =
+                openrc::runtime::make_level_scene_recovery_profile_v1();
+            const auto render_profile =
+                openrc::runtime::make_level_scene_render_compile_profile_v1();
+            const auto render_io_limits = make_cli_render_scene_io_limits();
+
+            const std::array<openrc::LevelPackageProvenanceV1, 2U>
+                render_sources{
+                    openrc::LevelPackageProvenanceV1{
+                        openrc::LevelPackageProvenanceKindV1::iso_range,
+                        "rac1/disc-image",
+                        0U,
+                        source_size_before,
+                        source_digest_before,
+                    },
+                    openrc::LevelPackageProvenanceV1{
+                        openrc::LevelPackageProvenanceKindV1::prepared_resource,
+                        "rac1/boot-executable",
+                        0U,
+                        static_cast<std::uint64_t>(boot_executable_size_before),
+                        boot_executable_digest_before,
+                    },
+                };
+
+            openrc::PreparedGameV2 manifest;
+            manifest.content_api_version = openrc::kOpenRcContentApiVersionV1;
+            manifest.provenance.game_id = "openrc-rac-2002";
+            manifest.provenance.build_id = kSupportedRacBuildIdV1;
+            manifest.provenance.compiler_id = "openrc-asset-compiler";
+            manifest.provenance.compiler_version = OPENRC_VERSION;
+            manifest.provenance.source_image_bytes = source_size_before;
+            manifest.provenance.source_image_sha256 = source_digest_before;
+
+            std::vector<std::vector<std::byte>> package_storage;
+            package_storage.reserve(openrc::kDiscTocLevelCount);
+            manifest.levels.reserve(openrc::kDiscTocLevelCount);
+            std::uint64_t total_package_bytes = 0U;
+
+            for (std::uint32_t level_id = 0U;
+                 level_id < openrc::kDiscTocLevelCount; ++level_id) {
+                std::string stage = "loading source assets";
+                try {
+                    std::cout << '[' << (level_id + 1U) << '/'
+                              << openrc::kDiscTocLevelCount << "] Level "
+                              << level_id << ": loading source assets...\n";
+                    const auto assets = openrc::load_rac_level_moby_assets_v1(
+                        arguments[1], level_id, source_asset_limits);
+
+                    stage = "compiling the native level foundation";
+                    std::cout << '[' << (level_id + 1U) << '/'
+                              << openrc::kDiscTocLevelCount << "] Level "
+                              << level_id
+                              << ": compiling collision and "
+                                 "bootstrap...\n";
+                    auto package =
+                        compile_cli_level_foundation(assets, package_limits);
+
+                    stage = "recovering the complete level scene";
+                    std::cout << '[' << (level_id + 1U) << '/'
+                              << openrc::kDiscTocLevelCount << "] Level "
+                              << level_id
+                              << ": recovering all scene "
+                                 "records...\n";
+                    const openrc::runtime::LevelSceneRecoveryRequestV1
+                        recovery_request{
+                            arguments[1],
+                            arguments[2],
+                            level_id,
+                            openrc::runtime::LevelSceneRecordSelectionV1::all_records,
+                            0U,
+                            openrc::kSceneBlockSourceGeometryEntrypointV1};
+                    const auto recovered =
+                        openrc::runtime::recover_level_scene_v1(
+                            recovery_request, recovery_limits,
+                            recovery_profile);
+
+                    stage = "compiling the neutral render scene";
+                    std::cout << '[' << (level_id + 1U) << '/'
+                              << openrc::kDiscTocLevelCount << "] Level "
+                              << level_id
+                              << ": compiling neutral rendering "
+                                 "data...\n";
+                    const auto render_scene =
+                        openrc::runtime::compile_level_scene_render_v1(
+                            recovered, render_profile);
+
+                    stage = "attaching and encoding the render scene";
+                    package = openrc::attach_render_scene_to_level_package_v1(
+                        std::move(package), render_scene, render_sources,
+                        render_io_limits, package_limits);
+                    auto package_bytes = openrc::encode_level_package_v1(
+                        package, package_limits);
+                    if (package_bytes.size() >
+                        kMaximumCliPreparedNativeBytes - total_package_bytes) {
+                        throw std::runtime_error(
+                            "The complete native game exceeds its bounded "
+                            "package-byte budget");
+                    }
+                    total_package_bytes += package_bytes.size();
+
+                    manifest.levels.push_back(
+                        openrc::PreparedGameLevelReferenceV2{
+                            level_id, level_package_path(level_id),
+                            package_bytes.size(),
+                            openrc::prepared_content_sha256_v1(package_bytes)});
+                    package_storage.push_back(std::move(package_bytes));
+                    std::cout << '[' << (level_id + 1U) << '/'
+                              << openrc::kDiscTocLevelCount << "] Level "
+                              << level_id << ": ready ("
+                              << package_storage.back().size()
+                              << " package bytes).\n";
+                } catch (const std::exception &error) {
+                    throw std::runtime_error(
+                        "Native game compilation failed for level " +
+                        std::to_string(level_id) + " while " + stage + ": " +
+                        error.what());
+                }
+            }
+
+            if (manifest.levels.size() != openrc::kDiscTocLevelCount ||
+                package_storage.size() != openrc::kDiscTocLevelCount) {
+                throw std::runtime_error(
+                    "Native game compilation did not produce the canonical "
+                    "19-level set");
+            }
+
+            std::cout << "Hashing the source image and prepared boot ELF "
+                         "after native compilation...\n";
+            const auto source_size_after =
+                std::filesystem::file_size(arguments[1]);
+            const auto boot_executable_size_after =
+                std::filesystem::file_size(arguments[2]);
+            const auto source_digest_after =
+                openrc::sha256_file_digest(arguments[1]);
+            const auto boot_executable_digest_after =
+                openrc::sha256_file_digest(arguments[2]);
+            if (source_size_after != source_size_before ||
+                source_digest_after != source_digest_before) {
+                throw std::runtime_error(
+                    "The source image changed during native game "
+                    "compilation");
+            }
+            if (boot_executable_size_after != boot_executable_size_before ||
+                boot_executable_digest_after != boot_executable_digest_before) {
+                throw std::runtime_error(
+                    "The prepared boot ELF changed during native game "
+                    "compilation");
+            }
+
+            std::vector<openrc::PreparedGameV2LevelPackageBytesV1>
+                package_inputs;
+            package_inputs.reserve(package_storage.size());
+            for (std::size_t index = 0U; index < package_storage.size();
+                 ++index) {
+                package_inputs.push_back(
+                    openrc::PreparedGameV2LevelPackageBytesV1{
+                        static_cast<std::uint32_t>(index),
+                        package_storage[index]});
+            }
+
+            std::cout << "All 19 native level packages are complete; "
+                         "publishing the verified set atomically...\n";
+            const auto published = openrc::publish_prepared_game_v2_v1(
+                arguments[3], manifest, package_inputs, prepared_limits);
+            std::cout << "OpenRC native game published\n"
+                      << "Root:                   "
+                      << openrc::path_to_utf8(published.root) << '\n'
+                      << "Levels:                 " << published.level_count
+                      << '\n'
+                      << "Level package bytes:    " << published.package_bytes
+                      << '\n'
+                      << "Manifest SHA-256:       "
+                      << openrc::hex_digest(published.manifest_sha256) << '\n'
+                      << "Source image SHA-256:   "
+                      << openrc::hex_digest(source_digest_before) << '\n'
+                      << "Prepared ELF SHA-256:   "
+                      << openrc::hex_digest(boot_executable_digest_before)
+                      << '\n';
+            return 0;
+        } catch (const std::exception &error) {
             std::cerr << "error: " << error.what() << '\n';
             return kOperationError;
         }
@@ -4563,38 +5125,258 @@ int run(const std::vector<std::filesystem::path>& arguments) {
         const auto level_id = static_cast<std::uint32_t>(*level_value);
 
         try {
-            const auto limits = make_cli_prepared_foundation_limits();
-            const auto prepared = openrc::load_prepared_game_v2_root_v1(
+            const auto limits = make_cli_prepared_native_limits();
+            const auto prepared =
+                openrc::load_prepared_game_v2_root_v1(
                 arguments[1], limits);
-            const auto package =
-                openrc::load_prepared_game_level_package_v1(
-                    prepared, level_id, limits);
+            const auto package = openrc::load_prepared_game_level_package_v1(
+                prepared, level_id, limits);
             const auto resolved = openrc::resolve_level_package_v1(
                 package, std::span<const openrc::LevelPackageV1>{},
                 limits.level_package);
             const auto foundation =
                 openrc::game::load_runtime_level_foundation_v1(
                     resolved,
-                    openrc::game::RuntimeLevelFoundationLimitsV1{
-                        kNativeContentApiVersionV1,
-                        make_cli_collision_payload_limits(),
-                        make_cli_bootstrap_payload_limits()});
+                    make_cli_runtime_level_content_limits().foundation);
             const auto smoke = run_cli_player_smoke(foundation);
 
+            std::cout << "OpenRC published-package player simulation smoke\n"
+                      << "Prepared root:          "
+                      << openrc::path_to_utf8(prepared.root) << '\n'
+                      << "Manifest SHA-256:       "
+                      << openrc::hex_digest(prepared.manifest_sha256) << '\n'
+                      << "Level ID:               " << foundation.level_id
+                      << '\n'
+                      << "Build/content API:      " << foundation.build_id
+                      << '/' << foundation.content_api_version << '\n'
+                      << "Collision triangles:    "
+                      << foundation.collision_world.mesh.triangles.size()
+                      << '\n'
+                      << "Spawn:                  "
+                      << smoke.spawn.feet_position.x << ", "
+                      << smoke.spawn.feet_position.y << ", "
+                      << smoke.spawn.feet_position.z << '\n'
+                      << "Final feet position:    "
+                      << smoke.snapshot.character.feet_position.x << ", "
+                << smoke.snapshot.character.feet_position.y << ", "
+                << smoke.snapshot.character.feet_position.z << '\n'
+                << "Grounded/resets:        "
+                      << (smoke.snapshot.character.grounded ? "yes" : "no")
+                << '/'
+                << smoke.snapshot.reset_count << '\n'
+                << "Replay state hash:      "
+                << openrc::game::hash_player_simulation_snapshot_v1(
+                       smoke.snapshot)
+                << '\n';
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << "error: " << error.what() << '\n';
+            return kOperationError;
+        }
+    }
+
+    if (command == "prepared-native-level-smoke") {
+        if (arguments.size() != 3U) {
+            std::cerr
+                << "error: prepared-native-level-smoke expects an absolute "
+                   "prepared root and a level ID\n";
+            return kUsageError;
+        }
+        const auto level_value = parse_decimal_argument(arguments[2]);
+        if (!level_value || *level_value >= openrc::kDiscTocLevelCount) {
+            std::cerr << "error: level ID must be a decimal number from 0 to "
+                      << (openrc::kDiscTocLevelCount - 1U) << '\n';
+            return kUsageError;
+        }
+        const auto level_id = static_cast<std::uint32_t>(*level_value);
+
+        try {
+            const auto limits = make_cli_prepared_native_limits();
+            const auto prepared =
+                openrc::load_prepared_game_v2_root_v1(arguments[1], limits);
+            const auto resolved =
+                openrc::load_resolved_prepared_game_level_package_v1(
+                    prepared, level_id,
+                    std::span<
+                        const openrc::ExplicitLevelPackageOverlayBytesV1>{},
+                    limits);
+            const auto content = openrc::game::load_runtime_level_content_v1(
+                resolved, make_cli_runtime_level_content_limits());
+            const auto smoke = run_cli_player_smoke(content.foundation);
+
+            std::uint64_t render_vertex_count = 0U;
+            std::uint64_t render_index_count = 0U;
+            std::uint64_t render_draw_count = 0U;
+            for (const auto &mesh : content.render_scene.meshes) {
+                render_vertex_count += mesh.vertices.size();
+                render_index_count += mesh.triangle_indices.size();
+                render_draw_count += mesh.draw_ranges.size();
+            }
+
             std::cout
-                << "OpenRC published-package player simulation smoke\n"
+                << "OpenRC published native-level content smoke\n"
                 << "Prepared root:          "
                 << openrc::path_to_utf8(prepared.root) << '\n'
                 << "Manifest SHA-256:       "
                 << openrc::hex_digest(prepared.manifest_sha256) << '\n'
+                << "Level ID:               " << content.foundation.level_id
+                << '\n'
+                << "Build/content API:      " << content.foundation.build_id
+                << '/' << content.foundation.content_api_version << '\n'
+                << "Collision triangles:    "
+                << content.foundation.collision_world.mesh.triangles.size()
+                << '\n'
+                << "Render meshes/instances: "
+                << content.render_scene.meshes.size() << '/'
+                << content.render_scene.instances.size() << '\n'
+                << "Render vertices/triangles: " << render_vertex_count << '/'
+                << (render_index_count / 3U) << '\n'
+                << "Render draw ranges:       " << render_draw_count << '\n'
+                << "Render textures/materials: "
+                << content.render_scene.textures.size() << '/'
+                << content.render_scene.materials.size() << '\n'
+                << "Spawn:                  " << smoke.spawn.feet_position.x
+                << ", " << smoke.spawn.feet_position.y << ", "
+                << smoke.spawn.feet_position.z << '\n'
+                << "Grounded/resets:        "
+                << (smoke.snapshot.character.grounded ? "yes" : "no") << '/'
+                << smoke.snapshot.reset_count << '\n'
+                << "Replay state hash:      "
+                << openrc::game::hash_player_simulation_snapshot_v1(
+                       smoke.snapshot)
+                << '\n';
+            return 0;
+        } catch (const std::exception &error) {
+            std::cerr << "error: " << error.what() << '\n';
+            return kOperationError;
+        }
+    }
+
+    if (command == "level-package-smoke") {
+        if (arguments.size() != 2U) {
+            std::cerr << "error: level-package-smoke expects one .orlvl path\n";
+            return kUsageError;
+        }
+
+        try {
+            const auto package_limits =
+                make_cli_level_foundation_package_limits();
+            const auto package_bytes = read_bounded_binary_file(
+                arguments[1], package_limits.max_input_bytes);
+            const auto package =
+                openrc::parse_level_package_v1(package_bytes, package_limits);
+            const auto resolved = openrc::resolve_level_package_v1(
+                package, std::span<const openrc::LevelPackageV1>{},
+                package_limits);
+            const auto foundation =
+                openrc::game::load_runtime_level_foundation_v1(
+                    resolved, openrc::game::RuntimeLevelFoundationLimitsV1{
+                                  openrc::kOpenRcContentApiVersionV1,
+                                  make_cli_collision_payload_limits(),
+                                  make_cli_bootstrap_payload_limits()});
+            const auto smoke = run_cli_player_smoke(foundation);
+
+            std::cout << "OpenRC native package-only player simulation smoke\n"
+                      << "Package:                "
+                      << openrc::path_to_utf8(arguments[1]) << '\n'
+                      << "Level ID:               " << foundation.level_id
+                      << '\n'
+                      << "Build/content API:      " << foundation.build_id
+                      << '/' << foundation.content_api_version << '\n'
+                      << "Package bytes:          " << package_bytes.size()
+                      << '\n'
+                      << "Collision vertices:     "
+                      << foundation.collision_world.mesh.vertices.size() << '\n'
+                      << "Collision triangles:    "
+                      << foundation.collision_world.mesh.triangles.size()
+                      << '\n'
+                      << "Spawn:                  "
+                      << smoke.spawn.feet_position.x << ", "
+                      << smoke.spawn.feet_position.y << ", "
+                      << smoke.spawn.feet_position.z << '\n'
+                      << "Death height:           "
+                      << foundation.bootstrap.death_height_world << '\n'
+                      << "Final feet position:    "
+                      << smoke.snapshot.character.feet_position.x << ", "
+                      << smoke.snapshot.character.feet_position.y << ", "
+                      << smoke.snapshot.character.feet_position.z << '\n'
+                      << "Grounded:               "
+                      << (smoke.snapshot.character.grounded ? "yes" : "no")
+                      << '\n'
+                      << "Landings/wall ticks:    " << smoke.landed_count << '/'
+                      << smoke.wall_hit_count << '\n'
+                      << "Contacts/resets:        " << smoke.collision_count
+                      << '/' << smoke.snapshot.reset_count << '\n'
+                      << "Replay state hash:      "
+                      << openrc::game::hash_player_simulation_snapshot_v1(
+                             smoke.snapshot)
+                      << '\n';
+            return 0;
+        } catch (const std::exception &error) {
+            std::cerr << "error: " << error.what() << '\n';
+            return kOperationError;
+        }
+    }
+
+    if (command == "level-native-package-smoke") {
+        if (arguments.size() != 2U) {
+            std::cerr << "error: level-native-package-smoke expects one .orlvl "
+                         "path\n";
+            return kUsageError;
+        }
+
+        try {
+            const auto package_limits = make_cli_native_level_package_limits();
+            const auto runtime_limits =
+                make_cli_runtime_level_content_limits();
+            const auto package_bytes = read_bounded_binary_file(
+                arguments[1], package_limits.max_input_bytes);
+            const auto package =
+                openrc::parse_level_package_v1(package_bytes, package_limits);
+            const auto resolved = openrc::resolve_level_package_v1(
+                package, std::span<const openrc::LevelPackageV1>{},
+                package_limits);
+            const auto foundation =
+                openrc::game::load_runtime_level_foundation_v1(
+                    resolved, runtime_limits.foundation);
+            const auto render_scene =
+                openrc::game::load_runtime_render_scene_v1(
+                    resolved, openrc::kOpenRcContentApiVersionV1,
+                    runtime_limits.render_scene);
+            const auto smoke = run_cli_player_smoke(foundation);
+
+            std::uint64_t vertex_count = 0U;
+            std::uint64_t index_count = 0U;
+            for (const auto &mesh : render_scene.meshes) {
+                vertex_count += mesh.vertices.size();
+                index_count += mesh.triangle_indices.size();
+            }
+            std::uint64_t texture_bytes = 0U;
+            for (const auto &texture : render_scene.textures) {
+                for (const auto &mip : texture.mips) {
+                    texture_bytes += mip.rgba8.size();
+                }
+            }
+
+            std::cout
+                << "OpenRC native renderable package smoke\n"
+                << "Package:                "
+                << openrc::path_to_utf8(arguments[1]) << '\n'
                 << "Level ID:               " << foundation.level_id << '\n'
                 << "Build/content API:      " << foundation.build_id << '/'
                 << foundation.content_api_version << '\n'
+                << "Package bytes:          " << package_bytes.size() << '\n'
                 << "Collision triangles:    "
                 << foundation.collision_world.mesh.triangles.size() << '\n'
-                << "Spawn:                  "
-                << smoke.spawn.feet_position.x << ", "
-                << smoke.spawn.feet_position.y << ", "
+                << "Meshes/instances:       " << render_scene.meshes.size()
+                << '/' << render_scene.instances.size() << '\n'
+                << "Vertices/triangles:     " << vertex_count << '/'
+                << (index_count / 3U) << '\n'
+                << "Textures/materials:     " << render_scene.textures.size()
+                << '/' << render_scene.materials.size() << '\n'
+                << "Texture RGBA8 bytes:    " << texture_bytes << '\n'
+                << "Spawn:                  " << smoke.spawn.feet_position.x
+                << ", " << smoke.spawn.feet_position.y << ", "
                 << smoke.spawn.feet_position.z << '\n'
                 << "Final feet position:    "
                 << smoke.snapshot.character.feet_position.x << ", "
@@ -4608,73 +5390,7 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                        smoke.snapshot)
                 << '\n';
             return 0;
-        } catch (const std::exception& error) {
-            std::cerr << "error: " << error.what() << '\n';
-            return kOperationError;
-        }
-    }
-
-    if (command == "level-package-smoke") {
-        if (arguments.size() != 2U) {
-            std::cerr
-                << "error: level-package-smoke expects one .orlvl path\n";
-            return kUsageError;
-        }
-
-        try {
-            const auto package_limits =
-                make_cli_level_foundation_package_limits();
-            const auto package_bytes = read_bounded_binary_file(
-                arguments[1], package_limits.max_input_bytes);
-            const auto package = openrc::parse_level_package_v1(
-                package_bytes, package_limits);
-            const auto resolved = openrc::resolve_level_package_v1(
-                package, std::span<const openrc::LevelPackageV1>{},
-                package_limits);
-            const auto foundation =
-                openrc::game::load_runtime_level_foundation_v1(
-                    resolved,
-                    openrc::game::RuntimeLevelFoundationLimitsV1{
-                        kNativeContentApiVersionV1,
-                        make_cli_collision_payload_limits(),
-                        make_cli_bootstrap_payload_limits()});
-            const auto smoke = run_cli_player_smoke(foundation);
-
-            std::cout
-                << "OpenRC native package-only player simulation smoke\n"
-                << "Package:                "
-                << openrc::path_to_utf8(arguments[1]) << '\n'
-                << "Level ID:               " << foundation.level_id << '\n'
-                << "Build/content API:      " << foundation.build_id << '/'
-                << foundation.content_api_version << '\n'
-                << "Package bytes:          " << package_bytes.size() << '\n'
-                << "Collision vertices:     "
-                << foundation.collision_world.mesh.vertices.size() << '\n'
-                << "Collision triangles:    "
-                << foundation.collision_world.mesh.triangles.size() << '\n'
-                << "Spawn:                  "
-                << smoke.spawn.feet_position.x << ", "
-                << smoke.spawn.feet_position.y << ", "
-                << smoke.spawn.feet_position.z << '\n'
-                << "Death height:           "
-                << foundation.bootstrap.death_height_world << '\n'
-                << "Final feet position:    "
-                << smoke.snapshot.character.feet_position.x << ", "
-                << smoke.snapshot.character.feet_position.y << ", "
-                << smoke.snapshot.character.feet_position.z << '\n'
-                << "Grounded:               "
-                << (smoke.snapshot.character.grounded ? "yes" : "no")
-                << '\n'
-                << "Landings/wall ticks:    " << smoke.landed_count << '/'
-                << smoke.wall_hit_count << '\n'
-                << "Contacts/resets:        " << smoke.collision_count << '/'
-                << smoke.snapshot.reset_count << '\n'
-                << "Replay state hash:      "
-                << openrc::game::hash_player_simulation_snapshot_v1(
-                       smoke.snapshot)
-                << '\n';
-            return 0;
-        } catch (const std::exception& error) {
+        } catch (const std::exception &error) {
             std::cerr << "error: " << error.what() << '\n';
             return kOperationError;
         }
@@ -4682,8 +5398,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
 
     if (command == "level-player-smoke") {
         if (arguments.size() != 3U) {
-            std::cerr
-                << "error: level-player-smoke expects an ISO path and a level ID\n";
+            std::cerr << "error: level-player-smoke expects an ISO path and a "
+                         "level ID\n";
             return kUsageError;
         }
         const auto level_value = parse_decimal_argument(arguments[2]);
@@ -4707,13 +5423,12 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 package_limits);
             const auto foundation =
                 openrc::game::load_runtime_level_foundation_v1(
-                    resolved,
-                    openrc::game::RuntimeLevelFoundationLimitsV1{
-                        kNativeContentApiVersionV1,
-                        make_cli_collision_payload_limits(),
-                        make_cli_bootstrap_payload_limits()});
-            const auto& collision = foundation.collision_world;
-            const auto& bootstrap = foundation.bootstrap;
+                    resolved, openrc::game::RuntimeLevelFoundationLimitsV1{
+                                  openrc::kOpenRcContentApiVersionV1,
+                                  make_cli_collision_payload_limits(),
+                                  make_cli_bootstrap_payload_limits()});
+            const auto &collision = foundation.collision_world;
+            const auto &bootstrap = foundation.bootstrap;
             const auto smoke = run_cli_player_smoke(foundation);
             std::cout
                 << "OpenRC native player simulation smoke\n"
@@ -4721,25 +5436,23 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 << openrc::path_to_utf8(arguments[1]) << '\n'
                 << "Level ID:               " << level_id << '\n'
                 << "Native package bytes:   " << package_bytes.size() << '\n'
-                << "Collision vertices:     "
-                << collision.mesh.vertices.size() << '\n'
-                << "Collision triangles:    "
-                << collision.mesh.triangles.size() << '\n'
-                << "Collision grid cells:   "
-                << collision.grid.cells.size() << '\n'
-                << "Spawn:                  "
-                << smoke.spawn.feet_position.x << ", "
-                << smoke.spawn.feet_position.y << ", "
+                << "Collision vertices:     " << collision.mesh.vertices.size()
+                << '\n'
+                << "Collision triangles:    " << collision.mesh.triangles.size()
+                << '\n'
+                << "Collision grid cells:   " << collision.grid.cells.size()
+                << '\n'
+                << "Spawn:                  " << smoke.spawn.feet_position.x
+                << ", " << smoke.spawn.feet_position.y << ", "
                 << smoke.spawn.feet_position.z << '\n'
-                << "Death height:           "
-                << bootstrap.death_height_world << '\n'
+                << "Death height:           " << bootstrap.death_height_world
+                << '\n'
                 << "Final feet position:    "
                 << smoke.snapshot.character.feet_position.x << ", "
                 << smoke.snapshot.character.feet_position.y << ", "
                 << smoke.snapshot.character.feet_position.z << '\n'
                 << "Grounded:               "
-                << (smoke.snapshot.character.grounded ? "yes" : "no")
-                << '\n'
+                << (smoke.snapshot.character.grounded ? "yes" : "no") << '\n'
                 << "Landings/wall ticks:    " << smoke.landed_count << '/'
                 << smoke.wall_hit_count << '\n'
                 << "Contacts/resets:        " << smoke.collision_count << '/'
@@ -4749,7 +5462,7 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                        smoke.snapshot)
                 << '\n';
             return 0;
-        } catch (const std::exception& error) {
+        } catch (const std::exception &error) {
             std::cerr << "error: " << error.what() << '\n';
             return kOperationError;
         }
@@ -4758,7 +5471,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
     if (command == "level-moby-scene") {
         if (arguments.size() != 3U) {
             std::cerr
-                << "error: level-moby-scene expects an ISO path and a level ID\n";
+                << "error: level-moby-scene expects an ISO path and a "
+                         "level ID\n";
             return kUsageError;
         }
         const auto level_value = parse_decimal_argument(arguments[2]);
@@ -5140,8 +5854,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                         static_cast<std::size_t>(entry.encoded_range.offset),
                         static_cast<std::size_t>(entry.encoded_range.size));
                 if (gadget_decoded_bytes >= kMaximumCliDecodedWadBytes) {
-                    throw std::runtime_error(
-                        "Shared gadget models exceed the aggregate decode limit");
+                    throw std::runtime_error("Shared gadget models exceed the "
+                                             "aggregate decode limit");
                 }
                 const auto remaining =
                     kMaximumCliDecodedWadBytes - gadget_decoded_bytes;
@@ -5396,8 +6110,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                     remaining_decoded_bytes);
                 if (nested.bytes.size() >
                     remaining_decoded_bytes) {
-                    throw std::runtime_error(
-                        "The companion WADs exceed the aggregate decoded-byte limit");
+                    throw std::runtime_error("The companion WADs exceed the "
+                                             "aggregate decoded-byte limit");
                 }
                 nested_decoded_bytes += nested.bytes.size();
                 companion_mobies.push_back(CompanionMobySummaryV1{
@@ -5588,8 +6302,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 });
             if (entry == toc.global_extents.end() ||
                 entry->signature != openrc::DiscTocSignature::ps2d) {
-                throw std::runtime_error(
-                    "Global TOC slot 1 is absent or does not have a PS2D signature");
+                throw std::runtime_error("Global TOC slot 1 is absent or does "
+                                         "not have a PS2D signature");
             }
 
             const auto bytes = read_disc_extent(
@@ -5747,7 +6461,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
 
     if (command == "prepare") {
         if (arguments.size() < 2 || arguments.size() > 3) {
-            std::cerr << "error: prepare expects an ISO path and an optional games directory\n";
+            std::cerr << "error: prepare expects an ISO path and an optional games "
+                   "directory\n";
             return kUsageError;
         }
 
@@ -5795,7 +6510,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
         if (arguments.size() != 4) {
             std::cerr
                 << "error: dvp-vu expects an executable, a comma-separated "
-                   "entrypoint list, and a comma-separated overlay-section list\n";
+                   "entrypoint list, and a comma-separated overlay-section "
+                   "list\n";
             return kUsageError;
         }
 
@@ -6174,7 +6890,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
     if (command == "r5900-boundaries") {
         if (arguments.size() != 2U) {
             std::cerr
-                << "error: r5900-boundaries expects exactly one executable path\n";
+                << "error: r5900-boundaries expects exactly one "
+                         "executable path\n";
             return kUsageError;
         }
 
@@ -6196,8 +6913,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
             for (const auto& transfer : report.control_transfers) {
                 const auto index = static_cast<std::size_t>(transfer.kind);
                 if (index >= transfer_counts.size()) {
-                    throw std::runtime_error(
-                        "The EE/R5900 inventory returned an invalid transfer kind");
+                    throw std::runtime_error("The EE/R5900 inventory returned "
+                                             "an invalid transfer kind");
                 }
                 ++transfer_counts[index];
             }

@@ -1,9 +1,17 @@
 #include "d3d11_renderer.hpp"
 
+#include "moby_scene_geometry.hpp"
+#include "render_scene_d3d_data.hpp"
+#include "scene_geometry.hpp"
+
+#include "generated/render_scene_ps_dxbc.hpp"
 #include "generated/source_textured_ps_dxbc.hpp"
 #include "generated/source_textured_vs_dxbc.hpp"
 #include "generated/wireframe_ps_dxbc.hpp"
 #include "generated/wireframe_vs_dxbc.hpp"
+
+#include "openrc/render_scene.hpp"
+#include "openrc/rac_level_moby_texture.hpp"
 
 #include <d3d11.h>
 #include <dxgi.h>
@@ -45,6 +53,15 @@ struct ProjectedSourceVertex {
 
 static_assert(sizeof(ProjectedSourceVertex) == 28U);
 
+struct alignas(16) RenderSceneMaterialConstants {
+    std::array<float, 4U> base_color{};
+    float use_vertex_color = 0.0F;
+    float alpha_cutoff = -1.0F;
+    std::array<float, 2U> padding{};
+};
+
+static_assert(sizeof(RenderSceneMaterialConstants) == 32U);
+
 struct GpuSourceMaterialBatch {
     UINT start_index = 0U;
     UINT index_count = 0U;
@@ -56,6 +73,23 @@ struct GpuSourceTextureRegion {
     UINT index_count = 0U;
     std::vector<GpuSourceMaterialBatch> material_batches;
     std::vector<ComPtr<ID3D11ShaderResourceView>> texture_views;
+};
+
+struct RenderSceneSamplerKey {
+    RenderSceneAddressModeV1 address_u = RenderSceneAddressModeV1::repeat;
+    RenderSceneAddressModeV1 address_v = RenderSceneAddressModeV1::repeat;
+    RenderSceneFilterV1 min_filter = RenderSceneFilterV1::linear;
+    RenderSceneFilterV1 mag_filter = RenderSceneFilterV1::linear;
+    RenderSceneMipmapFilterV1 mipmap_filter =
+        RenderSceneMipmapFilterV1::none;
+
+    [[nodiscard]] bool
+    operator==(const RenderSceneSamplerKey&) const = default;
+};
+
+struct GpuRenderSceneSampler {
+    RenderSceneSamplerKey key;
+    ComPtr<ID3D11SamplerState> state;
 };
 
 constexpr float kPi = 3.14159265358979323846F;
@@ -93,11 +127,14 @@ struct Vec3 {
 }
 
 [[nodiscard]] Vec3 normalized(const Vec3 value) noexcept {
-    const auto length_squared = dot(value, value);
-    if (!(length_squared > 0.0F) || !std::isfinite(length_squared)) {
+    const auto length_squared =
+        static_cast<double>(value.x) * value.x +
+        static_cast<double>(value.y) * value.y +
+        static_cast<double>(value.z) * value.z;
+    if (!(length_squared > 0.0) || !std::isfinite(length_squared)) {
         return {};
     }
-    return value * (1.0F / std::sqrt(length_squared));
+    return value * static_cast<float>(1.0 / std::sqrt(length_squared));
 }
 
 [[nodiscard]] Vec3 as_vec3(const SceneVertex3dV1& vertex) noexcept {
@@ -135,9 +172,79 @@ void require_success(const HRESULT result, const char* const operation) {
     return static_cast<UINT>(item_count * item_size);
 }
 
+[[nodiscard]] D3D11_TEXTURE_ADDRESS_MODE texture_address_mode(
+    const RenderSceneAddressModeV1 mode) {
+    switch (mode) {
+    case RenderSceneAddressModeV1::repeat:
+        return D3D11_TEXTURE_ADDRESS_WRAP;
+    case RenderSceneAddressModeV1::clamp_to_edge:
+        return D3D11_TEXTURE_ADDRESS_CLAMP;
+    }
+    throw std::invalid_argument("Unknown RenderSceneV1 texture address mode");
+}
+
+[[nodiscard]] D3D11_FILTER texture_filter(
+    const RenderSceneFilterV1 min_filter,
+    const RenderSceneFilterV1 mag_filter,
+    const RenderSceneMipmapFilterV1 mipmap_filter) {
+    const auto min_linear = min_filter == RenderSceneFilterV1::linear;
+    const auto mag_linear = mag_filter == RenderSceneFilterV1::linear;
+    const auto mip_linear =
+        mipmap_filter == RenderSceneMipmapFilterV1::linear;
+
+    if (min_linear) {
+        if (mag_linear) {
+            return mip_linear ? D3D11_FILTER_MIN_MAG_MIP_LINEAR
+                              : D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+        }
+        return mip_linear ? D3D11_FILTER_MIN_LINEAR_MAG_POINT_MIP_LINEAR
+                          : D3D11_FILTER_MIN_LINEAR_MAG_MIP_POINT;
+    }
+    if (mag_linear) {
+        return mip_linear ? D3D11_FILTER_MIN_POINT_MAG_MIP_LINEAR
+                          : D3D11_FILTER_MIN_POINT_MAG_LINEAR_MIP_POINT;
+    }
+    return mip_linear ? D3D11_FILTER_MIN_MAG_POINT_MIP_LINEAR
+                      : D3D11_FILTER_MIN_MAG_MIP_POINT;
+}
+
 } // namespace
 
 struct D3d11Renderer::Implementation {
+    explicit Implementation(HWND native_window,
+                            const RenderSceneV1& scene)
+        : window(native_window), native_scene_mode(true) {
+        if (window == nullptr) {
+            throw std::invalid_argument(
+                "The D3D11 renderer requires a valid window handle");
+        }
+
+        auto flattened = build_render_scene_d3d_data_v1(scene);
+        initialize_render_scene_geometry(flattened);
+        render_scene_draws = std::move(flattened.draws);
+        render_scene_materials = std::move(flattened.materials);
+
+        create_device_and_swap_chain();
+        create_pipeline();
+        if (has_source_geometry) {
+            create_source_geometry_buffers(flattened.triangle_indices);
+        }
+        create_render_scene_resources(scene);
+        create_render_target();
+
+        RECT client_rectangle{};
+        if (GetClientRect(window, &client_rectangle) == FALSE) {
+            throw std::runtime_error(
+                "GetClientRect failed while initializing the D3D11 renderer");
+        }
+        const auto client_width =
+            std::max<LONG>(0, client_rectangle.right - client_rectangle.left);
+        const auto client_height =
+            std::max<LONG>(0, client_rectangle.bottom - client_rectangle.top);
+        set_dimensions(static_cast<std::uint32_t>(client_width),
+                       static_cast<std::uint32_t>(client_height));
+    }
+
     explicit Implementation(HWND native_window,
                             const SceneGeometryV1& geometry)
         : Implementation(native_window, geometry, nullptr, nullptr) {}
@@ -179,6 +286,7 @@ struct D3d11Renderer::Implementation {
         }
         raster_index_count =
             static_cast<UINT>(geometry.triangle_indices.size());
+        has_raster_geometry = true;
 
         if (source_geometry != nullptr) {
             initialize_source_geometry(*source_geometry);
@@ -200,7 +308,7 @@ struct D3d11Renderer::Implementation {
         create_pipeline();
         create_raster_geometry_buffers(geometry);
         if (source_geometry != nullptr) {
-            create_source_geometry_buffers(*source_geometry);
+            create_source_geometry_buffers(source_geometry->triangle_indices);
         }
         if (textures != nullptr) {
             create_texture_resources(
@@ -226,6 +334,44 @@ struct D3d11Renderer::Implementation {
             std::max<LONG>(0, client_rectangle.bottom - client_rectangle.top);
         set_dimensions(static_cast<std::uint32_t>(client_width),
                        static_cast<std::uint32_t>(client_height));
+    }
+
+    void initialize_render_scene_geometry(
+        const RenderSceneD3dDataV1& geometry) {
+        if (geometry.vertices.empty()) {
+            return;
+        }
+        if (geometry.triangle_indices.empty() || geometry.draws.empty()) {
+            throw std::invalid_argument(
+                "The flattened RenderSceneV1 has an incomplete draw envelope");
+        }
+
+        source_vertices.reserve(geometry.vertices.size());
+        for (const auto& vertex : geometry.vertices) {
+            source_vertices.push_back(SceneVertex3dV1{
+                vertex.x,
+                vertex.y,
+                vertex.z,
+                vertex.rgba8,
+                vertex.u,
+                vertex.v,
+            });
+        }
+        projected_vertices.resize(source_vertices.size());
+        for (std::size_t index = 0U; index < source_vertices.size(); ++index) {
+            projected_vertices[index].rgba = source_vertices[index].rgba;
+            projected_vertices[index].u = source_vertices[index].u;
+            projected_vertices[index].v = source_vertices[index].v;
+        }
+        source_index_count =
+            static_cast<UINT>(geometry.triangle_indices.size());
+        has_source_geometry = true;
+        show_source_geometry = true;
+
+        orbit_target = {geometry.camera_target[0U],
+                        geometry.camera_target[1U],
+                        geometry.camera_target[2U]};
+        orbit_radius = geometry.camera_radius;
     }
 
     void initialize_source_geometry(const SceneGeometry3dV1& geometry) {
@@ -277,17 +423,45 @@ struct D3d11Renderer::Implementation {
         has_source_geometry = true;
         show_source_geometry = true;
 
-        orbit_target = {
-            (geometry.minimum_x + geometry.maximum_x) * 0.5F,
-            (geometry.minimum_y + geometry.maximum_y) * 0.5F,
-            (geometry.minimum_z + geometry.maximum_z) * 0.5F,
+        const std::array<double, 3U> target{
+            (static_cast<double>(geometry.minimum_x) + geometry.maximum_x) *
+                0.5,
+            (static_cast<double>(geometry.minimum_y) + geometry.maximum_y) *
+                0.5,
+            (static_cast<double>(geometry.minimum_z) + geometry.maximum_z) *
+                0.5,
         };
-        orbit_radius = 0.0F;
+        double squared_radius = 0.0;
         for (const auto& vertex : source_vertices) {
-            const auto relative = as_vec3(vertex) - orbit_target;
-            orbit_radius = std::max(orbit_radius, std::sqrt(dot(relative, relative)));
+            const auto relative_x = static_cast<double>(vertex.x) - target[0U];
+            const auto relative_y = static_cast<double>(vertex.y) - target[1U];
+            const auto relative_z = static_cast<double>(vertex.z) - target[2U];
+            squared_radius = std::max(
+                squared_radius,
+                relative_x * relative_x + relative_y * relative_y +
+                    relative_z * relative_z);
         }
-        if (!(orbit_radius > 0.0F) || !std::isfinite(orbit_radius)) {
+        auto radius = std::sqrt(squared_radius);
+        if (!(radius > 0.0)) {
+            radius = 1.0;
+        }
+        constexpr double kMaximumCameraDistanceFactor = 128.0;
+        const auto maximum_float =
+            static_cast<double>(std::numeric_limits<float>::max());
+        for (const auto component : target) {
+            const auto magnitude = std::abs(component);
+            if (!std::isfinite(component) || magnitude > maximum_float ||
+                radius * kMaximumCameraDistanceFactor >
+                    maximum_float - magnitude) {
+                throw std::invalid_argument(
+                    "The D3D11 source-space geometry exceeds the camera numeric domain");
+            }
+        }
+        orbit_target = {static_cast<float>(target[0U]),
+                        static_cast<float>(target[1U]),
+                        static_cast<float>(target[2U])};
+        orbit_radius = static_cast<float>(radius);
+        if (!std::isfinite(orbit_radius) || !(orbit_radius > 0.0F)) {
             orbit_radius = 1.0F;
         }
     }
@@ -520,6 +694,13 @@ struct D3d11Renderer::Implementation {
                 nullptr,
                 textured_pixel_shader.GetAddressOf()),
             "ID3D11Device::CreatePixelShader(textured source)");
+        require_success(
+            device->CreatePixelShader(
+                g_openrc_render_scene_ps,
+                sizeof(g_openrc_render_scene_ps),
+                nullptr,
+                render_scene_pixel_shader.GetAddressOf()),
+            "ID3D11Device::CreatePixelShader(RenderSceneV1)");
 
         constexpr std::array<D3D11_INPUT_ELEMENT_DESC, 2U> kInputElements{{
             {"POSITION",
@@ -598,6 +779,17 @@ struct D3d11Renderer::Implementation {
                 solid_rasterizer_state.GetAddressOf()),
             "ID3D11Device::CreateRasterizerState(solid)");
 
+        // RenderSceneV1 defines counter-clockwise world-space front faces.
+        // The viewport's Y flip presents those as clockwise on the D3D render
+        // target, so FrontCounterClockwise remains false here.
+        rasterizer_description.CullMode = D3D11_CULL_BACK;
+        rasterizer_description.FrontCounterClockwise = FALSE;
+        require_success(
+            device->CreateRasterizerState(
+                &rasterizer_description,
+                solid_single_sided_rasterizer_state.GetAddressOf()),
+            "ID3D11Device::CreateRasterizerState(RenderSceneV1 single-sided)");
+
         D3D11_DEPTH_STENCIL_DESC depth_description{};
         depth_description.DepthEnable = FALSE;
         depth_description.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
@@ -650,6 +842,14 @@ struct D3d11Renderer::Implementation {
             device->CreateBuffer(
                 &constant_description, nullptr, fit_buffer.GetAddressOf()),
             "ID3D11Device::CreateBuffer(fit constants)");
+
+        constant_description.ByteWidth = sizeof(RenderSceneMaterialConstants);
+        require_success(
+            device->CreateBuffer(
+                &constant_description,
+                nullptr,
+                render_scene_material_buffer.GetAddressOf()),
+            "ID3D11Device::CreateBuffer(RenderSceneV1 material constants)");
     }
 
     void create_raster_geometry_buffers(const SceneGeometryV1& geometry) {
@@ -684,7 +884,8 @@ struct D3d11Renderer::Implementation {
             "ID3D11Device::CreateBuffer(raster indices)");
     }
 
-    void create_source_geometry_buffers(const SceneGeometry3dV1& geometry) {
+    void create_source_geometry_buffers(
+        const std::span<const std::uint32_t> triangle_indices) {
         D3D11_BUFFER_DESC vertex_description{};
         vertex_description.ByteWidth = checked_buffer_size(
             projected_vertices.size(),
@@ -702,13 +903,13 @@ struct D3d11Renderer::Implementation {
 
         D3D11_BUFFER_DESC index_description{};
         index_description.ByteWidth = checked_buffer_size(
-            geometry.triangle_indices.size(),
+            triangle_indices.size(),
             sizeof(std::uint32_t),
             "Source index buffer");
         index_description.Usage = D3D11_USAGE_IMMUTABLE;
         index_description.BindFlags = D3D11_BIND_INDEX_BUFFER;
         D3D11_SUBRESOURCE_DATA index_data{};
-        index_data.pSysMem = geometry.triangle_indices.data();
+        index_data.pSysMem = triangle_indices.data();
         require_success(
             device->CreateBuffer(
                 &index_description,
@@ -775,6 +976,149 @@ struct D3d11Renderer::Implementation {
                     gpu_texture.Get(), nullptr, texture_view.GetAddressOf()),
                 "ID3D11Device::CreateShaderResourceView(source texture)");
             texture_views.push_back(std::move(texture_view));
+        }
+    }
+
+    void create_render_scene_texture_resources(
+        const std::span<const RenderSceneTextureV1> textures) {
+        render_scene_texture_views.reserve(textures.size());
+        for (const auto& texture : textures) {
+            const auto format =
+                texture.color_space == RenderSceneTextureColorSpaceV1::srgb
+                    ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB
+                    : DXGI_FORMAT_R8G8B8A8_UNORM;
+
+            const auto& base_mip = texture.mips.front();
+            D3D11_TEXTURE2D_DESC texture_description{};
+            texture_description.Width = base_mip.width;
+            texture_description.Height = base_mip.height;
+            texture_description.MipLevels =
+                static_cast<UINT>(texture.mips.size());
+            texture_description.ArraySize = 1U;
+            texture_description.Format = format;
+            texture_description.SampleDesc.Count = 1U;
+            texture_description.Usage = D3D11_USAGE_IMMUTABLE;
+            texture_description.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+            std::vector<D3D11_SUBRESOURCE_DATA> mip_data;
+            mip_data.reserve(texture.mips.size());
+            for (const auto& mip : texture.mips) {
+                D3D11_SUBRESOURCE_DATA data{};
+                data.pSysMem = mip.rgba8.data();
+                data.SysMemPitch = mip.width * 4U;
+                data.SysMemSlicePitch =
+                    static_cast<UINT>(mip.rgba8.size());
+                mip_data.push_back(data);
+            }
+
+            ComPtr<ID3D11Texture2D> gpu_texture;
+            require_success(
+                device->CreateTexture2D(
+                    &texture_description,
+                    mip_data.data(),
+                    gpu_texture.GetAddressOf()),
+                "ID3D11Device::CreateTexture2D(RenderSceneV1 texture)");
+
+            D3D11_SHADER_RESOURCE_VIEW_DESC view_description{};
+            view_description.Format = format;
+            view_description.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+            view_description.Texture2D.MostDetailedMip = 0U;
+            view_description.Texture2D.MipLevels =
+                static_cast<UINT>(texture.mips.size());
+            ComPtr<ID3D11ShaderResourceView> texture_view;
+            require_success(
+                device->CreateShaderResourceView(
+                    gpu_texture.Get(),
+                    &view_description,
+                    texture_view.GetAddressOf()),
+                "ID3D11Device::CreateShaderResourceView(RenderSceneV1 texture)");
+            render_scene_texture_views.push_back(std::move(texture_view));
+        }
+    }
+
+    void create_render_scene_white_texture() {
+        constexpr std::array<std::uint8_t, 4U> kWhite{
+            0xffU, 0xffU, 0xffU, 0xffU};
+        D3D11_TEXTURE2D_DESC texture_description{};
+        texture_description.Width = 1U;
+        texture_description.Height = 1U;
+        texture_description.MipLevels = 1U;
+        texture_description.ArraySize = 1U;
+        texture_description.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        texture_description.SampleDesc.Count = 1U;
+        texture_description.Usage = D3D11_USAGE_IMMUTABLE;
+        texture_description.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+        D3D11_SUBRESOURCE_DATA texture_data{};
+        texture_data.pSysMem = kWhite.data();
+        texture_data.SysMemPitch = 4U;
+        texture_data.SysMemSlicePitch = 4U;
+        ComPtr<ID3D11Texture2D> gpu_texture;
+        require_success(
+            device->CreateTexture2D(
+                &texture_description,
+                &texture_data,
+                gpu_texture.GetAddressOf()),
+            "ID3D11Device::CreateTexture2D(RenderSceneV1 white texture)");
+        require_success(
+            device->CreateShaderResourceView(
+                gpu_texture.Get(),
+                nullptr,
+                render_scene_white_texture_view.GetAddressOf()),
+            "ID3D11Device::CreateShaderResourceView(RenderSceneV1 white texture)");
+    }
+
+    [[nodiscard]] ComPtr<ID3D11SamplerState>
+    render_scene_sampler(const RenderSceneD3dMaterialV1& material) {
+        const RenderSceneSamplerKey key{
+            material.address_u,
+            material.address_v,
+            material.min_filter,
+            material.mag_filter,
+            material.mipmap_filter,
+        };
+        const auto existing = std::find_if(
+            render_scene_sampler_cache.begin(),
+            render_scene_sampler_cache.end(),
+            [&key](const GpuRenderSceneSampler& candidate) {
+                return candidate.key == key;
+            });
+        if (existing != render_scene_sampler_cache.end()) {
+            return existing->state;
+        }
+
+        D3D11_SAMPLER_DESC description{};
+        description.Filter = texture_filter(
+            material.min_filter,
+            material.mag_filter,
+            material.mipmap_filter);
+        description.AddressU = texture_address_mode(material.address_u);
+        description.AddressV = texture_address_mode(material.address_v);
+        description.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+        description.MaxAnisotropy = 1U;
+        description.ComparisonFunc = D3D11_COMPARISON_NEVER;
+        description.MinLOD = 0.0F;
+        description.MaxLOD =
+            material.mipmap_filter == RenderSceneMipmapFilterV1::none
+                ? 0.0F
+                : D3D11_FLOAT32_MAX;
+
+        ComPtr<ID3D11SamplerState> state;
+        require_success(
+            device->CreateSamplerState(&description, state.GetAddressOf()),
+            "ID3D11Device::CreateSamplerState(RenderSceneV1 material)");
+        render_scene_sampler_cache.push_back({key, state});
+        return state;
+    }
+
+    void create_render_scene_resources(const RenderSceneV1& scene) {
+        create_render_scene_texture_resources(scene.textures);
+        create_render_scene_white_texture();
+        render_scene_material_samplers.reserve(
+            render_scene_materials.size());
+        for (const auto& material : render_scene_materials) {
+            render_scene_material_samplers.push_back(
+                render_scene_sampler(material));
         }
     }
 
@@ -862,13 +1206,15 @@ struct D3d11Renderer::Implementation {
     }
 
     void toggle_view_mode() noexcept {
-        if (has_source_geometry) {
+        if (has_source_geometry && has_raster_geometry &&
+            !native_scene_mode) {
             show_source_geometry = !show_source_geometry;
         }
     }
 
     [[nodiscard]] bool is_3d_view() const noexcept {
-        return has_source_geometry && show_source_geometry;
+        return native_scene_mode ||
+            (has_source_geometry && show_source_geometry);
     }
 
     void update_projected_vertices() {
@@ -900,9 +1246,12 @@ struct D3d11Renderer::Implementation {
         const auto far_plane = std::max(
             near_plane * 2.0F,
             orbit_distance + orbit_radius * 4.0F);
-        const auto depth_scale = far_plane / (far_plane - near_plane);
-        const auto depth_offset =
-            near_plane * far_plane / (far_plane - near_plane);
+        const auto depth_denominator =
+            static_cast<double>(far_plane) - near_plane;
+        const auto depth_scale = static_cast<float>(
+            static_cast<double>(far_plane) / depth_denominator);
+        const auto depth_offset = static_cast<float>(
+            static_cast<double>(near_plane) * far_plane / depth_denominator);
 
         for (std::size_t index = 0U; index < source_vertices.size(); ++index) {
             const auto relative = as_vec3(source_vertices[index]) - eye;
@@ -913,6 +1262,13 @@ struct D3d11Renderer::Implementation {
                 depth_scale * camera_z - depth_offset,
                 camera_z,
             };
+            for (const auto component :
+                 projected_vertices[index].clip_position) {
+                if (!std::isfinite(component)) {
+                    throw std::runtime_error(
+                        "The D3D11 camera produced a non-finite projected vertex");
+                }
+            }
         }
 
         D3D11_MAPPED_SUBRESOURCE mapped{};
@@ -999,7 +1355,7 @@ struct D3d11Renderer::Implementation {
             return;
         }
 
-        const auto render_source = is_3d_view();
+        const auto render_source = native_scene_mode || is_3d_view();
         if (render_source) {
             update_projected_vertices();
         }
@@ -1071,6 +1427,55 @@ struct D3d11Renderer::Implementation {
             ID3D11Buffer* const no_constant_buffer[] = {nullptr};
             context->VSSetConstantBuffers(0U, 1U, no_constant_buffer);
 
+            if (native_scene_mode) {
+                for (const auto& draw : render_scene_draws) {
+                    const auto& material =
+                        render_scene_materials[draw.material_id];
+                    RenderSceneMaterialConstants constants{};
+                    constants.base_color = material.base_color;
+                    constants.use_vertex_color =
+                        material.use_vertex_color ? 1.0F : 0.0F;
+                    constants.alpha_cutoff = material.alpha_cutoff;
+                    context->UpdateSubresource(
+                        render_scene_material_buffer.Get(),
+                        0U,
+                        nullptr,
+                        &constants,
+                        0U,
+                        0U);
+
+                    context->RSSetState(
+                        material.double_sided
+                            ? solid_rasterizer_state.Get()
+                            : solid_single_sided_rasterizer_state.Get());
+                    context->OMSetDepthStencilState(
+                        depth_write_state.Get(), 0U);
+                    context->OMSetBlendState(
+                        nullptr, kBlendFactor.data(), kAllSamples);
+                    context->PSSetShader(
+                        render_scene_pixel_shader.Get(), nullptr, 0U);
+                    ID3D11Buffer* const material_buffers[] = {
+                        render_scene_material_buffer.Get()};
+                    context->PSSetConstantBuffers(
+                        0U, 1U, material_buffers);
+
+                    auto* texture_view =
+                        material.base_color_texture_id
+                            ? render_scene_texture_views[
+                                  *material.base_color_texture_id].Get()
+                            : render_scene_white_texture_view.Get();
+                    ID3D11ShaderResourceView* const texture_views[] = {
+                        texture_view};
+                    context->PSSetShaderResources(
+                        0U, 1U, texture_views);
+                    ID3D11SamplerState* const samplers[] = {
+                        render_scene_material_samplers[
+                            draw.material_id].Get()};
+                    context->PSSetSamplers(0U, 1U, samplers);
+                    context->DrawIndexed(
+                        draw.index_count, draw.first_index, 0);
+                }
+            } else {
             const auto draw_depth_only = [this, &kBlendFactor](
                                              const UINT index_count,
                                              const UINT start_index) {
@@ -1162,7 +1567,11 @@ struct D3d11Renderer::Implementation {
                 draw_wireframe(
                     suffix_index_count, next_uncovered_index);
             }
+            }
             context->PSSetShaderResources(0U, 1U, no_texture);
+            ID3D11Buffer* const no_pixel_constant_buffer[] = {nullptr};
+            context->PSSetConstantBuffers(
+                0U, 1U, no_pixel_constant_buffer);
             context->OMSetBlendState(
                 nullptr, kBlendFactor.data(), kAllSamples);
         }
@@ -1195,13 +1604,22 @@ struct D3d11Renderer::Implementation {
     std::vector<SceneVertex3dV1> source_vertices;
     std::vector<ProjectedSourceVertex> projected_vertices;
     std::vector<GpuSourceTextureRegion> texture_regions;
+    std::vector<RenderSceneD3dDrawV1> render_scene_draws;
+    std::vector<RenderSceneD3dMaterialV1> render_scene_materials;
+    std::vector<ComPtr<ID3D11ShaderResourceView>>
+        render_scene_texture_views;
+    std::vector<ComPtr<ID3D11SamplerState>>
+        render_scene_material_samplers;
+    std::vector<GpuRenderSceneSampler> render_scene_sampler_cache;
     Vec3 orbit_target{};
     float orbit_radius = 1.0F;
     float orbit_yaw = 0.0F;
     float orbit_pitch = 0.0F;
     float orbit_distance = 1.0F;
     bool has_source_geometry = false;
+    bool has_raster_geometry = false;
     bool show_source_geometry = false;
+    bool native_scene_mode = false;
     bool camera_initialized = false;
     bool projected_vertices_dirty = false;
 
@@ -1215,21 +1633,29 @@ struct D3d11Renderer::Implementation {
     ComPtr<ID3D11VertexShader> source_vertex_shader;
     ComPtr<ID3D11PixelShader> wireframe_pixel_shader;
     ComPtr<ID3D11PixelShader> textured_pixel_shader;
+    ComPtr<ID3D11PixelShader> render_scene_pixel_shader;
     ComPtr<ID3D11InputLayout> raster_input_layout;
     ComPtr<ID3D11InputLayout> source_input_layout;
     ComPtr<ID3D11RasterizerState> wireframe_rasterizer_state;
     ComPtr<ID3D11RasterizerState> solid_rasterizer_state;
+    ComPtr<ID3D11RasterizerState> solid_single_sided_rasterizer_state;
     ComPtr<ID3D11DepthStencilState> depth_disabled_state;
     ComPtr<ID3D11DepthStencilState> depth_write_state;
     ComPtr<ID3D11DepthStencilState> depth_read_state;
     ComPtr<ID3D11BlendState> no_color_blend_state;
     ComPtr<ID3D11SamplerState> texture_sampler;
+    ComPtr<ID3D11ShaderResourceView> render_scene_white_texture_view;
     ComPtr<ID3D11Buffer> raster_vertex_buffer;
     ComPtr<ID3D11Buffer> raster_index_buffer;
     ComPtr<ID3D11Buffer> source_vertex_buffer;
     ComPtr<ID3D11Buffer> source_index_buffer;
     ComPtr<ID3D11Buffer> fit_buffer;
+    ComPtr<ID3D11Buffer> render_scene_material_buffer;
 };
+
+D3d11Renderer::D3d11Renderer(HWND window,
+                             const openrc::RenderSceneV1& scene)
+    : implementation_(std::make_unique<Implementation>(window, scene)) {}
 
 D3d11Renderer::D3d11Renderer(HWND window,
                              const SceneGeometryV1& geometry)

@@ -137,14 +137,13 @@ runtime/
 └── save system
 ```
 
-The package-based end-user boundary is designed not to own an ISO parser. Raw
-disc, ELF, VIF, VU, GIF, and GS formats terminate at the compiler boundary;
-the implemented foundation loader consumes only versioned neutral OpenRC
-resources in normal world units. The current graphical `openrc-runtime` and
-Launcher Play path have not crossed that boundary yet: they still load the
-reference ISO and prepared ELF for the diagnostic viewer. Only the CLI
-foundation smoke paths currently run from a standalone `.orlvl` package or a
-published PreparedGameV2 root without the ISO.
+The package-based end-user boundary does not own an ISO parser. Raw disc, ELF,
+VIF, VU, GIF, and GS formats terminate at the compiler boundary; package
+loaders consume only versioned neutral OpenRC resources in normal world units.
+The graphical `openrc-runtime` has crossed that boundary through its explicit
+`--prepared-root` path and can load collision, bootstrap, and `RenderSceneV1`
+without the source ISO or boot ELF. The Launcher Play path has not switched yet
+and still starts the ISO/ELF diagnostic route.
 
 ## Native-code strategy decision
 
@@ -324,8 +323,9 @@ every package identity, size, digest, relative path, and nested resource before
 writing. A verified sibling staging tree is promoted with same-parent renames;
 replacement retains and restores the previous destination on cancellation or
 failure. It neither opens an ISO nor discovers overlay files. The current CLI
-compiler supplies all 19 collision/bootstrap packages to this publisher, but
-the Launcher does not invoke that flow yet.
+compiler supplies all 19 collision/bootstrap/render-scene packages to this
+publisher, and the graphical runtime mounts the result directly; the Launcher
+does not invoke that flow yet.
 
 ## Configuration and generated data
 

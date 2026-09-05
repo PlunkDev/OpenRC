@@ -259,17 +259,66 @@ void test_existing_destination_is_replaced() {
   TemporaryTree tree;
   Fixture fixture;
   const auto destination = tree.root / "prepared";
-  std::filesystem::create_directory(destination);
-  write_bytes(destination / "old.marker", bytes_of("old-version"));
+    const auto inputs = fixture.inputs();
+    static_cast<void>(openrc::publish_prepared_game_v2_v1(destination, fixture.manifest, inputs, kLimits));
 
-  const auto inputs = fixture.inputs();
-  static_cast<void>(openrc::publish_prepared_game_v2_v1(
-      destination, fixture.manifest, inputs, kLimits));
-  expect(!std::filesystem::exists(destination / "old.marker") &&
-             std::filesystem::exists(destination /
-                                     openrc::kPreparedGameV2ManifestFileName) &&
+    const auto replacement_zero = openrc::encode_level_package_v1(
+        make_package(0U, "replacement-bootstrap"), kLimits.level_package);
+    const std::array<std::vector<std::byte>, 2U> replacement_packages{
+        replacement_zero, fixture.package_one};
+    const auto replacement_manifest = make_manifest(replacement_packages);
+    const std::array<openrc::PreparedGameV2LevelPackageBytesV1, 2U>
+        replacement_inputs{
+            openrc::PreparedGameV2LevelPackageBytesV1{0U, replacement_zero},
+            openrc::PreparedGameV2LevelPackageBytesV1{1U, fixture.package_one}};
+    static_cast<void>(openrc::publish_prepared_game_v2_v1(
+        destination, replacement_manifest, replacement_inputs, kLimits));
+
+    expect(read_bytes(destination / "levels/0.orlvl") == replacement_zero &&
+               transaction_directory_count(tree.root) == 0U,
+           "Existing publication was not replaced cleanly");
+}
+
+void test_unrecognized_existing_destination_is_preserved() {
+    TemporaryTree tree;
+    Fixture fixture;
+    const auto destination = tree.root / "ordinary-directory";
+    const auto inputs = fixture.inputs();
+    std::filesystem::create_directory(destination);
+    const auto marker = bytes_of("must-remain-untouched");
+    write_bytes(destination / "user-data.bin", marker);
+
+    expect_publish_rejected(
+        [&] {
+            static_cast<void>(openrc::publish_prepared_game_v2_v1(
+                destination, fixture.manifest, inputs, kLimits));
+        },
+        "Publisher replaced an unrecognized existing directory");
+    expect(read_bytes(destination / "user-data.bin") == marker &&
              transaction_directory_count(tree.root) == 0U,
-         "Existing publication was not replaced cleanly");
+           "Rejected replacement changed an ordinary directory");
+}
+
+void test_existing_publication_with_unowned_content_is_preserved() {
+    TemporaryTree tree;
+    Fixture fixture;
+    const auto destination = tree.root / "prepared-with-user-content";
+    const auto inputs = fixture.inputs();
+    static_cast<void>(openrc::publish_prepared_game_v2_v1(
+        destination, fixture.manifest, inputs, kLimits));
+
+    const auto sentinel = bytes_of("must-not-be-deleted");
+    std::filesystem::create_directory(destination / "mods");
+    write_bytes(destination / "mods/sentinel.bin", sentinel);
+    expect_publish_rejected(
+        [&] {
+            static_cast<void>(openrc::publish_prepared_game_v2_v1(
+                destination, fixture.manifest, inputs, kLimits));
+        },
+        "Publisher replaced a prepared root containing unowned content");
+    expect(read_bytes(destination / "mods/sentinel.bin") == sentinel &&
+               transaction_directory_count(tree.root) == 0U,
+           "Rejected replacement changed unowned prepared-root content");
 }
 
 void test_exact_manifest_input_binding() {
@@ -410,9 +459,21 @@ void test_cancellation_rolls_back_existing_destination() {
   TemporaryTree tree;
   Fixture fixture;
   const auto destination = tree.root / "prepared";
-  std::filesystem::create_directory(destination);
-  const auto old_bytes = bytes_of("known-good-old-version");
-  write_bytes(destination / "old.marker", old_bytes);
+    const auto old_inputs = fixture.inputs();
+    static_cast<void>(openrc::publish_prepared_game_v2_v1(destination, fixture.manifest, old_inputs, kLimits));
+    const auto old_manifest =
+        read_bytes(destination / openrc::kPreparedGameV2ManifestFileName);
+    const auto old_level_zero = read_bytes(destination / "levels/0.orlvl");
+
+    const auto replacement_zero = openrc::encode_level_package_v1(
+        make_package(0U, "cancelled-replacement"), kLimits.level_package);
+    const std::array<std::vector<std::byte>, 2U> replacement_packages{
+        replacement_zero, fixture.package_one};
+    const auto replacement_manifest = make_manifest(replacement_packages);
+    const std::array<openrc::PreparedGameV2LevelPackageBytesV1, 2U>
+        replacement_inputs{
+            openrc::PreparedGameV2LevelPackageBytesV1{0U, replacement_zero},
+            openrc::PreparedGameV2LevelPackageBytesV1{1U, fixture.package_one}};
 
   CancellationContext cancellation{
       openrc::PreparedGameV2PublishCheckpointV1::destination_backed_up,
@@ -422,18 +483,18 @@ void test_cancellation_rolls_back_existing_destination() {
       cancel_at_checkpoint,
       &cancellation,
   };
-  const auto inputs = fixture.inputs();
-  expect_publish_rejected(
+    expect_publish_rejected(
       [&] {
         static_cast<void>(openrc::publish_prepared_game_v2_v1(
-            destination, fixture.manifest, inputs, kLimits, control));
+            destination, replacement_manifest, replacement_inputs, kLimits, control));
       },
       "Publisher ignored cancellation during commit");
 
   expect(cancellation.calls == 2U &&
-             read_bytes(destination / "old.marker") == old_bytes &&
-             !std::filesystem::exists(
-                 destination / openrc::kPreparedGameV2ManifestFileName) &&
+             read_bytes(destination / openrc::kPreparedGameV2ManifestFileName) ==
+                old_manifest &&
+            read_bytes(
+                 destination / "levels/0.orlvl") == old_level_zero &&
              transaction_directory_count(tree.root) == 0U,
          "Cancellation did not roll the previous destination back exactly");
 }
@@ -532,7 +593,9 @@ int main() {
   try {
     test_new_publication_and_determinism();
     test_existing_destination_is_replaced();
-    test_exact_manifest_input_binding();
+        test_unrecognized_existing_destination_is_preserved();
+        test_existing_publication_with_unowned_content_is_preserved();
+        test_exact_manifest_input_binding();
     test_path_conflicts_and_traversal_are_rejected();
     test_cancellation_rolls_back_existing_destination();
     test_cancellation_before_commit_leaves_no_destination();

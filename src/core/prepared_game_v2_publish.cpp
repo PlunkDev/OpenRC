@@ -13,6 +13,10 @@
 #else
 #include <cerrno>
 #include <fcntl.h>
+#if defined(__linux__)
+#include <linux/stat.h>
+#include <sys/syscall.h>
+#endif
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
@@ -25,7 +29,6 @@
 #include <filesystem>
 #include <limits>
 #include <map>
-#include <optional>
 #include <set>
 #include <span>
 #include <string>
@@ -59,7 +62,8 @@ normalize_destination(const std::filesystem::path &destination) {
   }
   for (const auto &component : destination.relative_path()) {
     if (component.empty() || component == "." || component == "..") {
-      fail("The publication destination contains a non-canonical component");
+      fail("The publication destination contains a non-canonical "
+                 "component");
     }
   }
 
@@ -102,6 +106,77 @@ void require_plain_directory(const std::filesystem::path &path) {
 #endif
 }
 
+#ifndef _WIN32
+[[nodiscard]] std::uint64_t
+filesystem_boundary_id(const std::filesystem::path &path) {
+#if defined(__linux__)
+#if !defined(SYS_statx) || !defined(STATX_MNT_ID)
+#error "OpenRC requires Linux statx mount-ID headers for safe publication"
+#endif
+  struct statx attributes {};
+  if (::syscall(SYS_statx, AT_FDCWD, path.c_str(), AT_SYMLINK_NOFOLLOW,
+                STATX_TYPE | STATX_MNT_ID, &attributes) != 0 ||
+      (attributes.stx_mask & STATX_MNT_ID) == 0U) {
+    fail("Cannot inspect a publication filesystem mount boundary");
+  }
+  return attributes.stx_mnt_id;
+#else
+  struct stat attributes {};
+  if (::lstat(path.c_str(), &attributes) != 0) {
+    fail("Cannot inspect a publication filesystem boundary");
+  }
+  return static_cast<std::uint64_t>(attributes.st_dev);
+#endif
+}
+
+void require_same_filesystem_boundary(const std::filesystem::path &anchor,
+                                      const std::filesystem::path &path) {
+  if (filesystem_boundary_id(anchor) != filesystem_boundary_id(path)) {
+    fail("A publication tree crosses a filesystem mount boundary");
+  }
+}
+#endif
+
+void require_tree_without_redirections(const std::filesystem::path &root) {
+#ifndef _WIN32
+  const auto root_boundary = filesystem_boundary_id(root);
+#endif
+  std::error_code error;
+  std::filesystem::recursive_directory_iterator iterator(
+      root, std::filesystem::directory_options::none, error);
+  const std::filesystem::recursive_directory_iterator end;
+  if (error) {
+    fail("Cannot safely enumerate a publication transaction tree");
+  }
+  while (iterator != end) {
+    const auto path = iterator->path();
+#ifdef _WIN32
+    const auto attributes = GetFileAttributesW(path.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES ||
+        (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U) {
+      iterator.disable_recursion_pending();
+      fail("A publication transaction tree contains a filesystem redirection");
+    }
+#else
+    if (filesystem_boundary_id(path) != root_boundary) {
+      iterator.disable_recursion_pending();
+      fail("A publication transaction tree crosses a filesystem mount boundary");
+    }
+#endif
+    const auto status = iterator->symlink_status(error);
+    if (error || std::filesystem::is_symlink(status) ||
+        (!std::filesystem::is_directory(status) &&
+         !std::filesystem::is_regular_file(status))) {
+      iterator.disable_recursion_pending();
+      fail("A publication transaction tree contains an unsafe entry");
+    }
+    iterator.increment(error);
+    if (error) {
+      fail("Cannot safely enumerate a publication transaction tree");
+    }
+  }
+}
+
 void require_plain_directory_chain(const std::filesystem::path &directory) {
   auto current = directory.root_path();
   require_plain_directory(current);
@@ -138,6 +213,9 @@ create_unique_plain_staging(const std::filesystem::path &parent) {
     std::error_code error;
     if (std::filesystem::create_directory(candidate, error)) {
       require_plain_directory(candidate);
+#ifndef _WIN32
+      require_same_filesystem_boundary(parent, candidate);
+#endif
       return candidate;
     }
     if (error) {
@@ -174,6 +252,10 @@ void remove_transaction_tree(const std::filesystem::path &path,
     return;
   }
   require_plain_directory(path);
+#ifndef _WIN32
+  require_same_filesystem_boundary(parent, path);
+#endif
+  require_tree_without_redirections(path);
   std::error_code error;
   static_cast<void>(std::filesystem::remove_all(path, error));
   if (error || path_exists_no_follow(path)) {
@@ -411,7 +493,8 @@ void register_virtual_file(const std::string &path,
   while (separator != std::string::npos) {
     const auto directory = path.substr(0U, separator);
     if (files.contains(directory)) {
-      fail("PreparedGameV2 references have a file/directory path conflict");
+      fail("PreparedGameV2 references have a file/directory path "
+                 "conflict");
     }
     directories.insert(directory);
     separator = path.find('/', separator + 1U);
@@ -448,8 +531,8 @@ struct PublicationPlan {
   for (const auto &input : level_packages) {
     if (input.bytes.empty() ||
         !result.packages.emplace(input.level_id, input.bytes).second) {
-      fail(
-          "Explicit LevelPackageV1 inputs contain an empty or duplicate level");
+      fail("Explicit LevelPackageV1 inputs contain an empty or duplicate "
+                 "level");
     }
   }
 
@@ -528,6 +611,115 @@ void verify_tree(const std::filesystem::path &root, const PublicationPlan &plan,
   }
 }
 
+void require_exact_owned_tree(const PreparedGameV2RootV1 &loaded) {
+    std::set<std::string> expected_files{kPreparedGameV2ManifestFileName};
+    std::set<std::string> expected_directories;
+    for (const auto &reference : loaded.manifest.levels) {
+        register_virtual_file(reference.package_path, expected_files,
+                              expected_directories);
+    }
+
+    std::uint64_t visited_entries = 0U;
+    const auto maximum_entries = checked_add(
+        expected_files.size(), expected_directories.size(),
+        "The PreparedGameV2 owned-tree entry count");
+#ifndef _WIN32
+    const auto root_boundary = filesystem_boundary_id(loaded.root);
+#endif
+    std::error_code filesystem_error;
+    std::filesystem::recursive_directory_iterator iterator(
+        loaded.root, std::filesystem::directory_options::none,
+        filesystem_error);
+    const std::filesystem::recursive_directory_iterator end;
+    if (filesystem_error) {
+        fail("Cannot enumerate an existing PreparedGameV2 publication");
+    }
+
+    while (iterator != end) {
+        visited_entries = checked_add(
+            visited_entries, 1U,
+            "The existing PreparedGameV2 publication entry count");
+        if (visited_entries > maximum_entries) {
+            fail("Refusing to replace a PreparedGameV2 publication that "
+                 "contains unowned filesystem entries");
+        }
+
+        const auto path = iterator->path();
+        const auto relative = path.lexically_relative(loaded.root);
+        const auto encoded = relative.generic_string();
+        if (relative.empty() || relative.is_absolute() || encoded.empty()) {
+            fail("An existing PreparedGameV2 entry escaped its root");
+        }
+
+#ifdef _WIN32
+        const auto attributes = GetFileAttributesW(path.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES ||
+            (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U) {
+            iterator.disable_recursion_pending();
+            fail("An existing PreparedGameV2 entry is not a plain file or "
+                 "directory");
+        }
+#else
+        if (filesystem_boundary_id(path) != root_boundary) {
+            iterator.disable_recursion_pending();
+            fail("An existing PreparedGameV2 entry crosses a filesystem "
+                 "mount boundary");
+        }
+#endif
+        const auto status = iterator->symlink_status(filesystem_error);
+        if (filesystem_error || std::filesystem::is_symlink(status)) {
+            iterator.disable_recursion_pending();
+            fail("Cannot safely inspect an existing PreparedGameV2 entry");
+        }
+        if (std::filesystem::is_directory(status)) {
+            if (!expected_directories.contains(encoded)) {
+                iterator.disable_recursion_pending();
+                fail("Refusing to replace a PreparedGameV2 publication that "
+                     "contains an unowned directory");
+            }
+            require_plain_directory(path);
+        } else if (std::filesystem::is_regular_file(status)) {
+            if (!expected_files.contains(encoded)) {
+                fail("Refusing to replace a PreparedGameV2 publication that "
+                     "contains an unowned file");
+            }
+        } else {
+            iterator.disable_recursion_pending();
+            fail("An existing PreparedGameV2 entry is not a regular file or "
+                 "directory");
+        }
+
+        iterator.increment(filesystem_error);
+        if (filesystem_error) {
+            fail("Cannot enumerate an existing PreparedGameV2 publication");
+        }
+    }
+    if (visited_entries != maximum_entries) {
+        fail("An existing PreparedGameV2 publication is missing an owned "
+             "filesystem entry");
+    }
+}
+
+void require_replaceable_existing_tree(
+    const std::filesystem::path &root,
+    const PreparedGameV2FilesystemLimitsV1 &limits) {
+#ifndef _WIN32
+    require_same_filesystem_boundary(root.parent_path(), root);
+#endif
+    try {
+        const auto loaded = load_prepared_game_v2_root_v1(root, limits);
+        for (const auto &reference : loaded.manifest.levels) {
+            static_cast<void>(load_prepared_game_level_package_v1(
+                loaded, reference.level_id, limits));
+        }
+        require_exact_owned_tree(loaded);
+    } catch (const PreparedGameV2FilesystemError &error) {
+        fail("Refusing to replace an existing directory that is not a complete "
+             "verified PreparedGameV2 publication: " +
+             std::string(error.what()));
+    }
+}
+
 [[nodiscard]] bool cancellation_requested(
     const PreparedGameV2PublishControlV1 &control,
     const PreparedGameV2PublishCheckpointV1 checkpoint) noexcept {
@@ -558,11 +750,13 @@ PublishedPreparedGameV2V1 publish_prepared_game_v2_v1(
   require_plain_directory_chain(parent);
   if (path_exists_no_follow(destination)) {
     require_plain_directory(destination);
+    require_replaceable_existing_tree(destination, limits);
   }
 
   const auto plan = make_publication_plan(manifest, level_packages, limits);
   const auto staging = create_unique_plain_staging(parent);
-  std::optional<std::filesystem::path> backup;
+  std::filesystem::path backup;
+  bool backup_moved = false;
   bool staging_exists = true;
   bool destination_installed = false;
 
@@ -576,9 +770,18 @@ PublishedPreparedGameV2V1 publish_prepared_game_v2_v1(
 
     if (path_exists_no_follow(destination)) {
       require_plain_directory(destination);
+      // Staging a complete game can take minutes. Revalidate at the commit
+      // boundary so a directory created or replaced meanwhile is never
+      // treated as disposable merely because its path now exists.
+      require_replaceable_existing_tree(destination, limits);
       backup = choose_unique_absent_sibling(parent, ".openrc-backup-");
-      rename_same_parent(destination, *backup, parent,
+      rename_same_parent(destination, backup, parent,
                          "back up the existing publication destination");
+      backup_moved = true;
+      // Validate the exact tree that was moved, not merely the earlier
+      // occupant of the destination path. If it changed in the final race
+      // window, the catch path restores it without deleting its contents.
+      require_replaceable_existing_tree(backup, limits);
       if (cancellation_requested(
               control,
               PreparedGameV2PublishCheckpointV1::destination_backed_up)) {
@@ -602,16 +805,16 @@ PublishedPreparedGameV2V1 publish_prepared_game_v2_v1(
         rename_same_parent(destination, failed, parent,
                            "move a failed new destination aside");
         destination_installed = false;
-        if (backup) {
-          rename_same_parent(*backup, destination, parent,
+        if (backup_moved) {
+          rename_same_parent(backup, destination, parent,
                              "restore the previous publication destination");
-          backup.reset();
+          backup_moved = false;
         }
         remove_transaction_tree(failed, parent);
-      } else if (backup) {
-        rename_same_parent(*backup, destination, parent,
+      } else if (backup_moved) {
+        rename_same_parent(backup, destination, parent,
                            "restore the previous publication destination");
-        backup.reset();
+        backup_moved = false;
       }
       if (staging_exists) {
         remove_transaction_tree(staging, parent);
@@ -631,14 +834,15 @@ PublishedPreparedGameV2V1 publish_prepared_game_v2_v1(
   // The verified destination is committed at this point. Backup cleanup is a
   // separate, non-transactional phase: a partial deletion must never roll the
   // new publication back to a potentially partial old tree.
-  if (backup) {
+  if (backup_moved) {
     try {
-      remove_transaction_tree(*backup, parent);
-      backup.reset();
+      remove_transaction_tree(backup, parent);
+      backup_moved = false;
     } catch (...) {
       throw PreparedGameV2PublishError(
-          "PreparedGameV2 publication was committed successfully, but the "
-          "previous backup could not be removed completely: " +
+                "PreparedGameV2 publication was committed successfully, but "
+                "the "
+                "previous backup could not be removed completely: " +
           exception_message());
     }
   }

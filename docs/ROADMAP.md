@@ -149,13 +149,19 @@ important for later fidelity, but does not block movement on Veldin.
 - [x] load a resolved collision/bootstrap package without an ISO and construct
   deterministic movement, jump, checkpoint, and fall-reset simulation from it
 - [x] expose CLI package-only and published-root headless movement smoke paths
+- [x] define canonical `RenderSceneV1` texture/material/mesh/instance data,
+  bounded binary I/O, and a source-independent native D3D11 staging path
+- [x] compile and transactionally publish collision, bootstrap, and recovered
+  textured static scene resources for all 19 levels
+- [x] mount and render a PreparedGameV2 level in the graphical runtime without
+  reopening the source ISO or boot ELF
 - [ ] load Ratchet's bind pose, skeleton, and animations through a generic
   actor-rig pipeline
 - [ ] connect platform controller input and a reconstructed third-person camera
   to the graphical runtime
-- [ ] package render-scene, actor, entity, and camera data, then switch Launcher
-  Prepare/Play and the graphical runtime from their current ISO/ELF diagnostic
-  path to PreparedGameV2
+- [ ] package actor, entity, and reconstructed camera data
+- [ ] switch Launcher Prepare/Play from its current ISO/ELF diagnostic path to
+  the PreparedGameV2 compiler/runtime route
 - [ ] reconstruct basic interactions, one weapon, and one enemy type
 - [ ] load and save isolated test state
 - [ ] make package-only gameplay smoke on Veldin and at least one second planet

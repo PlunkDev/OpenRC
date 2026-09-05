@@ -36,6 +36,7 @@ add_library(openrc_core STATIC
     src/core/gif_gs.cpp
     src/core/hash.cpp
     src/core/iso9660.cpp
+    src/core/level_render_scene_compile.cpp
     src/core/level_bootstrap.cpp
     src/core/localized_subtitle_bank.cpp
     src/core/map_art.cpp
@@ -57,10 +58,15 @@ add_library(openrc_core STATIC
     src/core/rac_level_moby_assets.cpp
     src/core/rac_level_moby_texture.cpp
     src/core/rac_moby_class.cpp
+    src/core/rac_moby_bind_pose.cpp
     src/core/rac_moby_model_geometry.cpp
     src/core/rac_moby_packet_geometry.cpp
     src/core/rac_tie_class.cpp
+    src/core/render_scene.cpp
+    src/core/render_scene_io.cpp
+    src/core/runtime_level_content.cpp
     src/core/runtime_level_foundation.cpp
+    src/core/runtime_render_scene.cpp
     src/core/scene_animation_bank.cpp
     src/core/scene_block_directory.cpp
     src/core/scene_block_geometry.cpp
@@ -103,17 +109,65 @@ else()
     target_compile_options(openrc_core PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+add_library(openrc_level_scene_recovery STATIC
+    src/runtime/level_scene_recovery.cpp
+    src/runtime/level_scene_render_compile.cpp
+    src/runtime/moby_scene_geometry.cpp
+    src/runtime/scene_geometry.cpp
+    src/runtime/tie_scene_geometry.cpp
+)
+target_include_directories(openrc_level_scene_recovery
+    PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/runtime"
+)
+target_link_libraries(openrc_level_scene_recovery PUBLIC openrc_core)
+target_compile_features(openrc_level_scene_recovery PUBLIC cxx_std_20)
+if(MSVC)
+    target_compile_options(
+        openrc_level_scene_recovery
+        PRIVATE
+        /W4 /permissive- /utf-8
+    )
+else()
+    target_compile_options(
+        openrc_level_scene_recovery
+        PRIVATE
+        -Wall -Wextra -Wpedantic
+    )
+endif()
+
+add_library(openrc_render_scene_d3d_data STATIC
+    src/runtime/render_scene_d3d_data.cpp
+)
+target_include_directories(openrc_render_scene_d3d_data
+    PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/runtime"
+)
+target_link_libraries(openrc_render_scene_d3d_data PUBLIC openrc_core)
+target_compile_features(openrc_render_scene_d3d_data PUBLIC cxx_std_20)
+if(MSVC)
+    target_compile_options(
+        openrc_render_scene_d3d_data
+        PRIVATE
+        /W4 /permissive- /utf-8
+    )
+else()
+    target_compile_options(
+        openrc_render_scene_d3d_data
+        PRIVATE
+        -Wall -Wextra -Wpedantic
+    )
+endif()
+
 add_executable(openrc-cli
     src/cli/main.cpp
-    src/runtime/moby_scene_geometry.cpp
-    src/runtime/tie_scene_geometry.cpp
 )
 list(APPEND OPENRC_PUBLIC_EXECUTABLE_TARGETS openrc-cli)
 target_include_directories(openrc-cli
     PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/src/runtime"
 )
-target_link_libraries(openrc-cli PRIVATE openrc_core)
+target_link_libraries(openrc-cli PRIVATE openrc_level_scene_recovery)
 target_compile_features(openrc-cli PRIVATE cxx_std_20)
 
 if(MINGW)
@@ -157,9 +211,6 @@ if(OPENRC_BUILD_RUNTIME AND WIN32)
     add_executable(openrc-runtime WIN32
         src/runtime/windows_main.cpp
         src/runtime/d3d11_renderer.cpp
-        src/runtime/moby_scene_geometry.cpp
-        src/runtime/scene_geometry.cpp
-        src/runtime/tie_scene_geometry.cpp
         src/runtime/openrc-runtime.manifest
     )
     list(APPEND OPENRC_PUBLIC_EXECUTABLE_TARGETS openrc-runtime)
@@ -170,7 +221,8 @@ if(OPENRC_BUILD_RUNTIME AND WIN32)
         WIN32_LEAN_AND_MEAN
     )
     target_link_libraries(openrc-runtime PRIVATE
-        openrc_core
+        openrc_level_scene_recovery
+        openrc_render_scene_d3d_data
         d3d11
         dxgi
         shell32
@@ -365,6 +417,34 @@ if(OPENRC_BUILD_TESTS)
     target_compile_features(openrc-level-bootstrap-tests PRIVATE cxx_std_20)
 
     add_executable(
+        openrc-level-render-scene-compile-tests
+        tests/level_render_scene_compile_tests.cpp
+    )
+    target_link_libraries(
+        openrc-level-render-scene-compile-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-level-render-scene-compile-tests
+        PRIVATE
+        cxx_std_20
+    )
+    if(MSVC)
+        target_compile_options(
+            openrc-level-render-scene-compile-tests
+            PRIVATE
+            /W4 /permissive- /utf-8
+        )
+    else()
+        target_compile_options(
+            openrc-level-render-scene-compile-tests
+            PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+    endif()
+
+    add_executable(
         openrc-rac-level-foundation-compile-tests
         tests/rac_level_foundation_compile_tests.cpp
     )
@@ -393,6 +473,188 @@ if(OPENRC_BUILD_TESTS)
         PRIVATE
         cxx_std_20
     )
+
+    add_executable(
+        openrc-render-scene-io-tests
+        tests/render_scene_io_tests.cpp
+    )
+    target_link_libraries(
+        openrc-render-scene-io-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-render-scene-io-tests
+        PRIVATE
+        cxx_std_20
+    )
+
+    add_executable(
+        openrc-runtime-render-scene-tests
+        tests/runtime_render_scene_tests.cpp
+    )
+    target_link_libraries(
+        openrc-runtime-render-scene-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-runtime-render-scene-tests
+        PRIVATE
+        cxx_std_20
+    )
+
+    add_executable(
+        openrc-runtime-level-content-tests
+        tests/runtime_level_content_tests.cpp
+    )
+    target_link_libraries(
+        openrc-runtime-level-content-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-runtime-level-content-tests
+        PRIVATE
+        cxx_std_20
+    )
+
+    add_executable(
+        openrc-rac-moby-bind-pose-tests
+        tests/rac_moby_bind_pose_tests.cpp
+    )
+    target_link_libraries(
+        openrc-rac-moby-bind-pose-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-rac-moby-bind-pose-tests
+        PRIVATE
+        cxx_std_20
+    )
+
+    add_executable(
+        openrc-render-scene-d3d-data-tests
+        tests/render_scene_d3d_data_tests.cpp
+    )
+    target_link_libraries(
+        openrc-render-scene-d3d-data-tests
+        PRIVATE
+        openrc_render_scene_d3d_data
+    )
+    target_compile_features(
+        openrc-render-scene-d3d-data-tests
+        PRIVATE
+        cxx_std_20
+    )
+
+    if(MSVC)
+        target_compile_options(
+            openrc-render-scene-io-tests
+            PRIVATE
+            /W4 /permissive- /utf-8
+        )
+        target_compile_options(
+            openrc-runtime-render-scene-tests
+            PRIVATE
+            /W4 /permissive- /utf-8
+        )
+        target_compile_options(
+            openrc-runtime-level-content-tests
+            PRIVATE
+            /W4 /permissive- /utf-8
+        )
+        target_compile_options(
+            openrc-rac-moby-bind-pose-tests
+            PRIVATE
+            /W4 /permissive- /utf-8
+        )
+        target_compile_options(
+            openrc-render-scene-d3d-data-tests
+            PRIVATE
+            /W4 /permissive- /utf-8
+        )
+    else()
+        target_compile_options(
+            openrc-render-scene-io-tests
+            PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+        target_compile_options(
+            openrc-runtime-render-scene-tests
+            PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+        target_compile_options(
+            openrc-runtime-level-content-tests
+            PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+        target_compile_options(
+            openrc-rac-moby-bind-pose-tests
+            PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+        target_compile_options(
+            openrc-render-scene-d3d-data-tests
+            PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+    endif()
+
+    add_executable(
+        openrc-level-scene-recovery-tests
+        tests/level_scene_recovery_tests.cpp
+    )
+    target_link_libraries(
+        openrc-level-scene-recovery-tests
+        PRIVATE
+        openrc_level_scene_recovery
+    )
+    target_compile_features(
+        openrc-level-scene-recovery-tests
+        PRIVATE
+        cxx_std_20
+    )
+
+    add_executable(
+        openrc-level-scene-render-compile-tests
+        tests/level_scene_render_compile_tests.cpp
+    )
+    target_link_libraries(
+        openrc-level-scene-render-compile-tests
+        PRIVATE
+        openrc_level_scene_recovery
+    )
+    target_compile_features(
+        openrc-level-scene-render-compile-tests
+        PRIVATE
+        cxx_std_20
+    )
+    if(MSVC)
+        target_compile_options(
+            openrc-level-scene-recovery-tests
+            PRIVATE
+            /W4 /permissive- /utf-8
+        )
+        target_compile_options(
+            openrc-level-scene-render-compile-tests
+            PRIVATE
+            /W4 /permissive- /utf-8
+        )
+    else()
+        target_compile_options(
+            openrc-level-scene-recovery-tests
+            PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+        target_compile_options(
+            openrc-level-scene-render-compile-tests
+            PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+    endif()
 
     add_executable(
         openrc-rac-level-moby-texture-tests
@@ -787,8 +1049,16 @@ if(OPENRC_BUILD_TESTS)
     add_test(NAME prepared-game-v2-fs COMMAND openrc-prepared-game-v2-fs-tests)
     add_test(NAME prepared-game-v2-publish COMMAND openrc-prepared-game-v2-publish-tests)
     add_test(NAME level-bootstrap COMMAND openrc-level-bootstrap-tests)
+    add_test(NAME level-render-scene-compile COMMAND openrc-level-render-scene-compile-tests)
     add_test(NAME rac-level-foundation-compile COMMAND openrc-rac-level-foundation-compile-tests)
     add_test(NAME runtime-level-foundation COMMAND openrc-runtime-level-foundation-tests)
+    add_test(NAME render-scene-io COMMAND openrc-render-scene-io-tests)
+    add_test(NAME runtime-render-scene COMMAND openrc-runtime-render-scene-tests)
+    add_test(NAME runtime-level-content COMMAND openrc-runtime-level-content-tests)
+    add_test(NAME rac-moby-bind-pose COMMAND openrc-rac-moby-bind-pose-tests)
+    add_test(NAME render-scene-d3d-data COMMAND openrc-render-scene-d3d-data-tests)
+    add_test(NAME level-scene-recovery COMMAND openrc-level-scene-recovery-tests)
+    add_test(NAME level-scene-render-compile COMMAND openrc-level-scene-render-compile-tests)
     add_test(NAME rac-level-core COMMAND openrc-rac-level-core-tests)
     add_test(NAME rac-level-moby-texture COMMAND openrc-rac-level-moby-texture-tests)
     add_test(NAME rac-moby-class COMMAND openrc-rac-moby-class-tests)

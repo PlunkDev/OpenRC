@@ -1,13 +1,8 @@
 #include "d3d11_renderer.hpp"
-#include "moby_scene_geometry.hpp"
-#include "scene_geometry.hpp"
-#include "tie_scene_geometry.hpp"
+#include "level_scene_recovery.hpp"
 
-#include "openrc/dvp_vu.hpp"
-#include "openrc/dvp_vu_execute.hpp"
-#include "openrc/scene_block_runtime.hpp"
-#include "openrc/scene_block_task.hpp"
-#include "openrc/scene_block_task_execute.hpp"
+#include "openrc/prepared_game_v2_fs.hpp"
+#include "openrc/runtime_level_content.hpp"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -19,8 +14,6 @@
 #include <windows.h>
 #include <windowsx.h>
 
-#include <algorithm>
-#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <limits>
@@ -30,19 +23,15 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <utility>
 #include <vector>
 
 namespace {
 
 constexpr wchar_t kWindowClassName[] = L"PlunkDev.OpenRC.Runtime.Window";
 constexpr wchar_t kApplicationName[] = L"OpenRC native level viewer";
-constexpr std::uint64_t kMaximumRuntimeBytes = 64U * 1024U * 1024U;
-constexpr std::uint64_t kMaximumAggregateRecords = 4096U;
-constexpr std::uint64_t kMaximumAggregateVertices = 3'000'000U;
-constexpr std::uint64_t kMaximumAggregateTriangleIndices = 9'000'000U;
 
 struct RuntimeArguments {
+    std::optional<std::filesystem::path> prepared_root;
     std::filesystem::path disc_image;
     std::filesystem::path boot_executable;
     std::uint32_t level_id = 0U;
@@ -59,124 +48,49 @@ struct WindowState {
     std::wstring base_title;
     POINT previous_pointer{};
     bool orbit_drag_active = false;
+    bool native_content = false;
 };
 
-struct LoadedSceneGeometry {
-    openrc::runtime::SceneGeometryV1 raster;
-    std::optional<openrc::runtime::SceneGeometry3dV1> source;
-    std::optional<openrc::RacLevelMobyTextureBankV1> tfrag_texture_bank;
-    std::vector<openrc::runtime::SceneMaterialBatchV1>
-        terrain_material_batches;
-    std::uint64_t terrain_triangle_count = 0U;
-    std::optional<openrc::RacLevelMobyTextureBankV1> moby_texture_bank;
-    std::vector<openrc::runtime::MobySceneMaterialBatchV1>
-        moby_material_batches;
-    std::optional<std::uint64_t> moby_first_triangle;
-    std::optional<openrc::RacLevelMobyTextureBankV1> tie_texture_bank;
-    std::vector<openrc::runtime::MobySceneMaterialBatchV1>
-        tie_material_batches;
-    std::optional<std::uint64_t> tie_first_triangle;
-    std::uint64_t total_record_count = 0U;
-    std::uint64_t decoded_record_count = 0U;
-    std::uint64_t raster_record_count = 0U;
-    std::uint64_t source_record_count = 0U;
-    std::uint64_t no_event_record_count = 0U;
-    std::uint64_t incomplete_stream_record_count = 0U;
-    std::uint64_t unavailable_source_record_count = 0U;
-    std::uint64_t terrain_textured_triangle_count = 0U;
-    std::uint64_t terrain_unresolved_material_triangle_count = 0U;
-    std::uint64_t terrain_single_context_triangle_count = 0U;
-    std::uint64_t terrain_vertices_with_stq = 0U;
-    std::uint64_t terrain_vertices_without_stq = 0U;
-    std::uint64_t moby_model_count = 0U;
-    std::uint64_t moby_rendered_model_count = 0U;
-    std::uint64_t moby_placement_count = 0U;
-    std::uint64_t moby_rendered_placement_count = 0U;
-    std::uint64_t moby_animated_placement_count = 0U;
-    std::uint64_t moby_missing_or_empty_placement_count = 0U;
-    std::uint64_t moby_triangle_count = 0U;
-    std::uint64_t tie_model_count = 0U;
-    std::uint64_t tie_rendered_model_count = 0U;
-    std::uint64_t tie_placement_count = 0U;
-    std::uint64_t tie_rendered_placement_count = 0U;
-    std::uint64_t tie_missing_or_empty_placement_count = 0U;
-    std::uint64_t tie_triangle_count = 0U;
-};
+constexpr std::uint64_t kMaximumRuntimeRenderScenePayloadBytes =
+    UINT64_C(512) * 1024U * 1024U;
+constexpr std::uint64_t kMaximumRuntimeLevelPackageBytes =
+    UINT64_C(768) * 1024U * 1024U;
+constexpr std::uint64_t kMaximumRuntimePreparedGameBytes =
+    UINT64_C(16) * 1024U * 1024U * 1024U;
 
-void add_aggregate_size(
-    std::uint64_t& total,
-    const std::uint64_t addition,
-    const std::uint64_t limit,
-    const char* const message) {
-    if (total > limit || addition > limit - total) {
-        throw std::runtime_error(message);
-    }
-    total += addition;
+[[nodiscard]] constexpr openrc::LevelPackageV1Limits
+make_runtime_level_package_limits() {
+    return openrc::LevelPackageV1Limits{
+        kMaximumRuntimeLevelPackageBytes,
+        32U,
+        16U,
+        256U,
+        1024U,
+        kMaximumRuntimeRenderScenePayloadBytes,
+        kMaximumRuntimeLevelPackageBytes - openrc::kLevelPackageHeaderBytesV1,
+        64U,
+    };
 }
 
-void append_terrain_material_batches(
-    std::vector<openrc::runtime::SceneMaterialBatchV1>& destination,
-    const std::span<const openrc::runtime::SceneMaterialBatchV1> source,
-    const std::uint64_t triangle_offset) {
-    std::uint64_t expected_local_triangle = 0U;
-    for (const auto& batch : source) {
-        if (batch.first_triangle != expected_local_triangle ||
-            batch.index_count == 0U || batch.index_count % 3U != 0U) {
-            throw std::runtime_error(
-                "A terrain material batch is not contiguous");
-        }
-        const auto triangle_count = batch.index_count / 3U;
-        if (triangle_offset >
-                std::numeric_limits<std::uint64_t>::max() -
-                    batch.first_triangle ||
-            expected_local_triangle >
-                std::numeric_limits<std::uint64_t>::max() - triangle_count) {
-            throw std::runtime_error(
-                "A terrain material batch range overflows");
-        }
-        const auto first_triangle = triangle_offset + batch.first_triangle;
-        if (!destination.empty() &&
-            destination.back().texture_index == batch.texture_index &&
-            destination.back().first_triangle +
-                    destination.back().index_count / 3U ==
-                first_triangle) {
-            if (destination.back().index_count >
-                std::numeric_limits<std::uint64_t>::max() -
-                    batch.index_count) {
-                throw std::runtime_error(
-                    "A merged terrain material batch overflows");
-            }
-            destination.back().index_count += batch.index_count;
-        } else {
-            destination.push_back(openrc::runtime::SceneMaterialBatchV1{
-                first_triangle, batch.index_count, batch.texture_index});
-        }
-        expected_local_triangle += triangle_count;
-    }
+[[nodiscard]] constexpr openrc::PreparedGameV2FilesystemLimitsV1
+make_runtime_prepared_game_limits() {
+    return openrc::PreparedGameV2FilesystemLimitsV1{
+        openrc::PreparedGameV2Limits{
+            1024U * 1024U,
+            256U,
+            128U,
+            1024U,
+            kMaximumRuntimePreparedGameBytes,
+            UINT64_C(64) * 1024U * 1024U,
+        },
+        make_runtime_level_package_limits(),
+        kMaximumRuntimePreparedGameBytes,
+    };
 }
 
-void validate_source_geometry_result(
-    const openrc::SceneBlockRuntimeExecutionV1& execution,
-    const std::uint16_t entrypoint) {
-    const auto has_source = execution.source_geometry.has_value();
-    const auto status = execution.source_geometry_status;
-    if (entrypoint == openrc::kSceneBlockSourceGeometryEntrypointV1) {
-        if (status ==
-                openrc::SceneBlockRuntimeSourceGeometryStatusV1::not_attempted ||
-            (status ==
-                 openrc::SceneBlockRuntimeSourceGeometryStatusV1::recovered) !=
-                has_source) {
-            throw std::runtime_error(
-                "The SceneBlock source-geometry result is inconsistent");
-        }
-        return;
-    }
-    if (status !=
-            openrc::SceneBlockRuntimeSourceGeometryStatusV1::not_attempted ||
-        has_source) {
-        throw std::runtime_error(
-            "A non-entry-16 record unexpectedly returned source geometry");
-    }
+[[nodiscard]] constexpr openrc::game::RuntimeLevelContentLimitsV1
+make_runtime_level_content_limits() {
+    return openrc::game::make_runtime_level_content_limits_v1();
 }
 
 [[nodiscard]] std::wstring utf8_to_wide(const std::string_view value) {
@@ -246,6 +160,7 @@ parse_unsigned_decimal(const std::wstring_view text) noexcept {
     RuntimeArguments result;
     bool saw_disc_image = false;
     bool saw_boot_executable = false;
+    bool saw_prepared_root = false;
     bool saw_level = false;
     bool saw_record = false;
     bool saw_entrypoint = false;
@@ -265,7 +180,14 @@ parse_unsigned_decimal(const std::wstring_view text) noexcept {
                 "A named runtime argument is missing its value");
         }
         const std::wstring_view value(raw_arguments[++index]);
-        if (name == L"--disc-image") {
+        if (name == L"--prepared-root") {
+            if (saw_prepared_root || value.empty()) {
+                throw std::runtime_error(
+                    "--prepared-root must be supplied exactly once");
+            }
+            result.prepared_root = std::filesystem::path(value);
+            saw_prepared_root = true;
+        } else if (name == L"--disc-image") {
             if (saw_disc_image || value.empty()) {
                 throw std::runtime_error(
                     "--disc-image must be supplied exactly once");
@@ -318,534 +240,35 @@ parse_unsigned_decimal(const std::wstring_view text) noexcept {
         }
     }
 
-    if (!result.show_help && (!saw_disc_image || !saw_boot_executable)) {
-        throw std::runtime_error(
-            "Both --disc-image and --boot-executable are required");
-    }
-    return result;
-}
-
-[[nodiscard]] openrc::SceneBlockRuntimeLoadLimitsV1 make_load_limits() {
-    return openrc::SceneBlockRuntimeLoadLimitsV1{
-        kMaximumRuntimeBytes,
-        kMaximumRuntimeBytes,
-        kMaximumRuntimeBytes,
-        openrc::SceneBlockDirectoryLimits{
-            kMaximumRuntimeBytes,
-            kMaximumAggregateRecords,
-            kMaximumRuntimeBytes,
-        },
-        openrc::DvpVuLimits{
-            kMaximumRuntimeBytes,
-            128U,
-            openrc::kDvpVu1MicroMemoryBytes,
-            128U,
-            2U * openrc::kDvpVu1InstructionCount,
-            8U * openrc::kDvpVu1InstructionCount,
-        },
-    };
-}
-
-[[nodiscard]] openrc::SceneBlockRuntimeExecutionLimitsV1
-make_execution_limits() {
-    constexpr openrc::DvpVuExecutionLimitsV1 kDvpLimits{
-        1'000'000U,
-        64U,
-        1024U,
-        65'536U,
-    };
-    return openrc::SceneBlockRuntimeExecutionLimitsV1{
-        openrc::SceneBlockTaskExecutionLimitsV1{
-            openrc::SceneBlockTaskBuildLimitsV1{
-                kMaximumRuntimeBytes,
-                openrc::kSceneBlockTaskMaximumDmaReferences,
-                kMaximumRuntimeBytes,
-                openrc::SceneBlockVifLimits{
-                    kMaximumRuntimeBytes,
-                    1'000'000U,
-                    kMaximumRuntimeBytes,
-                },
-            },
-            1'000'000U,
-            openrc::SceneBlockDvpVuBridgeLimitsV1{1'000'000U},
-            kDvpLimits,
-        },
-        openrc::GifGsDecodeLimitsV1{
-            65'536U,
-            1'000'000U,
-            1'000'000U,
-            1'000'000U,
-            1'000'000U,
-            64U,
-        },
-    };
-}
-
-[[nodiscard]] openrc::RacLevelMobyAssetLimitsV1
-make_moby_asset_limits() {
-    constexpr openrc::RacMobyPacketGeometryLimitsV1 packet_limits{
-        kMaximumRuntimeBytes,
-        4096U,
-        4096U,
-        4096U,
-        1'000'000U,
-        4096U,
-        1'000'000U,
-    };
-    return openrc::RacLevelMobyAssetLimitsV1{
-        kMaximumRuntimeBytes,
-        kMaximumRuntimeBytes,
-        kMaximumRuntimeBytes,
-        4096U,
-        65'536U,
-        1'000'000U,
-        1'000'000U,
-        openrc::RacLevelCoreLimitsV1{
-            kMaximumRuntimeBytes,
-            kMaximumRuntimeBytes,
-            kMaximumRuntimeBytes,
-            4096U,
-            255U,
-            4096U,
-            4096U,
-            4096U,
-            255U,
-            255U,
-        },
-        openrc::RacLevelCollisionLimitsV1{
-            kMaximumRuntimeBytes,
-            65'536U,
-            1'000'000U,
-            4'000'000U,
-            1'000'000U,
-            16'000'000U,
-            16'000'000U,
-            65'536U,
-            4'000'000U,
-            4'000'000U,
-        },
-        openrc::RacGameplayBankLimitsV1{kMaximumRuntimeBytes},
-        openrc::RacMobyClassLimitsV1{kMaximumRuntimeBytes, false},
-        openrc::RacMobyClassLimitsV1{kMaximumRuntimeBytes, true},
-        openrc::RacMobyModelGeometryLimitsV1{
-            packet_limits,
-            4096U,
-            1'000'000U,
-            1'000'000U,
-        },
-        openrc::RacLevelMobyTextureLimitsV1{
-            kMaximumRuntimeBytes,
-            kMaximumRuntimeBytes,
-            kMaximumRuntimeBytes,
-            255U,
-            4096U,
-            4096U,
-            16U * 1024U * 1024U,
-            16U * 1024U * 1024U,
-            64U * 1024U * 1024U,
-        },
-        openrc::RacTieClassLimitsV1{
-            kMaximumRuntimeBytes,
-            4096U,
-            65'536U,
-            kMaximumAggregateVertices,
-            kMaximumAggregateVertices,
-            kMaximumAggregateTriangleIndices / 3U,
-            16U,
-        },
-        4096U,
-        65'536U,
-        kMaximumAggregateVertices,
-        kMaximumAggregateTriangleIndices / 3U,
-    };
-}
-
-[[nodiscard]] openrc::SceneBlockTaskFrameInputV1
-make_identity_frame_input() {
-    openrc::SceneBlockTaskFrameInputV1 result;
-    for (std::size_t row = 0U; row < result.transform_qwords.size(); ++row) {
-        for (std::size_t lane = 0U;
-             lane < result.transform_qwords[row].lanes.size();
-             ++lane) {
-            result.transform_qwords[row].lanes[lane] = openrc::DvpVuWordV1{
-                row == lane ? 0x3f800000U : 0U,
-                std::numeric_limits<std::uint32_t>::max(),
-            };
-        }
-    }
-    return result;
-}
-
-[[nodiscard]] LoadedSceneGeometry
-load_scene_geometry(const RuntimeArguments& arguments) {
-    const auto assets = openrc::load_scene_block_runtime_assets_v1(
-        arguments.disc_image,
-        arguments.boot_executable,
-        arguments.level_id,
-        make_load_limits());
-
-    const auto load_one_record = [&](const std::uint64_t record_index) {
-        return openrc::execute_scene_block_runtime_record_v1(
-            assets,
-            record_index,
-            arguments.entrypoint,
-            make_identity_frame_input(),
-            make_execution_limits());
-    };
-
-    if (arguments.all_records) {
-        if (assets.directory.entries.empty()) {
-            throw std::runtime_error(
-                "The selected level has no SceneBlock records");
-        }
-        if (assets.directory.entries.size() > kMaximumAggregateRecords) {
-            throw std::runtime_error(
-                "The selected level exceeds the full-level record limit");
-        }
-
-        std::vector<openrc::runtime::SceneGeometryV1> raster_batches;
-        std::vector<openrc::runtime::SceneGeometry3dV1> source_batches;
-        raster_batches.reserve(assets.directory.entries.size());
-        source_batches.reserve(assets.directory.entries.size());
-
-        LoadedSceneGeometry result;
-        result.total_record_count = assets.directory.entries.size();
-        std::uint64_t raster_vertex_count = 0U;
-        std::uint64_t raster_index_count = 0U;
-        std::uint64_t source_vertex_count = 0U;
-        std::uint64_t source_index_count = 0U;
-        for (std::size_t record_index = 0U;
-             record_index < assets.directory.entries.size();
-             ++record_index) {
-            const auto execution = load_one_record(record_index);
-            switch (execution.gs_status) {
-            case openrc::SceneBlockRuntimeGsStatusV1::not_attempted:
+    if (!result.show_help) {
+        if (saw_prepared_root) {
+            if (saw_disc_image || saw_boot_executable) {
                 throw std::runtime_error(
-                    "A full-level SceneBlock record was not executed");
-            case openrc::SceneBlockRuntimeGsStatusV1::no_events:
-                ++result.no_event_record_count;
-                continue;
-            case openrc::SceneBlockRuntimeGsStatusV1::incomplete_stream:
-                ++result.incomplete_stream_record_count;
-                continue;
-            case openrc::SceneBlockRuntimeGsStatusV1::decoded:
-                break;
+                    "--prepared-root cannot be combined with disc/ELF inputs");
             }
-            if (!execution.gs) {
+            if (saw_record || saw_entrypoint) {
                 throw std::runtime_error(
-                    "A decoded full-level GS stream is unavailable");
+                    "record and entry-pair controls are only available in "
+                    "the legacy recovery viewer");
             }
-            ++result.decoded_record_count;
-            validate_source_geometry_result(execution, arguments.entrypoint);
-
-            const auto has_emitted_triangle = std::ranges::any_of(
-                execution.gs->primitives,
-                [](const openrc::GifGsPrimitiveV1& primitive) {
-                    const auto topology = primitive.topology;
-                    return primitive.emission ==
-                               openrc::GifGsPrimitiveEmissionV1::emitted &&
-                        primitive.vertex_count == 3U &&
-                        (topology ==
-                             openrc::GifGsPrimitiveTopologyV1::triangle_list ||
-                         topology ==
-                             openrc::GifGsPrimitiveTopologyV1::triangle_strip ||
-                         topology ==
-                             openrc::GifGsPrimitiveTopologyV1::triangle_fan);
-                });
-            if (!has_emitted_triangle) {
-                continue;
-            }
-
-            auto raster_geometry =
-                openrc::runtime::build_scene_geometry_v1(*execution.gs);
-            add_aggregate_size(
-                raster_vertex_count,
-                raster_geometry.vertices.size(),
-                kMaximumAggregateVertices,
-                "The full-level raster geometry exceeds its vertex limit");
-            add_aggregate_size(
-                raster_index_count,
-                raster_geometry.triangle_indices.size(),
-                kMaximumAggregateTriangleIndices,
-                "The full-level raster geometry exceeds its index limit");
-            raster_batches.push_back(std::move(raster_geometry));
-            ++result.raster_record_count;
-            if (execution.source_geometry_status ==
-                    openrc::SceneBlockRuntimeSourceGeometryStatusV1::recovered &&
-                execution.source_geometry) {
-                auto source_material =
-                    openrc::runtime::build_scene_geometry_3d_material_v1(
-                        *execution.source_geometry,
-                        *execution.gs);
-                auto& source_geometry = source_material.geometry;
-                if (source_index_count % 3U != 0U) {
-                    throw std::runtime_error(
-                        "The aggregate terrain geometry is not a triangle list");
-                }
-                append_terrain_material_batches(
-                    result.terrain_material_batches,
-                    source_material.material_batches,
-                    source_index_count / 3U);
-                add_aggregate_size(
-                    result.terrain_textured_triangle_count,
-                    source_material.textured_triangle_count,
-                    kMaximumAggregateTriangleIndices / 3U,
-                    "The textured terrain triangle count exceeds its limit");
-                add_aggregate_size(
-                    result.terrain_unresolved_material_triangle_count,
-                    source_material.unresolved_material_triangle_count,
-                    kMaximumAggregateTriangleIndices / 3U,
-                    "The unresolved terrain material count exceeds its limit");
-                add_aggregate_size(
-                    result.terrain_single_context_triangle_count,
-                    source_material.single_programmed_context_triangle_count,
-                    kMaximumAggregateTriangleIndices / 3U,
-                    "The terrain context-policy count exceeds its limit");
-                add_aggregate_size(
-                    result.terrain_vertices_with_stq,
-                    source_material.vertices_with_stq,
-                    kMaximumAggregateVertices,
-                    "The terrain STQ vertex count exceeds its limit");
-                add_aggregate_size(
-                    result.terrain_vertices_without_stq,
-                    source_material.vertices_without_stq,
-                    kMaximumAggregateVertices,
-                    "The missing terrain STQ count exceeds its limit");
-                add_aggregate_size(
-                    source_vertex_count,
-                    source_geometry.vertices.size(),
-                    kMaximumAggregateVertices,
-                    "The full-level source geometry exceeds its vertex limit");
-                add_aggregate_size(
-                    source_index_count,
-                    source_geometry.triangle_indices.size(),
-                    kMaximumAggregateTriangleIndices,
-                    "The full-level source geometry exceeds its index limit");
-                source_batches.push_back(std::move(source_material.geometry));
-                ++result.source_record_count;
-            } else if (execution.source_geometry_status ==
-                       openrc::SceneBlockRuntimeSourceGeometryStatusV1::
-                           unavailable_layout) {
-                ++result.unavailable_source_record_count;
-            }
-        }
-
-        if (raster_batches.empty()) {
-            throw std::runtime_error(
-                "No full-level SceneBlock record produced triangle geometry");
-        }
-        if (arguments.entrypoint ==
-                openrc::kSceneBlockSourceGeometryEntrypointV1 &&
-            result.source_record_count +
-                    result.unavailable_source_record_count !=
-                result.raster_record_count) {
-            throw std::runtime_error(
-                "The full-level source-geometry record counts are inconsistent");
-        }
-        constexpr openrc::runtime::SceneGeometryMergeLimitsV1 merge_limits{
-            kMaximumAggregateVertices,
-            kMaximumAggregateTriangleIndices,
-        };
-        result.raster = openrc::runtime::merge_scene_geometries_v1(
-            raster_batches, merge_limits);
-        if (!source_batches.empty()) {
-            result.source = openrc::runtime::merge_scene_geometries_3d_v1(
-                source_batches, merge_limits);
-        }
-        return result;
-    }
-
-    const auto execution = load_one_record(arguments.record_index);
-
-    if (!execution.initialization.ready_state) {
+        } else if (!saw_disc_image || !saw_boot_executable) {
         throw std::runtime_error(
-            "The SceneBlock task did not finish its initialization entrypoint");
-    }
-    if (!execution.record) {
-        throw std::runtime_error(
-            "The SceneBlock record was not executed");
-    }
-    if (execution.gs_status != openrc::SceneBlockRuntimeGsStatusV1::decoded ||
-        !execution.gs) {
-        switch (execution.gs_status) {
-        case openrc::SceneBlockRuntimeGsStatusV1::not_attempted:
-            throw std::runtime_error(
-                "The GS stream was not attempted");
-        case openrc::SceneBlockRuntimeGsStatusV1::no_events:
-            throw std::runtime_error(
-                "The selected SceneBlock record produced no XGKICK events");
-        case openrc::SceneBlockRuntimeGsStatusV1::incomplete_stream:
-            throw std::runtime_error(
-                "The selected SceneBlock record produced an incomplete GS stream");
-        case openrc::SceneBlockRuntimeGsStatusV1::decoded:
-            break;
+                "Use --prepared-root, or supply both --disc-image and "
+                "--boot-executable for the legacy recovery viewer");
         }
-        throw std::runtime_error("The decoded GS stream is unavailable");
-    }
-    validate_source_geometry_result(execution, arguments.entrypoint);
-    if (execution.source_geometry_status ==
-        openrc::SceneBlockRuntimeSourceGeometryStatusV1::unavailable_layout) {
-        throw std::runtime_error(
-            "The selected SceneBlock record has no recoverable source geometry: " +
-            execution.source_geometry_diagnostic.value_or(
-                "no diagnostic was supplied"));
-    }
-    LoadedSceneGeometry result;
-    result.raster = openrc::runtime::build_scene_geometry_v1(*execution.gs);
-    result.total_record_count = 1U;
-    result.decoded_record_count = 1U;
-    result.raster_record_count = 1U;
-    if (execution.source_geometry) {
-        auto source_material =
-            openrc::runtime::build_scene_geometry_3d_material_v1(
-            *execution.source_geometry,
-            *execution.gs);
-        result.terrain_material_batches =
-            std::move(source_material.material_batches);
-        result.terrain_textured_triangle_count =
-            source_material.textured_triangle_count;
-        result.terrain_unresolved_material_triangle_count =
-            source_material.unresolved_material_triangle_count;
-        result.terrain_single_context_triangle_count =
-            source_material.single_programmed_context_triangle_count;
-        result.terrain_vertices_with_stq = source_material.vertices_with_stq;
-        result.terrain_vertices_without_stq =
-            source_material.vertices_without_stq;
-        result.source = std::move(source_material.geometry);
-        result.source_record_count = 1U;
     }
     return result;
-}
-
-void attach_static_environment_geometry(
-    const RuntimeArguments& arguments,
-    LoadedSceneGeometry& geometry) {
-    if (arguments.entrypoint !=
-            openrc::kSceneBlockSourceGeometryEntrypointV1 ||
-        !geometry.source) {
-        return;
-    }
-
-    auto assets = openrc::load_rac_level_moby_assets_v1(
-        arguments.disc_image,
-        arguments.level_id,
-        make_moby_asset_limits());
-    if (geometry.terrain_material_batches.empty() ||
-        assets.tfrag_textures.textures.empty()) {
-        throw std::runtime_error(
-            "The terrain source geometry has no decoded texture materials");
-    }
-    const auto terrain_triangle_count =
-        geometry.source->triangle_indices.size() / 3U;
-    geometry.terrain_triangle_count = terrain_triangle_count;
-    const auto& final_terrain_batch = geometry.terrain_material_batches.back();
-    if (geometry.source->triangle_indices.size() % 3U != 0U ||
-        final_terrain_batch.first_triangle +
-                final_terrain_batch.index_count / 3U !=
-            terrain_triangle_count) {
-        throw std::runtime_error(
-            "The terrain texture materials do not cover source geometry");
-    }
-    for (const auto& batch : geometry.terrain_material_batches) {
-        if (batch.texture_index &&
-            *batch.texture_index >= assets.tfrag_textures.textures.size()) {
-            throw std::runtime_error(
-                "A terrain material references a missing tfrag texture");
-        }
-    }
-    geometry.tfrag_texture_bank = std::move(assets.tfrag_textures);
-
-    if (!arguments.all_records) {
-        return;
-    }
-    constexpr openrc::runtime::MobySceneGeometryLimitsV1 moby_limits{
-        4096U,
-        65'536U,
-        kMaximumAggregateVertices,
-        kMaximumAggregateTriangleIndices,
-        kMaximumAggregateVertices,
-        kMaximumAggregateTriangleIndices,
-    };
-    auto moby = openrc::runtime::build_moby_scene_geometry_v1(
-        assets.models,
-        assets.gameplay.static_mobies,
-        openrc::runtime::MobySceneCoordinateDomainV1::
-            scene_block_itof0_units,
-        moby_limits);
-    geometry.moby_model_count = moby.stats.model_count;
-    geometry.moby_rendered_model_count = moby.stats.rendered_model_count;
-    geometry.moby_placement_count = moby.stats.placement_count;
-    geometry.moby_rendered_placement_count =
-        moby.stats.rendered_placement_count;
-    geometry.moby_animated_placement_count =
-        moby.stats.animated_model_placement_count;
-    geometry.moby_missing_or_empty_placement_count =
-        moby.stats.missing_model_placement_count +
-        moby.stats.empty_model_placement_count;
-
-    constexpr openrc::runtime::TieSceneGeometryLimitsV1 tie_limits{
-        4096U,
-        65'536U,
-        kMaximumAggregateVertices,
-        kMaximumAggregateTriangleIndices,
-        kMaximumAggregateVertices,
-        kMaximumAggregateTriangleIndices,
-    };
-    auto tie = openrc::runtime::build_tie_scene_geometry_v1(
-        assets.tie_models,
-        assets.gameplay.tie_instances,
-        openrc::runtime::TieSceneCoordinateDomainV1::
-            scene_block_itof0_units,
-        tie_limits);
-    geometry.tie_model_count = tie.stats.model_count;
-    geometry.tie_rendered_model_count = tie.stats.rendered_model_count;
-    geometry.tie_placement_count = tie.stats.placement_count;
-    geometry.tie_rendered_placement_count =
-        tie.stats.rendered_placement_count;
-    geometry.tie_missing_or_empty_placement_count =
-        tie.stats.missing_model_placement_count +
-        tie.stats.empty_model_placement_count;
-
-    std::vector<openrc::runtime::SceneGeometry3dV1> batches;
-    batches.reserve(3U);
-    batches.push_back(std::move(*geometry.source));
-    auto next_triangle = terrain_triangle_count;
-    if (moby.geometry) {
-        geometry.moby_first_triangle = next_triangle;
-        geometry.moby_triangle_count =
-            moby.geometry->emitted_triangle_count;
-        geometry.moby_material_batches = std::move(moby.material_batches);
-        geometry.moby_texture_bank = std::move(assets.textures);
-        next_triangle += geometry.moby_triangle_count;
-        batches.push_back(std::move(*moby.geometry));
-    }
-    if (tie.geometry) {
-        geometry.tie_first_triangle = next_triangle;
-        geometry.tie_triangle_count = tie.geometry->emitted_triangle_count;
-        geometry.tie_material_batches = std::move(tie.material_batches);
-        geometry.tie_texture_bank = std::move(assets.tie_textures);
-        batches.push_back(std::move(*tie.geometry));
-    }
-
-    if (batches.size() == 1U) {
-        geometry.source = std::move(batches.front());
-        return;
-    }
-    constexpr openrc::runtime::SceneGeometryMergeLimitsV1 merge_limits{
-        kMaximumAggregateVertices,
-        kMaximumAggregateTriangleIndices,
-    };
-    geometry.source = openrc::runtime::merge_scene_geometries_3d_v1(
-        batches, merge_limits);
 }
 
 void refresh_window_title(const HWND window, const WindowState& state) {
     if (!state.renderer) {
         return;
     }
-    const auto suffix = state.renderer->is_3d_view()
+    const auto suffix = state.native_content
+                            ? L" - native package"
+                            : (state.renderer->is_3d_view()
         ? L" - recovered level 3D (debug orbit)"
-        : L" - decoded GS output (2D)";
+        : L" - decoded GS output (2D)");
     SetWindowTextW(window, (state.base_title + suffix).c_str());
 }
 
@@ -1018,7 +441,7 @@ LRESULT CALLBACK window_procedure(
 
 [[nodiscard]] std::wstring make_window_title(
     const RuntimeArguments& arguments,
-    const LoadedSceneGeometry& geometry) {
+    const openrc::runtime::LevelSceneRecoveryResultV1 & geometry) {
     if (arguments.all_records) {
         if (arguments.entrypoint !=
             openrc::kSceneBlockSourceGeometryEntrypointV1) {
@@ -1065,6 +488,18 @@ LRESULT CALLBACK window_procedure(
                             : 0U);
 }
 
+[[nodiscard]] std::wstring
+make_native_window_title(const openrc::game::RuntimeLevelContentV1 &content) {
+    std::uint64_t triangle_count = 0U;
+    for (const auto &mesh : content.render_scene.meshes) {
+        triangle_count += mesh.triangle_indices.size() / 3U;
+    }
+    return std::wstring(L"OpenRC - native level ") +
+           std::to_wstring(content.foundation.level_id) + L" - " +
+           std::to_wstring(content.render_scene.instances.size()) +
+           L" instances, " + std::to_wstring(triangle_count) + L" triangles";
+}
+
 [[nodiscard]] HWND create_runtime_window(
     const HINSTANCE instance,
     WindowState& state,
@@ -1108,7 +543,10 @@ LRESULT CALLBACK window_procedure(
 
 constexpr wchar_t kUsageText[] =
     L"OpenRC native level viewer\n\n"
-    L"Required:\n"
+    L"Prepared game (normal runtime):\n"
+    L"  --prepared-root <prepared game directory>\n"
+    L"  --level <level ID>\n\n"
+    L"Legacy recovery viewer:\n"
     L"  --disc-image <disc.iso>\n"
     L"  --boot-executable <prepared ELF>\n\n"
     L"Optional:\n"
@@ -1145,16 +583,56 @@ int WINAPI wWinMain(
             return 0;
         }
 
-        auto geometry = load_scene_geometry(arguments);
-        attach_static_environment_geometry(arguments, geometry);
+        std::optional<openrc::runtime::LevelSceneRecoveryResultV1>
+            recovered_geometry;
+        std::optional<openrc::game::RuntimeLevelContentV1> native_content;
+        if (arguments.prepared_root) {
+            const auto filesystem_limits = make_runtime_prepared_game_limits();
+            const auto prepared = openrc::load_prepared_game_v2_root_v1(
+                *arguments.prepared_root, filesystem_limits);
+            const auto resolved =
+                openrc::load_resolved_prepared_game_level_package_v1(
+                    prepared, arguments.level_id,
+                    std::span<
+                        const openrc::ExplicitLevelPackageOverlayBytesV1>{},
+                    filesystem_limits);
+            native_content = openrc::game::load_runtime_level_content_v1(
+                resolved, make_runtime_level_content_limits());
+        } else {
+            const openrc::runtime::LevelSceneRecoveryRequestV1 recovery_request{
+                arguments.disc_image,
+                arguments.boot_executable,
+                arguments.level_id,
+                arguments.all_records
+                    ? openrc::runtime::LevelSceneRecordSelectionV1::all_records
+                    : openrc::runtime::LevelSceneRecordSelectionV1::
+                          single_record,
+                arguments.record_index,
+                arguments.entrypoint,
+            };
+            recovered_geometry = openrc::runtime::recover_level_scene_v1(
+                recovery_request,
+                openrc::runtime::make_level_scene_recovery_limits_v1(),
+                openrc::runtime::make_level_scene_recovery_profile_v1());
+        }
+
         WindowState state;
-        state.base_title = make_window_title(arguments, geometry);
+        state.native_content = native_content.has_value();
+        state.base_title =
+            native_content ? make_native_window_title(*native_content)
+                           : make_window_title(arguments, *recovered_geometry);
         const auto window = create_runtime_window(
             instance,
             state,
             state.base_title);
         try {
-            if (geometry.source) {
+            if (native_content) {
+                state.renderer =
+                    std::make_unique<openrc::runtime::D3d11Renderer>(
+                        window, native_content->render_scene);
+            } else {
+                auto &geometry = *recovered_geometry;
+                if (geometry.source) {
                 if (geometry.tfrag_texture_bank &&
                     !geometry.terrain_material_batches.empty()) {
                     std::vector<
@@ -1202,6 +680,7 @@ int WINAPI wWinMain(
                 state.renderer =
                     std::make_unique<openrc::runtime::D3d11Renderer>(
                         window, geometry.raster);
+                }
             }
             refresh_window_title(window, state);
         } catch (...) {
