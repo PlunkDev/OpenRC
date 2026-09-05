@@ -10,6 +10,8 @@
 
 namespace openrc::runtime {
 
+inline constexpr std::uint32_t kRenderSceneD3dNoInstanceIdV1 = UINT32_MAX;
+
 // GPU-neutral staging data for the D3D11 RenderSceneV1 path. Mesh-local
 // vertices and indices are expanded in canonical instance order so the
 // renderer never needs RAC source records or decoder state at run time.
@@ -31,6 +33,10 @@ struct RenderSceneD3dDrawV1 {
     std::uint32_t material_id = 0U;
     std::uint32_t first_index = 0U;
     std::uint32_t index_count = 0U;
+    // Flattening preserves the neutral instance identity so gameplay can
+    // disable an EntityRenderBinding without rebuilding GPU buffers. The
+    // sentinel is reserved for renderer-owned draws such as the player actor.
+    std::uint32_t instance_id = kRenderSceneD3dNoInstanceIdV1;
 
     [[nodiscard]] bool
     operator==(const RenderSceneD3dDrawV1&) const = default;

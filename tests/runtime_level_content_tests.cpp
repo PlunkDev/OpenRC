@@ -80,6 +80,14 @@ constexpr openrc::EntitySceneIoLimitsV1 kEntitySceneLimits{
         1024U,
     },
 };
+constexpr openrc::GameplaySceneIoLimitsV1 kGameplaySceneLimits{
+    1U << 20U,
+    {
+        16U,
+        64U,
+        1024U,
+    },
+};
 constexpr openrc::game::RuntimeLevelContentLimitsV1 kRuntimeLimits{
     {
         kContentApiVersion,
@@ -89,6 +97,7 @@ constexpr openrc::game::RuntimeLevelContentLimitsV1 kRuntimeLimits{
     kRenderSceneLimits,
     kActorLibraryLimits,
     kEntitySceneLimits,
+    kGameplaySceneLimits,
 };
 
 void expect(const bool condition, const std::string &message) {
@@ -159,6 +168,9 @@ void expect_runtime_error(Callback &&callback,
   openrc::RenderSceneInstanceV1 instance;
   instance.id = 0U;
   instance.mesh_id = 0U;
+  instance.local_to_world.values[3U] = 1.0F;
+  instance.local_to_world.values[7U] = 2.0F;
+  instance.local_to_world.values[11U] = 3.0F;
 
   openrc::RenderSceneV1 result;
   result.materials.push_back(material);
@@ -170,9 +182,7 @@ void expect_runtime_error(Callback &&callback,
 [[nodiscard]] openrc::ActorAffineTransformV1 identity_actor_transform() {
   openrc::ActorAffineTransformV1 result;
   result.values = {
-      1.0F, 0.0F, 0.0F, 0.0F,
-      0.0F, 1.0F, 0.0F, 0.0F,
-      0.0F, 0.0F, 1.0F, 0.0F,
+      1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F,
   };
   return result;
 }
@@ -186,8 +196,8 @@ void expect_runtime_error(Callback &&callback,
   return result;
 }
 
-[[nodiscard]] openrc::ActorSkinnedVertexV1 actor_vertex(
-    const float x, const float y, const float u, const float v) {
+[[nodiscard]] openrc::ActorSkinnedVertexV1
+actor_vertex(const float x, const float y, const float u, const float v) {
   openrc::ActorSkinnedVertexV1 result;
   result.x = x;
   result.y = y;
@@ -259,6 +269,20 @@ void expect_runtime_error(Callback &&callback,
   return result;
 }
 
+[[nodiscard]] openrc::GameplaySceneV1 make_gameplay_scene() {
+  openrc::GameplayCollectibleV1 collectible;
+  collectible.authored_id = 40U;
+  collectible.item_key = "currency/bolt";
+  collectible.local_center = {0.25F, -0.5F, 1.0F};
+  collectible.amount = 25U;
+  collectible.collection_radius = 1.5F;
+
+  openrc::GameplaySceneV1 result;
+  result.level_id = kLevelId;
+  result.collectibles.push_back(std::move(collectible));
+  return result;
+}
+
 [[nodiscard]] openrc::LevelPackageResourceV1 make_resource(
     const std::string_view resource_id, const std::string_view type_id,
     const std::uint32_t schema_version, std::vector<std::byte> payload) {
@@ -298,13 +322,11 @@ void expect_runtime_error(Callback &&callback,
   return result;
 }
 
-void add_actor_library_resource(
-    openrc::ResolvedLevelPackageV1 &package,
-    const openrc::ActorLibraryV1 &library,
-    const openrc::ActorLibraryIoLimitsV1 limits) {
+void add_actor_library_resource(openrc::ResolvedLevelPackageV1 &package,
+                                const openrc::ActorLibraryV1 &library,
+                                const openrc::ActorLibraryIoLimitsV1 limits) {
   package.resources.push_back(make_resource(
-      openrc::kActorLibraryResourceIdV1,
-      openrc::kActorLibraryResourceTypeIdV1,
+      openrc::kActorLibraryResourceIdV1, openrc::kActorLibraryResourceTypeIdV1,
       openrc::kActorLibraryResourceSchemaVersionV1,
       openrc::encode_actor_library_v1(library, limits)));
 }
@@ -317,10 +339,18 @@ void add_actor_library_resource(openrc::ResolvedLevelPackageV1 &package) {
 void add_entity_scene_resource(openrc::ResolvedLevelPackageV1 &package,
                                const openrc::EntitySceneV1 &scene) {
   package.resources.push_back(make_resource(
-      openrc::kEntitySceneResourceIdV1,
-      openrc::kEntitySceneResourceTypeIdV1,
+      openrc::kEntitySceneResourceIdV1, openrc::kEntitySceneResourceTypeIdV1,
       openrc::kEntitySceneResourceSchemaVersionV1,
       openrc::encode_entity_scene_v1(scene, kEntitySceneLimits)));
+}
+
+void add_gameplay_scene_resource(openrc::ResolvedLevelPackageV1 &package,
+                                 const openrc::GameplaySceneV1 &scene) {
+  package.resources.push_back(make_resource(
+      openrc::kGameplaySceneResourceIdV1,
+      openrc::kGameplaySceneResourceTypeIdV1,
+      openrc::kGameplaySceneResourceSchemaVersionV1,
+      openrc::encode_gameplay_scene_v1(scene, kGameplaySceneLimits)));
 }
 
 [[nodiscard]] openrc::ResolvedLevelPackageV1
@@ -328,6 +358,13 @@ make_package_with_actor_entities() {
   auto result = make_package();
   add_actor_library_resource(result);
   add_entity_scene_resource(result, make_entity_scene());
+  return result;
+}
+
+[[nodiscard]] openrc::ResolvedLevelPackageV1
+make_package_with_actor_entities_and_gameplay() {
+  auto result = make_package_with_actor_entities();
+  add_gameplay_scene_resource(result, make_gameplay_scene());
   return result;
 }
 
@@ -361,7 +398,8 @@ void test_mounts_complete_content_from_one_package() {
              content.foundation.bootstrap == make_bootstrap() &&
              content.foundation.collision_world == make_collision_world() &&
              content.render_scene == make_render_scene() &&
-             !content.actor_library && !content.entity_scene,
+             !content.actor_library && !content.entity_scene &&
+             !content.gameplay_scene,
          "combined runtime loader changed or disconnected mounted content");
 }
 
@@ -370,13 +408,99 @@ void test_mounts_complete_actor_entity_feature_pair() {
       make_package_with_actor_entities(), kRuntimeLimits);
   expect(content.actor_library.has_value() &&
              content.entity_scene.has_value() &&
-             *content.actor_library == openrc::canonicalize_actor_library_v1(
-                                           make_actor_library(),
-                                           kActorLibraryLimits.library) &&
-             *content.entity_scene == openrc::canonicalize_entity_scene_v1(
-                                          make_entity_scene(),
-                                          kEntitySceneLimits.scene),
+             *content.actor_library ==
+                 openrc::canonicalize_actor_library_v1(
+                     make_actor_library(), kActorLibraryLimits.library) &&
+             *content.entity_scene ==
+                 openrc::canonicalize_entity_scene_v1(
+                     make_entity_scene(), kEntitySceneLimits.scene) &&
+             !content.gameplay_scene,
          "combined runtime loader changed the mounted actor/entity pair");
+}
+
+void test_mounts_gameplay_scene_with_entity_contract() {
+  const auto content = openrc::game::load_runtime_level_content_v1(
+      make_package_with_actor_entities_and_gameplay(), kRuntimeLimits);
+  expect(content.actor_library.has_value() &&
+             content.entity_scene.has_value() &&
+             content.gameplay_scene.has_value() &&
+             *content.gameplay_scene ==
+                 openrc::canonicalize_gameplay_scene_v1(
+                     make_gameplay_scene(), kGameplaySceneLimits.scene),
+         "combined runtime loader changed the mounted gameplay scene");
+}
+
+void test_rejects_gameplay_without_entity_scene() {
+  auto package = make_package();
+  add_gameplay_scene_resource(package, make_gameplay_scene());
+  expect_runtime_error(
+      [&] {
+        static_cast<void>(openrc::game::load_runtime_level_content_v1(
+            package, kRuntimeLimits));
+      },
+      "without its entity scene",
+      "combined loader accepted gameplay without an entity scene");
+}
+
+void test_rejects_gameplay_without_definition_or_transform() {
+  auto missing_definition_scene = make_gameplay_scene();
+  missing_definition_scene.collectibles[0U].authored_id = 99U;
+  auto missing_definition = make_package_with_actor_entities();
+  add_gameplay_scene_resource(missing_definition, missing_definition_scene);
+  expect_runtime_error(
+      [&] {
+        static_cast<void>(openrc::game::load_runtime_level_content_v1(
+            missing_definition, kRuntimeLimits));
+      },
+      "missing entity definition",
+      "combined loader accepted a collectible without an entity definition");
+
+  auto missing_transform_scene = make_gameplay_scene();
+  missing_transform_scene.collectibles[0U].authored_id = 5U;
+  auto missing_transform = make_package_with_actor_entities();
+  add_gameplay_scene_resource(missing_transform, missing_transform_scene);
+  expect_runtime_error(
+      [&] {
+        static_cast<void>(openrc::game::load_runtime_level_content_v1(
+            missing_transform, kRuntimeLimits));
+      },
+      "without a transform",
+      "combined loader accepted a collectible entity without a transform");
+}
+
+void test_rejects_wrong_or_invalid_gameplay_scene() {
+  auto wrong_level_scene = make_gameplay_scene();
+  wrong_level_scene.level_id = kLevelId + 1U;
+  auto wrong_level = make_package_with_actor_entities();
+  add_gameplay_scene_resource(wrong_level, wrong_level_scene);
+  expect_runtime_error(
+      [&] {
+        static_cast<void>(openrc::game::load_runtime_level_content_v1(
+            wrong_level, kRuntimeLimits));
+      },
+      "gameplay scene",
+      "combined loader accepted a gameplay scene for another level");
+
+  auto corrupt = make_package_with_actor_entities_and_gameplay();
+  corrupt_and_rehash(
+      find_resource(corrupt, openrc::kGameplaySceneResourceIdV1));
+  expect_runtime_error(
+      [&] {
+        static_cast<void>(openrc::game::load_runtime_level_content_v1(
+            corrupt, kRuntimeLimits));
+      },
+      "gameplay scene",
+      "combined loader accepted a corrupt freshly hashed gameplay scene");
+
+  auto gameplay_limits = kRuntimeLimits;
+  gameplay_limits.gameplay_scene.max_encoded_bytes =
+      openrc::kGameplaySceneIoHeaderBytesV1;
+  expect_runtime_error(
+      [&] {
+        static_cast<void>(openrc::game::load_runtime_level_content_v1(
+            make_package_with_actor_entities_and_gameplay(), gameplay_limits));
+      },
+      "gameplay scene", "combined loader ignored gameplay-scene limits");
 }
 
 void test_rejects_missing_render_scene() {
@@ -449,7 +573,8 @@ void test_rejects_incomplete_actor_entity_feature_pair() {
         static_cast<void>(openrc::game::load_runtime_level_content_v1(
             actor_only, kRuntimeLimits));
       },
-      "feature pair", "combined loader accepted an actor library without entities");
+      "feature pair",
+      "combined loader accepted an actor library without entities");
 
   auto entities_only = make_package();
   add_entity_scene_resource(entities_only, make_entity_scene());
@@ -458,7 +583,8 @@ void test_rejects_incomplete_actor_entity_feature_pair() {
         static_cast<void>(openrc::game::load_runtime_level_content_v1(
             entities_only, kRuntimeLimits));
       },
-      "feature pair", "combined loader accepted entities without an actor library");
+      "feature pair",
+      "combined loader accepted entities without an actor library");
 }
 
 void test_rejects_dangling_cross_resource_references() {
@@ -486,6 +612,41 @@ void test_rejects_dangling_cross_resource_references() {
       },
       "render instance",
       "combined loader accepted a dangling render-instance ID");
+}
+
+void test_rejects_ambiguous_or_misaligned_render_bindings() {
+  auto duplicate_scene = make_entity_scene();
+  duplicate_scene.definitions.push_back(
+      {41U, "openrc.prop/other", 0U,
+       openrc::kEntitySceneNoAuthoringGroupIdV1});
+  openrc::EntityTransformComponentV1 duplicate_transform;
+  duplicate_transform.authored_id = 41U;
+  duplicate_transform.transform.position = {1.0F, 2.0F, 3.0F};
+  duplicate_scene.transforms.push_back(duplicate_transform);
+  duplicate_scene.render_bindings.push_back({41U, 0U});
+  auto duplicate = make_package();
+  add_actor_library_resource(duplicate);
+  add_entity_scene_resource(duplicate, duplicate_scene);
+  expect_runtime_error(
+      [&] {
+        static_cast<void>(openrc::game::load_runtime_level_content_v1(
+            duplicate, kRuntimeLimits));
+      },
+      "multiple entities",
+      "combined loader accepted a render instance shared by two entities");
+
+  auto misaligned_scene = make_entity_scene();
+  misaligned_scene.transforms[0U].transform.position[0U] = 9.0F;
+  auto misaligned = make_package();
+  add_actor_library_resource(misaligned);
+  add_entity_scene_resource(misaligned, misaligned_scene);
+  expect_runtime_error(
+      [&] {
+        static_cast<void>(openrc::game::load_runtime_level_content_v1(
+            misaligned, kRuntimeLimits));
+      },
+      "authored transform",
+      "combined loader accepted visible geometry away from its entity");
 }
 
 void test_rejects_wrong_entity_level_and_unusable_player_slot() {
@@ -569,9 +730,8 @@ void test_rejects_disabled_player_definition() {
 
 void test_preflights_player_actor_pose() {
   auto ill_conditioned = make_actor_library();
-  ill_conditioned.rigs[0U]
-      .rig.joints[0U]
-      .local_bind_transform.values[0U] = 1.0e-10F;
+  ill_conditioned.rigs[0U].rig.joints[0U].local_bind_transform.values[0U] =
+      1.0e-10F;
   auto ill_conditioned_package = make_package();
   add_actor_library_resource(ill_conditioned_package, ill_conditioned,
                              kActorLibraryLimits);
@@ -639,8 +799,8 @@ void test_rejects_player_actor_over_presentation_caps() {
 }
 
 void test_rejects_corrupt_optional_payloads_and_forwards_limits() {
-  for (const auto resource_id : {openrc::kActorLibraryResourceIdV1,
-                                 openrc::kEntitySceneResourceIdV1}) {
+  for (const auto resource_id :
+       {openrc::kActorLibraryResourceIdV1, openrc::kEntitySceneResourceIdV1}) {
     auto package = make_package_with_actor_entities();
     corrupt_and_rehash(find_resource(package, resource_id));
     expect_runtime_error(
@@ -680,12 +840,17 @@ int main() {
   try {
     test_mounts_complete_content_from_one_package();
     test_mounts_complete_actor_entity_feature_pair();
+    test_mounts_gameplay_scene_with_entity_contract();
+    test_rejects_gameplay_without_entity_scene();
+    test_rejects_gameplay_without_definition_or_transform();
+    test_rejects_wrong_or_invalid_gameplay_scene();
     test_rejects_missing_render_scene();
     test_rejects_implicit_and_incompatible_content_api();
     test_rejects_corrupt_foundation_resources();
     test_rejects_corrupt_render_scene();
     test_rejects_incomplete_actor_entity_feature_pair();
     test_rejects_dangling_cross_resource_references();
+    test_rejects_ambiguous_or_misaligned_render_bindings();
     test_rejects_wrong_entity_level_and_unusable_player_slot();
     test_rejects_singular_or_ill_conditioned_player_model_transform();
     test_rejects_disabled_player_definition();

@@ -4,6 +4,7 @@
 #include "openrc/content_api.hpp"
 #include "openrc/runtime_actor_library.hpp"
 #include "openrc/runtime_entity_scene.hpp"
+#include "openrc/runtime_gameplay_scene_resource.hpp"
 #include "openrc/runtime_level_foundation.hpp"
 #include "openrc/runtime_render_scene.hpp"
 
@@ -43,6 +44,7 @@ struct RuntimeLevelContentV1 {
   RenderSceneV1 render_scene;
   std::optional<ActorLibraryV1> actor_library;
   std::optional<EntitySceneV1> entity_scene;
+  std::optional<GameplaySceneV1> gameplay_scene;
 
   [[nodiscard]] bool operator==(const RuntimeLevelContentV1 &) const = default;
 };
@@ -52,6 +54,7 @@ struct RuntimeLevelContentLimitsV1 {
   RenderSceneIoLimitsV1 render_scene;
   ActorLibraryIoLimitsV1 actor_library;
   EntitySceneIoLimitsV1 entity_scene;
+  GameplaySceneIoLimitsV1 gameplay_scene;
 };
 
 class RuntimeLevelContentError final : public std::runtime_error {
@@ -133,14 +136,24 @@ make_runtime_level_content_limits_v1() {
               UINT64_C(128) * 1024U * 1024U,
           },
       },
+      GameplaySceneIoLimitsV1{
+          UINT64_C(256) * 1024U * 1024U,
+          GameplaySceneLimitsV1{
+              1'000'000U,
+              256U,
+              UINT64_C(128) * 1024U * 1024U,
+          },
+      },
   };
 }
 
 // Mounts the mandatory gameplay foundation and neutral render scene from the
 // same already-resolved package. ActorLibraryV1 and EntitySceneV1 are an
 // optional feature pair: old packages may omit both, but a package may never
-// expose only half of the actor/entity contract. The content API policy is
-// explicit and shared by all resource loaders.
+// expose only half of the actor/entity contract. GameplaySceneV1 is another
+// optional extension for old-package compatibility, but requires an entity
+// scene whenever present. The content API policy is explicit and shared by
+// all resource loaders.
 [[nodiscard]] RuntimeLevelContentV1
 load_runtime_level_content_v1(const ResolvedLevelPackageV1 &package,
                               RuntimeLevelContentLimitsV1 limits);

@@ -126,8 +126,9 @@ byte payload[payload_bytes]
 
 `type_id` is open-ended and independently versioned, for example
 `openrc.render-scene`, `openrc.collision-world`, `openrc.actor-library`,
-`openrc.entity-scene`, or a mod-owned namespace. This allows neutral resource
-schemas to evolve without changing the package container.
+`openrc.entity-scene`, `openrc.gameplay-scene`, or a mod-owned namespace. This
+allows neutral resource schemas to evolve without changing the package
+container.
 
 Known flags are:
 
@@ -156,8 +157,8 @@ one `mod_resource` provenance record.
 
 ## Current native-game resource profile
 
-The current all-level asset compiler emits exactly five upsert resources in
-every base `LevelPackageV1`:
+The current all-level asset compiler is being updated to emit exactly six
+upsert resources in every base `LevelPackageV1`:
 
 | Resource ID | Type ID | Schema | Runtime role |
 | --- | --- | ---: | --- |
@@ -165,27 +166,50 @@ every base `LevelPackageV1`:
 | `world/bootstrap` | `openrc.level-bootstrap` | 1 | authored spawn points and absolute death plane |
 | `world/collision` | `openrc.collision-world` | 1 | exact-Q6 native collision geometry and search grid |
 | `world/entities` | `openrc.entity-scene` | 1 | stable entity definitions and typed component bindings |
+| `world/gameplay` | `openrc.gameplay-scene` | 1 | deterministic overlap collectibles and semantic inventory grants |
 | `world/render-scene` | `openrc.render-scene` | 1 | static textures, materials, meshes, and instances |
 
-This is an asset-compiler profile, not a special Veldin container version.
-The same resource IDs and neutral schemas are used for all 19 supported level
-packages. LevelPackageV1 still permits other independently versioned resource
-types and explicit overlays.
+This is an asset-compiler profile, not a special Veldin container version. The
+target profile uses the same resource IDs and neutral schemas for all 19
+supported level packages. LevelPackageV1 still permits other independently
+versioned resource types and explicit overlays.
 
 The runtime compatibility loader requires bootstrap, collision, and render
 scene. It accepts both actor library and entity scene as one feature pair so
 older three-resource development packages remain readable; a package exposing
-only one half is rejected. Publications produced by the current compiler always
-contain both. It also cross-validates the level ID and every semantic
-entity-to-model-to-rig relationship before gameplay receives the content.
+only one half is rejected. Gameplay scene is another optional compatibility
+extension for older packages, but it requires entity scene whenever present.
+The combined loader cross-validates the level ID, every semantic
+entity-to-model-to-rig relationship, and every collectible reference to an
+entity definition with an authored transform before gameplay receives the
+content. New native-game publications target all six resources. Fresh
+preparation and strict reuse validation have verified that exact profile across
+all 19 supported levels.
 
 RAC class IDs, WAD and ELF offsets, VIF/VU/GIF/GS commands, and PS2 texture
-layouts are compiler-only inputs. They are not fields in these five runtime
+layouts are compiler-only inputs. They are not fields in these six runtime
 resources. Cross-resource references use semantic keys, while dense numeric IDs
 remain local to a canonical resource table. This lets later planets and mod
-overlays reuse or replace actor/entity assets without embedding source-format
-dispatch in the native runtime. See [ActorLibraryV1](ACTOR_LIBRARY_V1.md) and
-[EntitySceneV1](ENTITY_SCENE_V1.md) for those public contracts.
+overlays reuse or replace actor, entity, and gameplay data without embedding
+source-format dispatch in the native runtime. See
+[ActorLibraryV1](ACTOR_LIBRARY_V1.md), [EntitySceneV1](ENTITY_SCENE_V1.md), and
+[GameplaySceneV1](GAMEPLAY_SCENE_V1.md) for those public contracts.
+
+### Current collectible adapter policy
+
+The supported RAC1 adapter is compiler-only. It interprets static Moby class 13
+as the Bolt collectible using high-confidence community metadata, maps the
+complete placement-table ordinal to a stable neutral authored ID, and emits
+matching `world/entities`, `world/render-scene`, and `world/gameplay` records.
+The Bolt high-LOD model is frozen in bind pose and baked into ordinary static
+render instances; no RAC class ID reaches the runtime.
+
+Every matching record currently grants `amount = 1` under semantic key
+`openrc.currency/bolts`. That amount is an explicit OpenRC policy, not a value
+claimed to have been recovered from a source placement. The overlap sphere is
+derived from the model bounds and transformed through the neutral entity
+transform. Original animation, effects, sound, and pickup timing remain outside
+this V1 policy.
 
 ## Determinism and overlays
 

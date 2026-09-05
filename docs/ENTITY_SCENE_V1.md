@@ -40,8 +40,10 @@ local player slot
 ```
 
 Missing, partial, duplicate, or dangling relationships are errors. The runtime
-also checks that render instance IDs exist, the scene level matches the package,
-and player actor transforms are usable by the pose path before handing the
+also checks that render instance IDs exist, that each instance has at most one
+entity owner, and that a static instance's affine world transform agrees with
+its entity transform. It checks that the scene level matches the package and
+that player actor transforms are usable by the pose path before handing the
 level to gameplay.
 
 ## Canonical form and validation
@@ -69,7 +71,18 @@ supported level. Authored ID 0 uses archetype `openrc.player/default`, player
 slot 0, and actor model `actors/ratchet/high`. The model-to-entity transform is
 identity; live placement comes from player simulation.
 
-EntitySceneV1 currently carries structural bindings only. Interactive props,
-pickups, crates, enemies, weapons, scripts, persistence, menus, and reconstructed
-original camera behavior are not implemented merely because the player entity
-is packaged.
+The verified six-resource compiler path also adds one initially enabled
+definition, authored transform, and static render binding for each matching
+Bolt placement. Its stable authored ID is the zero-based ordinal in the complete
+source static-Moby table. Bolt behavior is not encoded here: the separate
+[GameplaySceneV1](GAMEPLAY_SCENE_V1.md) resource references the same authored
+ID and assigns the overlap and semantic inventory grant. The Bolt model itself
+is baked in bind pose into `RenderSceneV1`, so these definitions do not require
+an actor binding or expose a RAC class ID to the runtime.
+
+Fresh preparation/reuse across all 19 levels and package-only graphical
+collection smokes on Veldin plus a second level verify that path for the
+supported PAL v2.00 profile. EntitySceneV1 still carries structural bindings
+only; crates, enemies, weapons, scripts, save persistence,
+menus, and reconstructed original camera behavior are not implemented merely
+because the first collectible entities are packaged.

@@ -107,12 +107,16 @@ both in progress. The repository currently provides:
 - a versioned component-table `EntitySceneV1` resource with stable authored
   IDs and semantic archetype/model keys, including the player-slot to actor
   relationship used by the package-only runtime;
-- reusable bind-pose palette construction and CPU linear-blend skinning with
-  general affine joint transforms and inverse-transpose normal handling;
-- deterministic native-game compilation for all 19 reference levels, packaging
-  exactly five neutral resources per level—collision, bootstrap, render scene,
-  actor library, and entity scene—into one transactional PreparedGameV2
-  installation;
+- a versioned `GameplaySceneV1` resource whose authored-entity references,
+  local overlap spheres, semantic item keys, amounts, canonical binary I/O, and
+  explicit bounds contain no RAC class IDs or source-format dispatch;
+- reusable bind-pose palette construction, CPU linear-blend skinning, and
+  static actor-to-RenderScene baking with general affine joint transforms and
+  inverse-transpose normal handling;
+- an in-progress deterministic native-game compiler path for all 19 reference
+  levels, targeting exactly six neutral resources per level—collision,
+  bootstrap, render scene, actor library, entity scene, and gameplay scene—in
+  one transactional PreparedGameV2 installation;
 - a hardened PreparedGameV2 filesystem reader and transactional publisher for
   explicit caller-supplied level packages, with no implicit mod discovery;
 - a planet-agnostic game session/entity world, quantized replay-input boundary,
@@ -120,6 +124,9 @@ both in progress. The repository currently provides:
 - a deterministic character controller and player simulation with movement,
   gravity, jumping, ground/wall handling, checkpoints, and fall reset, together
   with a source-independent loader for resolved foundation packages;
+- a deterministic authored-entity/collectible runtime with transactional scene
+  loads, fixed-tick capsule/sphere overlap, collect-once events, render-instance
+  visibility, and generic `u64` semantic item totals that survive level reloads;
 - ELF32/MIPS span/path parsing with program/section inventory, a typed DVP
   overlay table mapped from LMA/VMA records to the real code bytes, and bounded
   IOP/IRX module, relocation, and import metadata;
@@ -157,7 +164,9 @@ both in progress. The repository currently provides:
   the selected level and its neutral resources, and renders without reopening
   the source ISO or boot ELF, with deterministic fixed-step movement, collision,
   jumping, fall/reset handling, a third-person camera, and Ratchet's textured
-  high-LOD model CPU-skinned in its bind pose at the simulated player transform;
+  high-LOD model CPU-skinned in its bind pose at the simulated player transform,
+  plus real-data-verified Bolt collection, semantic inventory, and static
+  instance visibility;
 - recognition of the PAL (`SCES-50916`) reference executable and detection of
   the NTSC-U/C (`SCUS-97199`) release;
 - a native Windows launcher with disc inspection, asynchronous one-time
@@ -175,8 +184,9 @@ both in progress. The repository currently provides:
   material-slot mapping, neutral collision compilation/I/O and queries,
   level-bootstrap/foundation compilation, PreparedGameV2 filesystem
   loading/publication, deterministic character/player simulation, runtime
-  foundation/content loading, ActorLibrary/EntityScene canonical I/O and
-  package attachment, actor pose/skinning, semantic player-actor resolution,
+  foundation/content loading, ActorLibrary/EntityScene/GameplayScene canonical
+  I/O and package attachment, actor pose/skinning and static bind-pose baking,
+  semantic player-actor resolution, deterministic collectible state,
   portable-PE validation,
   scene-animation/subtitle, EE/R5900 boundaries, scene-block, scene-block
   VIF/VU execution and phase grouping, DVP VU microprogram decoding/execution,
@@ -196,10 +206,16 @@ jump, and `R` to reset to the authored checkpoint. The runtime now resolves
 Ratchet through the neutral entity-scene and actor-library keys, CPU-skins his
 textured high-LOD mesh in the bind pose, and places it at the deterministic
 player transform. Animation playback is not connected yet, so this is a moving
-bind pose rather than finished character presentation. The map still lacks
-animated and specialized object families, gameplay interactions, weapons,
-enemies, menus, and the original camera behavior; Veldin is therefore not yet
-a complete playable level.
+bind pose rather than finished character presentation.
+
+The first collectible path is now verified end to end for the supported PAL
+v2.00 image. A fresh preparation and reuse pass validated all 19 six-resource
+packages; package-only smoke on Veldin and a second level collected a real Bolt,
+credited `openrc.currency/bolts`, hid its bound render instance, and completed a
+D3D11 draw without reopening the ISO or boot ELF. The map still lacks animated and
+specialized object families, broader interactions, weapons, enemies, menus, and
+the original camera behavior; Veldin is therefore not yet a complete playable
+level.
 
 The ISO/ELF-backed recovered-level viewer remains available through explicit
 developer command-line arguments. In that diagnostic mode, drag with the left
@@ -325,13 +341,23 @@ build/Debug/openrc-runtime.exe --prepared-root $nativeRoot --level 0
 
 This is the package boundary used by the Launcher and intended for future mod
 tooling. It contains neutral OpenRC resources rather than copied source WAD
-records. The current compiler emits five resources in every level package:
+records. The compiler emits six resources in every level
+package:
 `world/collision`, `world/bootstrap`, `world/render-scene`, `actors/library`,
-and `world/entities`. RAC/PS2 decoding stops in the compiler; the runtime
-resolves documented semantic keys and versioned resource schemas instead of
-disc class IDs or offsets. Ratchet's bind-pose rig/model path is present, while
-actor animation, gameplay interactions, menus, and the remaining gameplay
-systems are still in progress.
+`world/entities`, and `world/gameplay`. RAC/PS2 decoding stops in the compiler;
+the runtime resolves documented semantic keys, authored IDs, and versioned
+resource schemas instead of disc class IDs or offsets.
+
+For the supported RAC1 profile, the compiler-only adapter currently treats
+static Moby class 13 as the Bolt collectible using high-confidence community
+metadata. It bakes the high-LOD model in bind pose into ordinary static render
+instances and links those instances to neutral entities and overlap
+collectibles. Each grants `amount = 1` to `openrc.currency/bolts`; that amount
+is an explicit OpenRC policy, not a recovered per-placement value. Fresh
+all-level preparation/reuse and package-only graphical collection smokes on
+Veldin plus a second level verify this six-resource path. Ratchet animation, original
+pickup presentation, broader gameplay interactions, menus, and the remaining
+gameplay systems are still in progress.
 
 The `wad-bundle` LBA and sector count above identify a container in the exact
 PAL v2.00 reference image; they are not assumed for other revisions.
@@ -536,6 +562,7 @@ Machine-specific data, cache, extracted files, and logs live below:
 - [Roadmap](docs/ROADMAP.md)
 - [ActorLibraryV1 resource](docs/ACTOR_LIBRARY_V1.md)
 - [EntitySceneV1 resource](docs/ENTITY_SCENE_V1.md)
+- [GameplaySceneV1 resource](docs/GAMEPLAY_SCENE_V1.md)
 - [PreparedGameV2 and LevelPackageV1](docs/PREPARED_GAME_V2.md)
 - [Reference build](docs/REFERENCE_BUILD.md)
 - [Legal and project boundaries](docs/LEGAL.md)

@@ -1,9 +1,11 @@
 #include "openrc/runtime_level_content.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -39,6 +41,60 @@ find_definition(const EntitySceneV1 &scene, const std::uint32_t authored_id) {
   return found != scene.definitions.end() && found->authored_id == authored_id
              ? &*found
              : nullptr;
+}
+
+[[nodiscard]] const EntityTransformComponentV1 *
+find_entity_transform(const EntitySceneV1 &scene,
+                      const std::uint32_t authored_id) {
+  const auto found = std::lower_bound(
+      scene.transforms.begin(), scene.transforms.end(), authored_id,
+      [](const EntityTransformComponentV1 &component,
+         const std::uint32_t id) { return component.authored_id < id; });
+  return found != scene.transforms.end() && found->authored_id == authored_id
+             ? &*found
+             : nullptr;
+}
+
+[[nodiscard]] bool approximately_equal(const float actual,
+                                       const double expected) noexcept {
+  constexpr double kToleranceFactor =
+      64.0 * static_cast<double>(std::numeric_limits<float>::epsilon());
+  const auto scale = std::max(
+      {1.0, std::abs(static_cast<double>(actual)), std::abs(expected)});
+  return std::abs(static_cast<double>(actual) - expected) <=
+         kToleranceFactor * scale;
+}
+
+[[nodiscard]] bool render_transform_matches_entity(
+    const RenderSceneAffine3x4V1 &render,
+    const game::WorldTransformV1 &entity) noexcept {
+  const auto x = static_cast<double>(entity.rotation[0U]);
+  const auto y = static_cast<double>(entity.rotation[1U]);
+  const auto z = static_cast<double>(entity.rotation[2U]);
+  const auto w = static_cast<double>(entity.rotation[3U]);
+  const auto sx = static_cast<double>(entity.scale[0U]);
+  const auto sy = static_cast<double>(entity.scale[1U]);
+  const auto sz = static_cast<double>(entity.scale[2U]);
+  const std::array<double, 12U> expected{
+      (1.0 - 2.0 * (y * y + z * z)) * sx,
+      2.0 * (x * y - z * w) * sy,
+      2.0 * (x * z + y * w) * sz,
+      static_cast<double>(entity.position[0U]),
+      2.0 * (x * y + z * w) * sx,
+      (1.0 - 2.0 * (x * x + z * z)) * sy,
+      2.0 * (y * z - x * w) * sz,
+      static_cast<double>(entity.position[1U]),
+      2.0 * (x * z - y * w) * sx,
+      2.0 * (y * z + x * w) * sy,
+      (1.0 - 2.0 * (x * x + y * y)) * sz,
+      static_cast<double>(entity.position[2U]),
+  };
+  for (std::size_t index = 0U; index < expected.size(); ++index) {
+    if (!approximately_equal(render.values[index], expected[index])) {
+      return false;
+    }
+  }
+  return true;
 }
 
 [[nodiscard]] const ActorModelV1 *
@@ -150,11 +206,24 @@ void validate_actor_entity_contract(const ActorLibraryV1 &actor_library,
     }
   }
 
+  std::unordered_set<std::uint32_t> bound_render_instances;
+  bound_render_instances.reserve(entity_scene.render_bindings.size());
   for (const auto &binding : entity_scene.render_bindings) {
     if (binding.render_instance_id >= render_scene.instances.size() ||
         render_scene.instances[binding.render_instance_id].id !=
             binding.render_instance_id) {
       fail("Entity scene render binding references a missing render instance");
+    }
+    if (!bound_render_instances.emplace(binding.render_instance_id).second) {
+      fail("Entity scene assigns one render instance to multiple entities");
+    }
+    const auto *const transform =
+        find_entity_transform(entity_scene, binding.authored_id);
+    if (transform == nullptr ||
+        !render_transform_matches_entity(
+            render_scene.instances[binding.render_instance_id].local_to_world,
+            transform->transform)) {
+      fail("Entity scene render binding disagrees with its authored transform");
     }
   }
 
@@ -189,6 +258,23 @@ void validate_actor_entity_contract(const ActorLibraryV1 &actor_library,
     fail("Entity scene must bind local player slot 0 exactly once");
   }
   preflight_player_actor(actor_library, *slot_zero_actor);
+}
+
+void validate_gameplay_entity_contract(const GameplaySceneV1 &gameplay_scene,
+                                       const EntitySceneV1 &entity_scene,
+                                       const std::uint32_t package_level_id) {
+  if (gameplay_scene.level_id != package_level_id ||
+      entity_scene.level_id != package_level_id) {
+    fail("Mounted gameplay/entity scenes have inconsistent level identity");
+  }
+  for (const auto &collectible : gameplay_scene.collectibles) {
+    if (find_definition(entity_scene, collectible.authored_id) == nullptr) {
+      fail("Gameplay scene collectible references a missing entity definition");
+    }
+    if (find_entity_transform(entity_scene, collectible.authored_id) == nullptr) {
+      fail("Gameplay scene collectible references an entity without a transform");
+    }
+  }
 }
 
 } // namespace
@@ -235,6 +321,15 @@ load_runtime_level_content_v1(const ResolvedLevelPackageV1 &package,
          std::string(error.what()));
   }
 
+  try {
+    result.gameplay_scene = load_optional_runtime_gameplay_scene_resource_v1(
+        package, limits.foundation.required_content_api_version,
+        limits.gameplay_scene);
+  } catch (const RuntimeGameplaySceneResourceError &error) {
+    fail("Cannot mount the runtime gameplay scene: " +
+         std::string(error.what()));
+  }
+
   if (result.foundation.level_id != package.level_id ||
       result.foundation.content_api_version != package.content_api_version) {
     fail("Mounted runtime level content has inconsistent package identity");
@@ -245,6 +340,14 @@ load_runtime_level_content_v1(const ResolvedLevelPackageV1 &package,
   if (result.actor_library && result.entity_scene) {
     validate_actor_entity_contract(*result.actor_library, *result.entity_scene,
                                    result.render_scene, package.level_id);
+  }
+  if (result.gameplay_scene && !result.entity_scene) {
+    fail("Runtime gameplay scene is present without its entity scene");
+  }
+  if (result.gameplay_scene) {
+    validate_gameplay_entity_contract(*result.gameplay_scene,
+                                      *result.entity_scene,
+                                      package.level_id);
   }
   return result;
 }

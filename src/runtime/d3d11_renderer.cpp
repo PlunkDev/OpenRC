@@ -542,6 +542,7 @@ struct D3d11Renderer::Implementation {
         initialize_render_scene_geometry(flattened);
         render_scene_draws = std::move(flattened.draws);
         render_scene_materials = std::move(flattened.materials);
+        render_scene_instance_enabled.assign(scene.instances.size(), true);
         if (player_rig != nullptr) {
             initialize_gameplay_actor(
                 *player_rig, *player_model, *model_to_entity);
@@ -2343,6 +2344,15 @@ struct D3d11Renderer::Implementation {
                 };
 
                 for (const auto& draw : render_scene_draws) {
+                    if (draw.instance_id == kRenderSceneD3dNoInstanceIdV1 ||
+                        static_cast<std::size_t>(draw.instance_id) >=
+                            render_scene_instance_enabled.size()) {
+                        throw std::logic_error(
+                            "A prepared render draw lost its instance identity");
+                    }
+                    if (!render_scene_instance_enabled[draw.instance_id]) {
+                        continue;
+                    }
                     draw_neutral(
                         draw,
                         render_scene_materials,
@@ -2545,6 +2555,7 @@ struct D3d11Renderer::Implementation {
     std::vector<ProjectedSourceVertex> gameplay_proxy_projected_vertices;
     std::vector<GpuSourceTextureRegion> texture_regions;
     std::vector<RenderSceneD3dDrawV1> render_scene_draws;
+    std::vector<bool> render_scene_instance_enabled;
     std::vector<RenderSceneD3dMaterialV1> render_scene_materials;
     std::vector<ComPtr<ID3D11ShaderResourceView>>
         render_scene_texture_views;
@@ -2615,6 +2626,29 @@ D3d11Renderer::D3d11Renderer(
           player_rig,
           player_model,
           model_to_entity)) {}
+
+void D3d11Renderer::set_render_instance_enabled(
+    const std::uint32_t instance_id,
+    const bool enabled) {
+    if (!implementation_ ||
+        static_cast<std::size_t>(instance_id) >=
+            implementation_->render_scene_instance_enabled.size()) {
+        throw std::out_of_range(
+            "RenderSceneV1 instance visibility ID is out of range");
+    }
+    implementation_->render_scene_instance_enabled[instance_id] = enabled;
+}
+
+bool D3d11Renderer::render_instance_enabled(
+    const std::uint32_t instance_id) const {
+    if (!implementation_ ||
+        static_cast<std::size_t>(instance_id) >=
+            implementation_->render_scene_instance_enabled.size()) {
+        throw std::out_of_range(
+            "RenderSceneV1 instance visibility ID is out of range");
+    }
+    return implementation_->render_scene_instance_enabled[instance_id];
+}
 
 D3d11Renderer::D3d11Renderer(HWND window,
                              const SceneGeometryV1& geometry)

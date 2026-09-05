@@ -16,6 +16,9 @@ constexpr openrc::CollisionWorldBuildLimitsV1 kWorldLimits{
     1024U, 1024U, 16'384U, 65'536U, openrc::kCollisionDefaultGridCellSizeQ6V1,
 };
 
+constexpr auto kEntityGameplayLimits =
+    openrc::game::make_runtime_entity_gameplay_limits_v1();
+
 void expect(const bool condition, const std::string &message) {
   if (!condition) {
     throw std::runtime_error(message);
@@ -82,13 +85,87 @@ movement_sample(const std::int16_t x, const std::int16_t y,
   return result;
 }
 
+[[nodiscard]] openrc::game::RuntimeGameplayEntityContentV1
+entity_gameplay_content(const std::uint32_t level_id = 7U) {
+  using namespace openrc;
+
+  EntityDefinitionV1 later;
+  later.authored_id = 40U;
+  later.archetype_key = "openrc.collectible/bolt";
+  EntityDefinitionV1 earlier;
+  earlier.authored_id = 20U;
+  earlier.archetype_key = "openrc.collectible/bolt";
+
+  EntityTransformComponentV1 later_transform;
+  later_transform.authored_id = later.authored_id;
+  later_transform.transform.position = {-0.25F, 0.0F, 0.75F};
+  EntityTransformComponentV1 earlier_transform;
+  earlier_transform.authored_id = earlier.authored_id;
+  earlier_transform.transform.position = {0.25F, 0.0F, 0.75F};
+
+  EntitySceneV1 entities;
+  entities.level_id = level_id;
+  entities.definitions = {later, earlier};
+  entities.transforms = {later_transform, earlier_transform};
+
+  GameplaySceneV1 gameplay;
+  gameplay.level_id = level_id;
+  gameplay.collectibles = {
+      GameplayCollectibleV1{later.authored_id, "items/bolts", {}, 7U, 0.4F, 0U},
+      GameplayCollectibleV1{
+          earlier.authored_id, "items/bolts", {}, 5U, 0.4F, 0U},
+  };
+
+  return {
+      canonicalize_entity_scene_v1(std::move(entities),
+                                   kEntityGameplayLimits.entity_scene),
+      canonicalize_gameplay_scene_v1(std::move(gameplay),
+                                     kEntityGameplayLimits.gameplay_scene),
+      kEntityGameplayLimits,
+  };
+}
+
+[[nodiscard]] openrc::game::RuntimeGameplayEntityContentV1
+movement_gated_entity_gameplay_content() {
+  using namespace openrc;
+
+  EntityDefinitionV1 definition;
+  definition.authored_id = 90U;
+  definition.archetype_key = "openrc.collectible/movement-gate";
+  EntityTransformComponentV1 transform;
+  transform.authored_id = definition.authored_id;
+  // The stationary capsule misses this tiny sphere. One full-strength first
+  // tick moves the player just far enough for overlap, detecting tick order.
+  transform.transform.position = {0.358F, 0.0F, 0.37F};
+
+  EntitySceneV1 entities;
+  entities.level_id = 7U;
+  entities.definitions = {definition};
+  entities.transforms = {transform};
+
+  GameplaySceneV1 gameplay;
+  gameplay.level_id = 7U;
+  gameplay.collectibles = {GameplayCollectibleV1{
+      definition.authored_id, "items/movement-gate", {}, 1U, 0.0001F, 0U}};
+
+  return {
+      canonicalize_entity_scene_v1(std::move(entities),
+                                   kEntityGameplayLimits.entity_scene),
+      canonicalize_gameplay_scene_v1(std::move(gameplay),
+                                     kEntityGameplayLimits.gameplay_scene),
+      kEntityGameplayLimits,
+  };
+}
+
 void assert_tick_invariants(
     const openrc::game::RuntimeGameplaySnapshotV1 &snapshot,
     const std::uint64_t expected_tick) {
   expect(snapshot.session.next_tick_index == expected_tick &&
              snapshot.player.next_tick_index == expected_tick &&
              snapshot.input_next_tick_index == expected_tick &&
-             snapshot.fixed_step_next_tick_index == expected_tick,
+             snapshot.fixed_step_next_tick_index == expected_tick &&
+             (!snapshot.entity_gameplay ||
+              snapshot.entity_gameplay->next_tick_index == expected_tick),
          "runtime gameplay tick owners diverged");
 }
 
@@ -222,6 +299,28 @@ void test_per_tick_movement_mapping_and_atomic_failure() {
          "a failed mapped frame partially mutated gameplay state");
 }
 
+void test_staged_frame_snapshot_matches_committed_state() {
+  using namespace openrc::game;
+
+  RuntimeGameplaySessionOptionsV1 options;
+  options.entity_gameplay = entity_gameplay_content();
+  RuntimeGameplaySessionV1 runtime(foundation(), options);
+
+  const auto ticked = runtime.advance_frame(16'666'667U);
+  expect(ticked.fixed_step.step_count == 1U &&
+             ticked.snapshot == runtime.snapshot(),
+         "a staged tick snapshot differs from the committed runtime state");
+
+  const auto jump_mask = game_button_mask_v1(GameButtonV1::jump);
+  const auto sampled_without_tick =
+      runtime.advance_frame(0U, movement_sample(0, 0, jump_mask));
+  expect(sampled_without_tick.fixed_step.step_count == 0U &&
+             sampled_without_tick.snapshot == runtime.snapshot() &&
+             sampled_without_tick.snapshot.pending_pressed_buttons ==
+                 jump_mask,
+         "a staged no-tick input snapshot differs from committed state");
+}
+
 void test_snapshot_preserves_pending_edges() {
   using namespace openrc::game;
 
@@ -251,8 +350,7 @@ void test_checkpoint_collision_envelope_is_bounded() {
   const auto before = runtime.snapshot();
   PlayerCheckpointV1 invalid{
       90U,
-      {static_cast<double>(std::numeric_limits<std::int32_t>::max()),
-       0.0,
+      {static_cast<double>(std::numeric_limits<std::int32_t>::max()), 0.0,
        10.0},
       0.0,
   };
@@ -264,8 +362,8 @@ void test_checkpoint_collision_envelope_is_bounded() {
 
   expect_gameplay_error(
       [&] {
-        static_cast<void>(RuntimeGameplaySessionV1(foundation(
-            7U, 10U, invalid.feet_position, -5.0, empty_world())));
+        static_cast<void>(RuntimeGameplaySessionV1(
+            foundation(7U, 10U, invalid.feet_position, -5.0, empty_world())));
       },
       "an out-of-domain authored spawn entered runtime gameplay");
 }
@@ -342,6 +440,132 @@ void test_death_reset_and_capped_catch_up() {
   assert_tick_invariants(overload.snapshot, 4U);
 }
 
+void test_optional_entity_gameplay_absence_is_compatible() {
+  using namespace openrc::game;
+
+  RuntimeGameplaySessionV1 runtime(foundation());
+  const auto initial = runtime.snapshot();
+  expect(!initial.entity_gameplay && runtime.entity_gameplay() == nullptr &&
+             runtime.item_total("items/bolts") == 0U,
+         "an old level without neutral gameplay content changed shape");
+
+  const auto frame = runtime.advance_frame(16'666'667U);
+  expect(frame.ticks.size() == 1U &&
+             frame.ticks.front().gameplay_events.empty() &&
+             !frame.snapshot.entity_gameplay,
+         "an absent gameplay resource emitted state or events");
+  assert_tick_invariants(frame.snapshot, 1U);
+
+  expect_gameplay_error(
+      [&] { runtime.restore_item_totals({{"items/bolts", 5U}}); },
+      "inventory was restored without active neutral gameplay content");
+}
+
+void test_collectibles_emit_once_in_deterministic_order_and_sum() {
+  using namespace openrc::game;
+
+  RuntimeGameplaySessionOptionsV1 options;
+  options.entity_gameplay = entity_gameplay_content();
+  RuntimeGameplaySessionV1 first(foundation(), options);
+  RuntimeGameplaySessionV1 second(foundation(), options);
+
+  const auto first_frame = first.advance_frame(16'666'667U);
+  const auto second_frame = second.advance_frame(16'666'667U);
+  const std::vector<EntityGameplayEventV1> expected_events{
+      {EntityGameplayEventKindV1::item_collected, 0U, 20U, "items/bolts", 5U},
+      {EntityGameplayEventKindV1::item_collected, 0U, 40U, "items/bolts", 7U},
+  };
+  expect(
+      first_frame == second_frame && first_frame.ticks.size() == 1U &&
+          first_frame.ticks.front().gameplay_events == expected_events,
+      "integrated collectible output is not deterministic authored-ID order");
+  expect(first.item_total("items/bolts") == 12U &&
+             first.entity_gameplay() != nullptr &&
+             first_frame.snapshot.entity_gameplay &&
+             first_frame.snapshot.entity_gameplay->item_totals ==
+                 std::vector<EntityGameplayItemTotalV1>{{"items/bolts", 12U}},
+         "integrated semantic item totals were not exposed in queries and "
+         "snapshots");
+  assert_tick_invariants(first_frame.snapshot, 1U);
+
+  const auto next = first.advance_frame(16'666'667U);
+  expect(next.ticks.size() == 1U &&
+             next.ticks.front().gameplay_events.empty() &&
+             first.item_total("items/bolts") == 12U,
+         "an integrated collectible was consumed more than once");
+  assert_tick_invariants(next.snapshot, 2U);
+}
+
+void test_collectible_tick_observes_post_movement_player_capsule() {
+  using namespace openrc::game;
+
+  RuntimeGameplaySessionOptionsV1 options;
+  options.entity_gameplay = movement_gated_entity_gameplay_content();
+  RuntimeGameplaySessionV1 stationary(foundation(), options);
+  RuntimeGameplaySessionV1 moving(foundation(), options);
+
+  const auto stationary_frame = stationary.advance_frame(16'666'667U);
+  const auto moving_frame = moving.advance_frame(
+      16'666'667U, movement_sample(kGameInputAxisMagnitudeV1, 0));
+  expect(stationary_frame.ticks.size() == 1U &&
+             stationary_frame.ticks.front().gameplay_events.empty(),
+         "the movement-order fixture overlapped before player movement");
+  expect(moving_frame.ticks.size() == 1U &&
+             moving_frame.snapshot.player.character.feet_position.x > 0.0 &&
+             moving_frame.ticks.front().gameplay_events ==
+                 std::vector<EntityGameplayEventV1>{
+                     {EntityGameplayEventKindV1::item_collected, 0U, 90U,
+                      "items/movement-gate", 1U}},
+         "collectible overlap did not observe the player pose after movement");
+}
+
+void test_item_total_restore_and_reload_preserve_persistence() {
+  using namespace openrc::game;
+
+  RuntimeGameplaySessionOptionsV1 options;
+  options.entity_gameplay = entity_gameplay_content();
+  RuntimeGameplaySessionV1 runtime(foundation(), options);
+  runtime.restore_item_totals({{"items/bolts", 100U}});
+  const auto restored = runtime.snapshot();
+  expect(
+      restored.entity_gameplay &&
+          restored.entity_gameplay->item_totals ==
+              std::vector<EntityGameplayItemTotalV1>{{"items/bolts", 100U}} &&
+          runtime.item_total("items/bolts") == 100U,
+      "session inventory restore was not reflected by its snapshot and query");
+
+  const auto collected = runtime.advance_frame(16'666'667U);
+  expect(collected.ticks.size() == 1U &&
+             collected.ticks.front().gameplay_events.size() == 2U &&
+             runtime.item_total("items/bolts") == 112U,
+         "restored inventory did not accumulate collected item amounts");
+
+  runtime.load_level(foundation(8U), entity_gameplay_content(8U));
+  const auto reloaded = runtime.snapshot();
+  expect(
+      reloaded.session.active_level_id == 8U &&
+          reloaded.session.next_tick_index == 1U && reloaded.entity_gameplay &&
+          reloaded.entity_gameplay->level_id == 8U &&
+          reloaded.entity_gameplay->level_instance_sequence == 2U &&
+          reloaded.entity_gameplay->next_tick_index == 1U &&
+          reloaded.entity_gameplay->item_totals ==
+              std::vector<EntityGameplayItemTotalV1>{{"items/bolts", 112U}} &&
+          runtime.item_total("items/bolts") == 112U,
+      "neutral inventory or global tick origin was lost during level reload");
+  assert_tick_invariants(reloaded, 1U);
+
+  const auto recollected = runtime.advance_frame(16'666'667U);
+  expect(recollected.ticks.size() == 1U &&
+             recollected.ticks.front().gameplay_events ==
+                 std::vector<EntityGameplayEventV1>{
+                     {EntityGameplayEventKindV1::item_collected, 1U, 20U,
+                      "items/bolts", 5U},
+                     {EntityGameplayEventKindV1::item_collected, 1U, 40U,
+                      "items/bolts", 7U}} &&
+             runtime.item_total("items/bolts") == 124U,
+         "reloaded collectible state did not reset while totals persisted");
+}
+
 void test_level_replacement_retains_global_tick_sequence() {
   using namespace openrc::game;
 
@@ -381,10 +605,15 @@ int main() {
     test_spawn_session_and_production_profile();
     test_determinism_across_frame_partitions();
     test_per_tick_movement_mapping_and_atomic_failure();
+    test_staged_frame_snapshot_matches_committed_state();
     test_snapshot_preserves_pending_edges();
     test_checkpoint_collision_envelope_is_bounded();
     test_jump_manual_reset_and_input_edges();
     test_death_reset_and_capped_catch_up();
+    test_optional_entity_gameplay_absence_is_compatible();
+    test_collectibles_emit_once_in_deterministic_order_and_sum();
+    test_collectible_tick_observes_post_movement_player_capsule();
+    test_item_total_restore_and_reload_preserve_persistence();
     test_level_replacement_retains_global_tick_sequence();
     std::cout << "runtime_gameplay_tests: ok\n";
     return 0;

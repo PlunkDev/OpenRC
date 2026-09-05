@@ -31,6 +31,7 @@
 #include "openrc/rac_moby_class.hpp"
 #include "openrc/rac_moby_model_geometry.hpp"
 #include "openrc/rac_moby_packet_geometry.hpp"
+#include "openrc/runtime_gameplay.hpp"
 #include "openrc/runtime_level_content.hpp"
 #include "openrc/runtime_level_foundation.hpp"
 #include "openrc/runtime_render_scene.hpp"
@@ -507,6 +508,14 @@ struct CliPlayerSmokeReportV1 {
     std::uint64_t wall_hit_count = 0U;
 };
 
+struct CliEntityGameplaySmokeReportV1 {
+    std::size_t entity_definition_count = 0U;
+    std::size_t entity_render_binding_count = 0U;
+    std::size_t collectible_count = 0U;
+    std::optional<openrc::game::EntityGameplayEventV1> probe_event;
+    std::uint64_t probe_item_total = 0U;
+};
+
 [[nodiscard]] CliPlayerSmokeReportV1 run_cli_player_smoke(
     const openrc::game::RuntimeLevelFoundationV1& foundation) {
     const auto* const spawn = openrc::find_level_spawn_point_v1(
@@ -548,6 +557,81 @@ struct CliPlayerSmokeReportV1 {
         result.wall_hit_count += step.character.hit_wall ? 1U : 0U;
     }
     result.snapshot = player.snapshot();
+    return result;
+}
+
+[[nodiscard]] CliEntityGameplaySmokeReportV1 run_cli_entity_gameplay_smoke(
+    const openrc::game::RuntimeLevelContentV1& content) {
+    CliEntityGameplaySmokeReportV1 result;
+    if (!content.entity_scene) {
+        return result;
+    }
+    result.entity_definition_count = content.entity_scene->definitions.size();
+    result.entity_render_binding_count =
+        content.entity_scene->render_bindings.size();
+    if (!content.gameplay_scene) {
+        return result;
+    }
+    result.collectible_count = content.gameplay_scene->collectibles.size();
+    if (content.gameplay_scene->collectibles.empty()) {
+        return result;
+    }
+
+    const auto& collectible = content.gameplay_scene->collectibles.front();
+    const auto transform = std::lower_bound(
+        content.entity_scene->transforms.begin(),
+        content.entity_scene->transforms.end(),
+        collectible.authored_id,
+        [](const openrc::EntityTransformComponentV1& candidate,
+           const std::uint32_t authored_id) {
+            return candidate.authored_id < authored_id;
+        });
+    if (transform == content.entity_scene->transforms.end() ||
+        transform->authored_id != collectible.authored_id) {
+        throw std::runtime_error(
+            "The collectible smoke target has no authored transform");
+    }
+
+    openrc::game::RuntimeGameplaySessionOptionsV1 options;
+    options.entity_gameplay = openrc::game::RuntimeGameplayEntityContentV1{
+        *content.entity_scene,
+        *content.gameplay_scene,
+        openrc::game::make_runtime_entity_gameplay_limits_v1(),
+    };
+    openrc::game::RuntimeGameplaySessionV1 session(content.foundation,
+                                                   std::move(options));
+    auto checkpoint = session.player().snapshot().checkpoint;
+    checkpoint.checkpoint_id = collectible.authored_id;
+    checkpoint.feet_position = openrc::game::world_collectible_center_v1(
+        transform->transform, collectible);
+    checkpoint.facing_yaw_radians = 0.0;
+    session.set_checkpoint(checkpoint, true);
+
+    const auto frame = session.advance_frame(16'666'667U);
+    for (const auto& tick : frame.ticks) {
+        for (const auto& event : tick.gameplay_events) {
+            if (event.authored_id == collectible.authored_id) {
+                if (result.probe_event) {
+                    throw std::runtime_error(
+                        "The collectible smoke target emitted more than once");
+                }
+                result.probe_event = event;
+            }
+        }
+    }
+    if (!result.probe_event ||
+        result.probe_event->kind !=
+            openrc::game::EntityGameplayEventKindV1::item_collected ||
+        result.probe_event->item_key != collectible.item_key ||
+        result.probe_event->amount != collectible.amount) {
+        throw std::runtime_error(
+            "The real mounted collectible did not emit its canonical event");
+    }
+    result.probe_item_total = session.item_total(collectible.item_key);
+    if (result.probe_item_total < collectible.amount) {
+        throw std::runtime_error(
+            "The real mounted collectible did not update semantic inventory");
+    }
     return result;
 }
 
@@ -5137,6 +5221,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
             const auto content = openrc::game::load_runtime_level_content_v1(
                 resolved, make_cli_runtime_level_content_limits());
             const auto smoke = run_cli_player_smoke(content.foundation);
+            const auto entity_gameplay_smoke =
+                run_cli_entity_gameplay_smoke(content);
 
             std::uint64_t render_vertex_count = 0U;
             std::uint64_t render_index_count = 0U;
@@ -5157,6 +5243,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 << '\n'
                 << "Build/content API:      " << content.foundation.build_id
                 << '/' << content.foundation.content_api_version << '\n'
+                << "Resolved resources:     " << resolved.resources.size()
+                << '\n'
                 << "Collision triangles:    "
                 << content.foundation.collision_world.mesh.triangles.size()
                 << '\n'
@@ -5169,6 +5257,20 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 << "Render textures/materials: "
                 << content.render_scene.textures.size() << '/'
                 << content.render_scene.materials.size() << '\n'
+                << "Actor rigs/models:      "
+                << (content.actor_library
+                        ? content.actor_library->rigs.size()
+                        : 0U)
+                << '/'
+                << (content.actor_library
+                        ? content.actor_library->models.size()
+                        : 0U)
+                << '\n'
+                << "Entities/render bindings: "
+                << entity_gameplay_smoke.entity_definition_count << '/'
+                << entity_gameplay_smoke.entity_render_binding_count << '\n'
+                << "Gameplay collectibles:  "
+                << entity_gameplay_smoke.collectible_count << '\n'
                 << "Spawn:                  " << smoke.spawn.feet_position.x
                 << ", " << smoke.spawn.feet_position.y << ", "
                 << smoke.spawn.feet_position.z << '\n'
@@ -5179,6 +5281,16 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 << openrc::game::hash_player_simulation_snapshot_v1(
                        smoke.snapshot)
                 << '\n';
+            if (entity_gameplay_smoke.probe_event) {
+                std::cout
+                    << "Collectible probe:      ID "
+                    << entity_gameplay_smoke.probe_event->authored_id << ", "
+                    << entity_gameplay_smoke.probe_event->item_key << " +"
+                    << entity_gameplay_smoke.probe_event->amount << ", total "
+                    << entity_gameplay_smoke.probe_item_total << '\n';
+            } else {
+                std::cout << "Collectible probe:      none authored\n";
+            }
             return 0;
         } catch (const std::exception &error) {
             std::cerr << "error: " << error.what() << '\n';

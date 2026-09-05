@@ -251,6 +251,7 @@ build_render_scene_d3d_data_v1(const RenderSceneV1& scene,
                 draw.material_id,
                 index_base + static_cast<std::uint32_t>(draw.first_index),
                 static_cast<std::uint32_t>(draw.index_count),
+                instance.id,
             });
         }
     }

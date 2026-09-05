@@ -99,6 +99,12 @@ public:
         double capsule_radius,
         double capsule_height);
 
+    // EntityRenderBindingV1 visibility is updated independently from static
+    // scene allocation. IDs address the neutral RenderSceneV1 instance table.
+    void set_render_instance_enabled(std::uint32_t instance_id, bool enabled);
+    [[nodiscard]] bool
+    render_instance_enabled(std::uint32_t instance_id) const;
+
     // Diagnostic source-space controls. Angles are radians and wheel_steps is
     // positive when zooming in. They never modify or rerun the recovered VU
     // frame transform.

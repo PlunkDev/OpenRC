@@ -128,11 +128,11 @@ void test_affine_instances_indices_draws_and_bounds() {
            "flattening did not remap mesh-local indices globally");
     expect(flattened.draws ==
                std::vector<openrc::runtime::RenderSceneD3dDrawV1>{
-                   {0U, 0U, 3U},
-                   {1U, 3U, 3U},
-                   {0U, 6U, 3U},
-                   {1U, 9U, 3U}},
-           "flattening did not globalize canonical draw ranges");
+                   {0U, 0U, 3U, 0U},
+                   {1U, 3U, 3U, 0U},
+                   {0U, 6U, 3U, 1U},
+                   {1U, 9U, 3U, 1U}},
+           "flattening did not preserve canonical instance draw ranges");
 
     expect(flattened.materials.size() == 2U,
            "material policies were not staged densely");
@@ -232,7 +232,7 @@ void test_different_meshes_keep_local_index_domains() {
                    flattened.triangle_indices.end()) ==
                    std::vector<std::uint32_t>{10U, 8U, 9U} &&
                flattened.draws.back() ==
-                   openrc::runtime::RenderSceneD3dDrawV1{1U, 12U, 3U},
+                    openrc::runtime::RenderSceneD3dDrawV1{1U, 12U, 3U, 2U},
            "a later mesh escaped its independent local index domain");
 }
 

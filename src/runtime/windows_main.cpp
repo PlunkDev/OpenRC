@@ -30,6 +30,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -62,6 +63,14 @@ struct GameplayKeyboardState {
     bool reset = false;
 };
 
+struct GameplaySmokeTargetV1 {
+    std::uint32_t authored_id = 0U;
+    std::uint32_t render_instance_id = 0U;
+    openrc::CollisionVectorV1 feet_position;
+    std::string item_key;
+    std::uint32_t amount = 0U;
+};
+
 struct WindowState {
     std::unique_ptr<openrc::runtime::D3d11Renderer> renderer;
     std::unique_ptr<openrc::game::RuntimeGameplaySessionV1> gameplay;
@@ -70,6 +79,10 @@ struct WindowState {
     std::uint32_t gameplay_pending_pressed_buttons = 0U;
     std::uint32_t gameplay_pending_released_buttons = 0U;
     std::uint32_t gameplay_submitted_buttons = 0U;
+    std::vector<openrc::EntityRenderBindingV1> gameplay_render_bindings;
+    std::vector<std::uint32_t> gameplay_collectible_ids;
+    std::uint64_t gameplay_collected_count = 0U;
+    std::optional<GameplaySmokeTargetV1> gameplay_smoke_target;
     std::chrono::steady_clock::time_point previous_gameplay_frame{};
     std::optional<std::string> fatal_error;
     std::wstring base_title;
@@ -292,15 +305,24 @@ void refresh_window_title(const HWND window, const WindowState& state) {
     if (!state.renderer) {
         return;
     }
-    const auto suffix = state.gameplay
-                             ? (state.gameplay_actor
-                                    ? L" - playable prototype (native player model)"
-                                    : L" - playable prototype (debug player marker)")
-                        : state.native_content
-                            ? L" - native package"
+    auto suffix = state.gameplay
+                      ? (state.gameplay_actor
+                             ? std::wstring(
+                                   L" - playable prototype (native player model)")
+                             : std::wstring(
+                                   L" - playable prototype (debug player marker)"))
+                      : state.native_content
+                            ? std::wstring(L" - native package")
                             : (state.renderer->is_3d_view()
-        ? L" - recovered level 3D (debug orbit)"
-        : L" - decoded GS output (2D)");
+                                   ? std::wstring(
+                                         L" - recovered level 3D (debug orbit)")
+                                   : std::wstring(
+                                         L" - decoded GS output (2D)"));
+    if (!state.gameplay_collectible_ids.empty()) {
+        suffix += L" - collectibles " +
+                  std::to_wstring(state.gameplay_collected_count) + L"/" +
+                  std::to_wstring(state.gameplay_collectible_ids.size());
+    }
     SetWindowTextW(window, (state.base_title + suffix).c_str());
 }
 
@@ -498,33 +520,140 @@ make_gameplay_camera_profile(const double aspect_ratio) {
     return result == 0.0 ? 0.0 : result;
 }
 
-void update_gameplay_presentation(WindowState& state) {
+[[nodiscard]] GameplaySmokeTargetV1 make_gameplay_smoke_target(
+    const openrc::EntitySceneV1& entities,
+    const openrc::GameplayCollectibleV1& collectible) {
+    const auto transform = std::lower_bound(
+        entities.transforms.begin(),
+        entities.transforms.end(),
+        collectible.authored_id,
+        [](const openrc::EntityTransformComponentV1& candidate,
+           const std::uint32_t authored_id) {
+            return candidate.authored_id < authored_id;
+        });
+    const auto binding = std::lower_bound(
+        entities.render_bindings.begin(),
+        entities.render_bindings.end(),
+        collectible.authored_id,
+        [](const openrc::EntityRenderBindingV1& candidate,
+           const std::uint32_t authored_id) {
+            return candidate.authored_id < authored_id;
+        });
+    if (transform == entities.transforms.end() ||
+        transform->authored_id != collectible.authored_id ||
+        binding == entities.render_bindings.end() ||
+        binding->authored_id != collectible.authored_id) {
+        throw std::runtime_error(
+            "The graphical collectible smoke target is not render-bound");
+    }
+    return GameplaySmokeTargetV1{
+        collectible.authored_id,
+        binding->render_instance_id,
+        openrc::game::world_collectible_center_v1(
+            transform->transform, collectible),
+        collectible.item_key,
+        collectible.amount,
+    };
+}
+
+void update_gameplay_player_presentation(
+    WindowState& state,
+    const openrc::game::PlayerSimulationSnapshotV1& player) {
     if (!state.renderer || !state.gameplay || !state.gameplay_camera) {
         return;
     }
-    const auto snapshot = state.gameplay->snapshot();
-    const auto& character = snapshot.player.character;
+    const auto& character = player.character;
     const auto& profile = state.gameplay->profile().character;
     state.renderer->set_gameplay_presentation(
         state.gameplay_camera->view(character.feet_position),
         character.feet_position,
-        snapshot.player.facing_yaw_radians,
+        player.facing_yaw_radians,
         profile.capsule_radius,
         profile.capsule_height);
+}
+
+void synchronize_gameplay_entity_presentation(WindowState& state) {
+    if (!state.renderer || !state.gameplay) {
+        return;
+    }
+    const auto* const entity_gameplay = state.gameplay->entity_gameplay();
+    if (entity_gameplay == nullptr) {
+        return;
+    }
+    for (const auto& binding : state.gameplay_render_bindings) {
+        state.renderer->set_render_instance_enabled(
+            binding.render_instance_id,
+            entity_gameplay->enabled(binding.authored_id));
+    }
+    std::uint64_t collected_count = 0U;
+    for (const auto authored_id : state.gameplay_collectible_ids) {
+        if (entity_gameplay->collected(authored_id)) {
+            ++collected_count;
+        }
+    }
+    state.gameplay_collected_count = collected_count;
+}
+
+void apply_gameplay_events(
+    WindowState& state,
+    const std::span<const openrc::game::RuntimeGameplayTickV1> ticks) {
+    if (!state.renderer) {
+        throw std::logic_error(
+            "Gameplay events cannot update presentation without a renderer");
+    }
+    for (const auto& tick : ticks) {
+        for (const auto& event : tick.gameplay_events) {
+            if (event.kind !=
+                openrc::game::EntityGameplayEventKindV1::item_collected) {
+                throw std::logic_error(
+                    "Gameplay emitted an unknown presentation event");
+            }
+            if (!std::binary_search(
+                    state.gameplay_collectible_ids.begin(),
+                    state.gameplay_collectible_ids.end(),
+                    event.authored_id)) {
+                throw std::logic_error(
+                    "Gameplay collected an entity outside the mounted scene");
+            }
+
+            const auto binding = std::lower_bound(
+                state.gameplay_render_bindings.begin(),
+                state.gameplay_render_bindings.end(),
+                event.authored_id,
+                [](const openrc::EntityRenderBindingV1& candidate,
+                   const std::uint32_t authored_id) {
+                    return candidate.authored_id < authored_id;
+                });
+            if (binding != state.gameplay_render_bindings.end() &&
+                binding->authored_id == event.authored_id) {
+                state.renderer->set_render_instance_enabled(
+                    binding->render_instance_id, false);
+            }
+            if (state.gameplay_collected_count >=
+                static_cast<std::uint64_t>(
+                    state.gameplay_collectible_ids.size())) {
+                throw std::logic_error(
+                    "Gameplay collected an entity more than once");
+            }
+            ++state.gameplay_collected_count;
+        }
+    }
 }
 
 void resize_gameplay_camera(
     WindowState& state,
     const std::uint32_t width,
     const std::uint32_t height) {
-    if (!state.gameplay_camera || width == 0U || height == 0U) {
+    if (!state.gameplay || !state.gameplay_camera || width == 0U ||
+        height == 0U) {
         return;
     }
     auto profile = state.gameplay_camera->profile();
     profile.aspect_ratio = gameplay_aspect_ratio(width, height);
     const auto camera_state = state.gameplay_camera->state();
     state.gameplay_camera.emplace(profile, camera_state);
-    update_gameplay_presentation(state);
+    update_gameplay_player_presentation(
+        state, state.gameplay->player().snapshot());
 }
 
 [[nodiscard]] std::int16_t quantize_gameplay_axis(const double value) {
@@ -547,16 +676,16 @@ void resize_gameplay_camera(
     if (!state.gameplay) {
         return false;
     }
-    const auto snapshot = state.gameplay->snapshot();
     const auto& fixed_step = state.gameplay->profile().fixed_step;
     const auto accepted_elapsed = std::min(
         elapsed_nanoseconds, fixed_step.max_elapsed_nanoseconds);
-    const auto scaled_total = snapshot.interpolation_numerator +
+    const auto scaled_total = state.gameplay->interpolation_numerator() +
         accepted_elapsed * fixed_step.ticks_per_second;
     return scaled_total >= openrc::game::kFixedStepTimeDenominatorV1;
 }
 
 void advance_gameplay_frame(
+    const HWND window,
     WindowState& state,
     const std::chrono::steady_clock::time_point now) {
     if (!state.gameplay || !state.gameplay_camera) {
@@ -608,7 +737,12 @@ void advance_gameplay_frame(
         state.gameplay_pending_released_buttons = 0U;
     }
     state.gameplay_camera = std::move(next_camera);
-    update_gameplay_presentation(state);
+    const auto previous_collected_count = state.gameplay_collected_count;
+    update_gameplay_player_presentation(state, frame.snapshot.player);
+    apply_gameplay_events(state, frame.ticks);
+    if (state.gameplay_collected_count != previous_collected_count) {
+        refresh_window_title(window, state);
+    }
 }
 
 LRESULT CALLBACK window_procedure(
@@ -1015,9 +1149,36 @@ int WINAPI wWinMain(
                         std::make_unique<openrc::runtime::D3d11Renderer>(
                             window, native_content->render_scene);
                 }
+                openrc::game::RuntimeGameplaySessionOptionsV1 gameplay_options;
+                if (native_content->entity_scene &&
+                    native_content->gameplay_scene) {
+                    state.gameplay_render_bindings =
+                        native_content->entity_scene->render_bindings;
+                    state.gameplay_collectible_ids.reserve(
+                        native_content->gameplay_scene->collectibles.size());
+                    for (const auto& collectible :
+                         native_content->gameplay_scene->collectibles) {
+                        state.gameplay_collectible_ids.push_back(
+                            collectible.authored_id);
+                    }
+                    if (arguments.smoke_test &&
+                        !native_content->gameplay_scene->collectibles.empty()) {
+                        state.gameplay_smoke_target = make_gameplay_smoke_target(
+                            *native_content->entity_scene,
+                            native_content->gameplay_scene->collectibles.front());
+                    }
+                    gameplay_options.entity_gameplay =
+                        openrc::game::RuntimeGameplayEntityContentV1{
+                            std::move(*native_content->entity_scene),
+                            std::move(*native_content->gameplay_scene),
+                            openrc::game::
+                                make_runtime_entity_gameplay_limits_v1(),
+                        };
+                }
                 state.gameplay = std::make_unique<
                     openrc::game::RuntimeGameplaySessionV1>(
-                        std::move(native_content->foundation));
+                        std::move(native_content->foundation),
+                        std::move(gameplay_options));
                 RECT client_rectangle{};
                 if (GetClientRect(window, &client_rectangle) == FALSE) {
                     throw std::runtime_error(
@@ -1042,7 +1203,8 @@ int WINAPI wWinMain(
                         22.0 * std::numbers::pi_v<double> / 180.0,
                         6.0,
                     });
-                update_gameplay_presentation(state);
+                update_gameplay_player_presentation(state, player);
+                synchronize_gameplay_entity_presentation(state);
             } else {
                 auto &geometry = *recovered_geometry;
                 if (geometry.source) {
@@ -1103,11 +1265,37 @@ int WINAPI wWinMain(
 
         if (arguments.smoke_test) {
             if (state.gameplay) {
+                if (state.gameplay_smoke_target) {
+                    auto checkpoint =
+                        state.gameplay->player().snapshot().checkpoint;
+                    checkpoint.checkpoint_id =
+                        state.gameplay_smoke_target->authored_id;
+                    checkpoint.feet_position =
+                        state.gameplay_smoke_target->feet_position;
+                    checkpoint.facing_yaw_radians = 0.0;
+                    state.gameplay->set_checkpoint(checkpoint, true);
+                }
                 const auto smoke_frame_time =
                     std::chrono::steady_clock::now();
                 state.previous_gameplay_frame =
                     smoke_frame_time - std::chrono::milliseconds(20);
-                advance_gameplay_frame(state, smoke_frame_time);
+                advance_gameplay_frame(window, state, smoke_frame_time);
+                if (state.gameplay_smoke_target) {
+                    const auto* const entity_gameplay =
+                        state.gameplay->entity_gameplay();
+                    if (entity_gameplay == nullptr ||
+                        !entity_gameplay->collected(
+                            state.gameplay_smoke_target->authored_id) ||
+                        state.gameplay->item_total(
+                            state.gameplay_smoke_target->item_key) <
+                            state.gameplay_smoke_target->amount ||
+                        state.renderer->render_instance_enabled(
+                            state.gameplay_smoke_target->render_instance_id)) {
+                        throw std::runtime_error(
+                            "The graphical collectible smoke did not collect, "
+                            "credit, and hide its real mounted target");
+                    }
+                }
             }
             state.renderer->render();
             DestroyWindow(window);
@@ -1144,7 +1332,7 @@ int WINAPI wWinMain(
                     continue;
                 }
                 advance_gameplay_frame(
-                    state, std::chrono::steady_clock::now());
+                    window, state, std::chrono::steady_clock::now());
                 if (!state.renderer->render()) {
                     constexpr DWORD kOccludedWaitMilliseconds = 16U;
                     const auto wait_result = MsgWaitForMultipleObjectsEx(

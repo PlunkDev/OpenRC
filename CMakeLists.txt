@@ -22,6 +22,7 @@ add_library(openrc_core STATIC
     src/core/actor_library.cpp
     src/core/actor_library_io.cpp
     src/core/actor_pose.cpp
+    src/core/actor_render_bake.cpp
     src/core/boundary_table.cpp
     src/core/character_controller.cpp
     src/core/collision_world.cpp
@@ -37,6 +38,8 @@ add_library(openrc_core STATIC
     src/core/entity_scene_io.cpp
     src/core/fixed_step.cpp
     src/core/game_input.cpp
+    src/core/gameplay_scene.cpp
+    src/core/gameplay_scene_io.cpp
     src/core/game_world.cpp
     src/core/gif_gs.cpp
     src/core/hash.cpp
@@ -44,6 +47,7 @@ add_library(openrc_core STATIC
     src/core/launcher_plan.cpp
     src/core/level_actor_library_compile.cpp
     src/core/level_entity_scene_compile.cpp
+    src/core/level_gameplay_scene_compile.cpp
     src/core/level_render_scene_compile.cpp
     src/core/level_bootstrap.cpp
     src/core/localized_subtitle_bank.cpp
@@ -59,6 +63,7 @@ add_library(openrc_core STATIC
     src/core/ps2_save_bundle.cpp
     src/core/rac_gameplay_bank.cpp
     src/core/rac_actor_library_compile.cpp
+    src/core/rac_collectible_scene_compile.cpp
     src/core/rac_level_bootstrap_compile.cpp
     src/core/rac_level_collision.cpp
     src/core/rac_level_collision_compile.cpp
@@ -76,6 +81,8 @@ add_library(openrc_core STATIC
     src/core/runtime_level_content.cpp
     src/core/runtime_level_foundation.cpp
     src/core/runtime_gameplay.cpp
+    src/core/runtime_gameplay_scene.cpp
+    src/core/runtime_gameplay_scene_resource.cpp
     src/core/runtime_actor_library.cpp
     src/core/runtime_entity_scene.cpp
     src/core/runtime_player_actor.cpp
@@ -450,6 +457,36 @@ if(OPENRC_BUILD_TESTS)
         openrc-runtime-gameplay-tests
         tests/runtime_gameplay_tests.cpp
     )
+
+    add_executable(
+        openrc-runtime-gameplay-scene-tests
+        tests/runtime_gameplay_scene_tests.cpp
+    )
+
+    add_executable(
+        openrc-runtime-gameplay-scene-resource-tests
+        tests/runtime_gameplay_scene_resource_tests.cpp
+    )
+    target_link_libraries(
+        openrc-runtime-gameplay-scene-resource-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-runtime-gameplay-scene-resource-tests
+        PRIVATE
+        cxx_std_20
+    )
+    target_link_libraries(
+        openrc-runtime-gameplay-scene-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-runtime-gameplay-scene-tests
+        PRIVATE
+        cxx_std_20
+    )
     target_link_libraries(
         openrc-runtime-gameplay-tests
         PRIVATE
@@ -597,6 +634,21 @@ if(OPENRC_BUILD_TESTS)
     endif()
 
     add_executable(
+        openrc-level-gameplay-scene-compile-tests
+        tests/level_gameplay_scene_compile_tests.cpp
+    )
+    target_link_libraries(
+        openrc-level-gameplay-scene-compile-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-level-gameplay-scene-compile-tests
+        PRIVATE
+        cxx_std_20
+    )
+
+    add_executable(
         openrc-rac-level-foundation-compile-tests
         tests/rac_level_foundation_compile_tests.cpp
     )
@@ -610,6 +662,34 @@ if(OPENRC_BUILD_TESTS)
         PRIVATE
         cxx_std_20
     )
+
+    add_executable(
+        openrc-rac-collectible-scene-compile-tests
+        tests/rac_collectible_scene_compile_tests.cpp
+    )
+    target_link_libraries(
+        openrc-rac-collectible-scene-compile-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-rac-collectible-scene-compile-tests
+        PRIVATE
+        cxx_std_20
+    )
+    if(MSVC)
+        target_compile_options(
+            openrc-rac-collectible-scene-compile-tests
+            PRIVATE
+            /W4 /permissive- /utf-8
+        )
+    else()
+        target_compile_options(
+            openrc-rac-collectible-scene-compile-tests
+            PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+    endif()
 
     add_executable(
         openrc-runtime-level-foundation-tests
@@ -670,6 +750,34 @@ if(OPENRC_BUILD_TESTS)
     endif()
 
     add_executable(
+        openrc-gameplay-scene-tests
+        tests/gameplay_scene_tests.cpp
+    )
+    target_link_libraries(
+        openrc-gameplay-scene-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-gameplay-scene-tests
+        PRIVATE
+        cxx_std_20
+    )
+    if(MSVC)
+        target_compile_options(
+            openrc-gameplay-scene-tests
+            PRIVATE
+            /W4 /permissive- /utf-8
+        )
+    else()
+        target_compile_options(
+            openrc-gameplay-scene-tests
+            PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+    endif()
+
+    add_executable(
         openrc-actor-library-tests
         tests/actor_library_tests.cpp
     )
@@ -724,6 +832,21 @@ if(OPENRC_BUILD_TESTS)
             -Wall -Wextra -Wpedantic
         )
     endif()
+
+    add_executable(
+        openrc-actor-render-bake-tests
+        tests/actor_render_bake_tests.cpp
+    )
+    target_link_libraries(
+        openrc-actor-render-bake-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-actor-render-bake-tests
+        PRIVATE
+        cxx_std_20
+    )
 
     add_executable(
         openrc-rac-actor-library-compile-tests
@@ -1398,6 +1521,8 @@ if(OPENRC_BUILD_TESTS)
     add_test(NAME fixed-step COMMAND openrc-fixed-step-tests)
     add_test(NAME game-world COMMAND openrc-game-world-tests)
     add_test(NAME runtime-gameplay COMMAND openrc-runtime-gameplay-tests)
+    add_test(NAME runtime-gameplay-scene COMMAND openrc-runtime-gameplay-scene-tests)
+    add_test(NAME runtime-gameplay-scene-resource COMMAND openrc-runtime-gameplay-scene-resource-tests)
     add_test(NAME third-person-camera COMMAND openrc-third-person-camera-tests)
     add_test(NAME prepared-game-v2 COMMAND openrc-prepared-game-v2-tests)
     add_test(NAME prepared-game-v2-fs COMMAND openrc-prepared-game-v2-fs-tests)
@@ -1406,12 +1531,16 @@ if(OPENRC_BUILD_TESTS)
     add_test(NAME level-render-scene-compile COMMAND openrc-level-render-scene-compile-tests)
     add_test(NAME level-actor-library-compile COMMAND openrc-level-actor-library-compile-tests)
     add_test(NAME level-entity-scene-compile COMMAND openrc-level-entity-scene-compile-tests)
+    add_test(NAME level-gameplay-scene-compile COMMAND openrc-level-gameplay-scene-compile-tests)
+    add_test(NAME rac-collectible-scene-compile COMMAND openrc-rac-collectible-scene-compile-tests)
     add_test(NAME rac-level-foundation-compile COMMAND openrc-rac-level-foundation-compile-tests)
     add_test(NAME runtime-level-foundation COMMAND openrc-runtime-level-foundation-tests)
     add_test(NAME render-scene-io COMMAND openrc-render-scene-io-tests)
     add_test(NAME entity-scene COMMAND openrc-entity-scene-tests)
+    add_test(NAME gameplay-scene COMMAND openrc-gameplay-scene-tests)
     add_test(NAME actor-library COMMAND openrc-actor-library-tests)
     add_test(NAME actor-pose COMMAND openrc-actor-pose-tests)
+    add_test(NAME actor-render-bake COMMAND openrc-actor-render-bake-tests)
     add_test(NAME rac-actor-library-compile COMMAND openrc-rac-actor-library-compile-tests)
     add_test(NAME runtime-actor-library COMMAND openrc-runtime-actor-library-tests)
     add_test(NAME runtime-entity-scene COMMAND openrc-runtime-entity-scene-tests)

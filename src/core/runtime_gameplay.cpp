@@ -5,6 +5,7 @@
 #include <exception>
 #include <numbers>
 #include <string>
+#include <type_traits>
 #include <utility>
 
 namespace openrc::game {
@@ -25,25 +26,22 @@ void validate_checkpoint_collision_envelope(
     const RuntimeGameplayProfileV1 &profile) {
   const auto ticks_per_second =
       static_cast<double>(profile.fixed_step.ticks_per_second);
-  const auto maximum_vertical_speed =
-      std::max(profile.character.jump_speed,
-               profile.character.maximum_fall_speed);
-  const auto slope_cosine = std::cos(
-      profile.character.maximum_slope_degrees *
-      std::numbers::pi_v<double> / 180.0);
-  const auto maximum_horizontal_tick =
-      profile.character.maximum_ground_speed /
-      (ticks_per_second * slope_cosine);
+  const auto maximum_vertical_speed = std::max(
+      profile.character.jump_speed, profile.character.maximum_fall_speed);
+  const auto slope_cosine = std::cos(profile.character.maximum_slope_degrees *
+                                     std::numbers::pi_v<double> / 180.0);
+  const auto maximum_horizontal_tick = profile.character.maximum_ground_speed /
+                                       (ticks_per_second * slope_cosine);
   const auto maximum_vertical_tick = maximum_vertical_speed / ticks_per_second;
   const auto effective_radius =
       profile.character.capsule_radius + profile.character.skin_width;
   constexpr double kEnvelopeEpsilon = 1.0e-6;
   const auto horizontal_margin =
       effective_radius + maximum_horizontal_tick + kEnvelopeEpsilon;
-  const auto below_margin =
-      std::max(profile.character.skin_width,
-               profile.character.ground_probe_distance) +
-      maximum_horizontal_tick + maximum_vertical_tick + kEnvelopeEpsilon;
+  const auto below_margin = std::max(profile.character.skin_width,
+                                     profile.character.ground_probe_distance) +
+                            maximum_horizontal_tick + maximum_vertical_tick +
+                            kEnvelopeEpsilon;
   const auto above_margin =
       profile.character.capsule_height + profile.character.skin_width +
       profile.character.step_height + maximum_horizontal_tick +
@@ -63,11 +61,11 @@ void validate_checkpoint_collision_envelope(
   }
 }
 
-[[nodiscard]] PlayerSimulationV1 make_checked_level_player(
-    const RuntimeLevelFoundationV1 &foundation,
-    const RuntimeGameplayProfileV1 &profile,
-    const std::optional<SpawnPointIdV1> spawn_point_id,
-    const std::uint64_t next_tick_index) {
+[[nodiscard]] PlayerSimulationV1
+make_checked_level_player(const RuntimeLevelFoundationV1 &foundation,
+                          const RuntimeGameplayProfileV1 &profile,
+                          const std::optional<SpawnPointIdV1> spawn_point_id,
+                          const std::uint64_t next_tick_index) {
   try {
     auto player = make_runtime_level_player_simulation_v1(
         foundation, profile.character, profile.fixed_step.ticks_per_second,
@@ -83,12 +81,12 @@ void validate_checkpoint_collision_envelope(
   }
 }
 
-void validate_state(const RuntimeLevelFoundationV1 &foundation,
-                    const RuntimeGameplayProfileV1 &profile,
-                    const GameSessionV1 &session, const WorldV1 &world,
-                    const PlayerSimulationV1 &player,
-                    const GameInputStateV1 &input,
-                    const FixedStepAccumulatorV1 &fixed_step) {
+void validate_state(
+    const RuntimeLevelFoundationV1 &foundation,
+    const RuntimeGameplayProfileV1 &profile, const GameSessionV1 &session,
+    const WorldV1 &world, const PlayerSimulationV1 &player,
+    const GameInputStateV1 &input, const FixedStepAccumulatorV1 &fixed_step,
+    const std::optional<EntityGameplayRuntimeV1> &entity_gameplay) {
   const auto player_snapshot = player.snapshot();
   const auto session_snapshot = session.snapshot();
   const auto &active_level = world.active_level();
@@ -118,6 +116,58 @@ void validate_state(const RuntimeLevelFoundationV1 &foundation,
       player.profile().death_height_world !=
           foundation.bootstrap.death_height_world) {
     fail("Runtime gameplay policy diverged from the active player");
+  }
+  if (entity_gameplay &&
+      (!entity_gameplay->loaded() ||
+       entity_gameplay->next_tick_index() != expected_tick)) {
+    fail("Runtime entity gameplay fixed-tick sequence diverged");
+  }
+}
+
+[[nodiscard]] RuntimeGameplaySnapshotV1 make_runtime_gameplay_snapshot(
+    const GameSessionV1 &session, const WorldV1 &world,
+    const PlayerSimulationV1 &player, const GameInputStateV1 &input,
+    const FixedStepAccumulatorV1 &fixed_step,
+    const std::optional<EntityGameplayRuntimeV1> &entity_gameplay) {
+  std::optional<EntityGameplaySnapshotV1> entity_gameplay_snapshot;
+  if (entity_gameplay) {
+    try {
+      entity_gameplay_snapshot = entity_gameplay->snapshot();
+    } catch (const EntityGameplayRuntimeError &error) {
+      fail("Cannot snapshot runtime entity gameplay: " +
+           std::string(error.what()));
+    }
+  }
+  return RuntimeGameplaySnapshotV1{
+      session.snapshot(),
+      world.active_level(),
+      player.snapshot(),
+      input.current_sample(),
+      input.pending_pressed_buttons(),
+      input.pending_released_buttons(),
+      input.next_tick_index(),
+      fixed_step.next_tick_index(),
+      fixed_step.interpolation_numerator(),
+      fixed_step.total_dropped_step_count(),
+      fixed_step.total_discarded_elapsed_nanoseconds(),
+      std::move(entity_gameplay_snapshot),
+  };
+}
+
+void load_entity_gameplay_content(EntityGameplayRuntimeV1 &runtime,
+                                  const RuntimeGameplayEntityContentV1 &content,
+                                  const std::uint32_t foundation_level_id,
+                                  const std::uint64_t next_tick_index) {
+  if (content.entity_scene.level_id != foundation_level_id ||
+      content.gameplay_scene.level_id != foundation_level_id) {
+    fail("Runtime entity/gameplay content belongs to a different foundation");
+  }
+  try {
+    runtime.load_scene(content.entity_scene, content.gameplay_scene,
+                       content.limits, next_tick_index);
+  } catch (const EntityGameplayRuntimeError &error) {
+    fail("Cannot load runtime entity/gameplay content: " +
+         std::string(error.what()));
   }
 }
 
@@ -199,18 +249,15 @@ void validate_runtime_gameplay_profile_v1(
 
   const auto ticks_per_second =
       static_cast<double>(profile.fixed_step.ticks_per_second);
-  const auto maximum_vertical_speed =
-      std::max(profile.character.jump_speed,
-               profile.character.maximum_fall_speed);
-  const auto slope_cosine = std::cos(
-      profile.character.maximum_slope_degrees *
-      std::numbers::pi_v<double> / 180.0);
+  const auto maximum_vertical_speed = std::max(
+      profile.character.jump_speed, profile.character.maximum_fall_speed);
+  const auto slope_cosine = std::cos(profile.character.maximum_slope_degrees *
+                                     std::numbers::pi_v<double> / 180.0);
   const auto maximum_motion_distance =
       profile.character.maximum_substep_distance *
       static_cast<double>(profile.character.maximum_motion_substeps);
-  const auto maximum_horizontal_tick =
-      profile.character.maximum_ground_speed /
-      (ticks_per_second * slope_cosine);
+  const auto maximum_horizontal_tick = profile.character.maximum_ground_speed /
+                                       (ticks_per_second * slope_cosine);
   const auto maximum_vertical_tick = maximum_vertical_speed / ticks_per_second;
   if (!std::isfinite(maximum_motion_distance) ||
       !std::isfinite(maximum_horizontal_tick) ||
@@ -235,6 +282,12 @@ RuntimeGameplaySessionV1::RuntimeGameplaySessionV1(
       session_.request_level(foundation_.level_id, options.spawn_point_id,
                              options.level_request_reason);
   world_.load_level(session_, request);
+  if (options.entity_gameplay) {
+    entity_gameplay_.emplace();
+    load_entity_gameplay_content(*entity_gameplay_, *options.entity_gameplay,
+                                 foundation_.level_id,
+                                 session_.next_tick_index());
+  }
   validate_tick_invariants();
 }
 
@@ -242,24 +295,54 @@ void RuntimeGameplaySessionV1::load_level(
     RuntimeLevelFoundationV1 foundation,
     const std::optional<SpawnPointIdV1> spawn_point_id,
     const LevelRequestReasonV1 reason) {
+  load_level_impl(std::move(foundation), std::nullopt, spawn_point_id, reason);
+}
+
+void RuntimeGameplaySessionV1::load_level(
+    RuntimeLevelFoundationV1 foundation,
+    RuntimeGameplayEntityContentV1 entity_gameplay,
+    const std::optional<SpawnPointIdV1> spawn_point_id,
+    const LevelRequestReasonV1 reason) {
+  load_level_impl(std::move(foundation), std::move(entity_gameplay),
+                  spawn_point_id, reason);
+}
+
+void RuntimeGameplaySessionV1::load_level_impl(
+    RuntimeLevelFoundationV1 foundation,
+    std::optional<RuntimeGameplayEntityContentV1> entity_gameplay,
+    const std::optional<SpawnPointIdV1> spawn_point_id,
+    const LevelRequestReasonV1 reason) {
   auto next_player = make_checked_level_player(
       foundation, profile_, spawn_point_id, session_.next_tick_index());
   auto next_session = session_;
   auto next_world = world_;
   auto next_input = input_;
+  auto next_entity_gameplay = entity_gameplay_;
+
+  if (entity_gameplay) {
+    if (!next_entity_gameplay) {
+      next_entity_gameplay.emplace();
+    }
+    load_entity_gameplay_content(*next_entity_gameplay, *entity_gameplay,
+                                 foundation.level_id,
+                                 session_.next_tick_index());
+  } else {
+    next_entity_gameplay.reset();
+  }
 
   const auto request =
       next_session.request_level(foundation.level_id, spawn_point_id, reason);
   next_world.load_level(next_session, request);
   next_input.reset(next_session.next_tick_index());
   validate_state(foundation, profile_, next_session, next_world, next_player,
-                 next_input, fixed_step_);
+                 next_input, fixed_step_, next_entity_gameplay);
 
   foundation_ = std::move(foundation);
   session_ = std::move(next_session);
   world_ = std::move(next_world);
   player_ = std::move(next_player);
   input_ = std::move(next_input);
+  entity_gameplay_ = std::move(next_entity_gameplay);
   validate_tick_invariants();
 }
 
@@ -294,6 +377,7 @@ RuntimeGameplayFrameAdvanceV1 RuntimeGameplaySessionV1::advance_frame_impl(
   auto next_input = input_;
   auto next_player = player_;
   auto next_session = session_;
+  auto next_entity_gameplay = entity_gameplay_;
   if (new_sample) {
     next_input.submit_sample(*new_sample);
   }
@@ -314,17 +398,44 @@ RuntimeGameplayFrameAdvanceV1 RuntimeGameplaySessionV1::advance_frame_impl(
                                     movement_mapper);
     const auto player_step =
         next_player.fixed_update(foundation_.collision_world, command);
+    std::vector<EntityGameplayEventV1> gameplay_events;
+    if (next_entity_gameplay) {
+      const auto player_snapshot = next_player.snapshot();
+      try {
+        gameplay_events = next_entity_gameplay->fixed_tick(
+            tick_index, EntityGameplayPlayerCapsuleV1{
+                            player_snapshot.character.feet_position,
+                            profile_.character.capsule_radius,
+                            profile_.character.capsule_height});
+      } catch (const EntityGameplayRuntimeError &error) {
+        fail("Runtime entity gameplay tick failed: " +
+             std::string(error.what()));
+      }
+    }
     next_session.commit_simulation_tick(command);
-    result.ticks.push_back(RuntimeGameplayTickV1{command, player_step});
+    result.ticks.push_back(RuntimeGameplayTickV1{command, player_step,
+                                                 std::move(gameplay_events)});
   }
 
   validate_state(foundation_, profile_, next_session, world_, next_player,
-                 next_input, next_fixed_step);
+                 next_input, next_fixed_step, next_entity_gameplay);
+  result.snapshot = make_runtime_gameplay_snapshot(
+      next_session, world_, next_player, next_input, next_fixed_step,
+      next_entity_gameplay);
+
+  static_assert(
+      std::is_nothrow_move_assignable_v<FixedStepAccumulatorV1> &&
+      std::is_nothrow_move_assignable_v<GameInputStateV1> &&
+      std::is_nothrow_move_assignable_v<PlayerSimulationV1> &&
+      std::is_nothrow_move_assignable_v<GameSessionV1> &&
+      std::is_nothrow_move_assignable_v<
+          std::optional<EntityGameplayRuntimeV1>> &&
+      std::is_nothrow_move_constructible_v<RuntimeGameplayFrameAdvanceV1>);
   fixed_step_ = std::move(next_fixed_step);
   input_ = std::move(next_input);
   player_ = std::move(next_player);
   session_ = std::move(next_session);
-  result.snapshot = snapshot();
+  entity_gameplay_ = std::move(next_entity_gameplay);
   return result;
 }
 
@@ -335,20 +446,38 @@ void RuntimeGameplaySessionV1::set_checkpoint(PlayerCheckpointV1 checkpoint,
   validate_tick_invariants();
 }
 
-RuntimeGameplaySnapshotV1 RuntimeGameplaySessionV1::snapshot() const noexcept {
-  return RuntimeGameplaySnapshotV1{
-      session_.snapshot(),
-      world_.active_level(),
-      player_.snapshot(),
-      input_.current_sample(),
-      input_.pending_pressed_buttons(),
-      input_.pending_released_buttons(),
-      input_.next_tick_index(),
-      fixed_step_.next_tick_index(),
-      fixed_step_.interpolation_numerator(),
-      fixed_step_.total_dropped_step_count(),
-      fixed_step_.total_discarded_elapsed_nanoseconds(),
-  };
+void RuntimeGameplaySessionV1::restore_item_totals(
+    std::vector<EntityGameplayItemTotalV1> totals) {
+  if (!entity_gameplay_) {
+    fail("Runtime gameplay cannot restore item totals without neutral content");
+  }
+  try {
+    entity_gameplay_->restore_item_totals(std::move(totals));
+  } catch (const EntityGameplayRuntimeError &error) {
+    fail("Cannot restore runtime gameplay item totals: " +
+         std::string(error.what()));
+  }
+  validate_tick_invariants();
+}
+
+RuntimeGameplaySnapshotV1 RuntimeGameplaySessionV1::snapshot() const {
+  return make_runtime_gameplay_snapshot(session_, world_, player_, input_,
+                                        fixed_step_, entity_gameplay_);
+}
+
+std::uint64_t
+RuntimeGameplaySessionV1::interpolation_numerator() const noexcept {
+  return fixed_step_.interpolation_numerator();
+}
+
+std::uint64_t RuntimeGameplaySessionV1::item_total(
+    const std::string_view item_key) const noexcept {
+  return entity_gameplay_ ? entity_gameplay_->item_total(item_key) : 0U;
+}
+
+const EntityGameplayRuntimeV1 *
+RuntimeGameplaySessionV1::entity_gameplay() const noexcept {
+  return entity_gameplay_ ? &*entity_gameplay_ : nullptr;
 }
 
 const RuntimeLevelFoundationV1 &
@@ -375,7 +504,7 @@ const PlayerSimulationV1 &RuntimeGameplaySessionV1::player() const noexcept {
 
 void RuntimeGameplaySessionV1::validate_tick_invariants() const {
   validate_state(foundation_, profile_, session_, world_, player_, input_,
-                 fixed_step_);
+                 fixed_step_, entity_gameplay_);
 }
 
 } // namespace openrc::game

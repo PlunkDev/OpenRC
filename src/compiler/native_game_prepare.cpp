@@ -8,8 +8,10 @@
 #include "openrc/hash.hpp"
 #include "openrc/level_actor_library_compile.hpp"
 #include "openrc/level_entity_scene_compile.hpp"
+#include "openrc/level_gameplay_scene_compile.hpp"
 #include "openrc/level_render_scene_compile.hpp"
 #include "openrc/rac_actor_library_compile.hpp"
+#include "openrc/rac_collectible_scene_compile.hpp"
 #include "openrc/rac_level_foundation_compile.hpp"
 #include "openrc/rac_level_moby_assets.hpp"
 #include "openrc/runtime_level_content.hpp"
@@ -56,11 +58,18 @@ constexpr std::uint64_t kMaximumRenderScenePayloadBytes =
     UINT64_C(512) * 1024U * 1024U;
 constexpr std::uint64_t kMaximumPlayerActorPayloadBytes =
     UINT64_C(256) * 1024U * 1024U;
-constexpr std::uint64_t kMaximumPlayerEntityScenePayloadBytes = 64U * 1024U;
+constexpr std::uint64_t kMaximumEntityScenePayloadBytes = 64U * 1024U * 1024U;
+constexpr std::uint64_t kMaximumGameplayScenePayloadBytes =
+    64U * 1024U * 1024U;
 constexpr std::uint64_t kMaximumTwoFipPixels = 16U * 1024U * 1024U;
 constexpr std::string_view kPlayerRigKey = "actors/ratchet/rig";
 constexpr std::string_view kPlayerHighModelKey = "actors/ratchet/high";
 constexpr std::string_view kPlayerArchetypeKey = "openrc.player/default";
+constexpr std::uint32_t kBoltSourceClassId = 13U;
+constexpr std::string_view kBoltRigKey = "actors/collectibles/bolt/rig";
+constexpr std::string_view kBoltHighModelKey = "actors/collectibles/bolt/high";
+constexpr std::string_view kBoltArchetypeKey = "openrc.collectible/bolt";
+constexpr std::string_view kBoltItemKey = "openrc.currency/bolts";
 
 constexpr RacMobyModelGeometryLimitsV1 kMobyModelGeometryLimits{
     {kMaximumDecodedWadBytes, 4096U, 4096U, 4096U, 1'000'000U, 4096U,
@@ -165,14 +174,13 @@ make_foundation_compile_limits(const LevelPackageV1Limits package_limits) {
 }
 
 [[nodiscard]] RenderSceneIoLimitsV1 make_render_scene_io_limits() {
-  return RenderSceneIoLimitsV1{
-      kMaximumRenderScenePayloadBytes,
-      runtime::make_level_scene_render_compile_profile_v1()
-          .render_scene_limits};
+  auto limits = game::make_runtime_level_content_limits_v1().render_scene;
+  limits.max_encoded_bytes = kMaximumRenderScenePayloadBytes;
+  return limits;
 }
 
 [[nodiscard]] constexpr RacMobyBindPoseLimitsV1
-make_player_bind_pose_limits() {
+make_single_moby_bind_pose_limits() {
   return RacMobyBindPoseLimitsV1{
       RacMobyBindRigLimitsV1{kMaximumDecodedWadBytes, 255U, 1.0e-8},
       kMobyModelGeometryLimits,
@@ -180,7 +188,7 @@ make_player_bind_pose_limits() {
 }
 
 [[nodiscard]] constexpr ActorLibraryLimitsV1
-make_player_actor_library_limits() {
+make_single_actor_library_limits() {
   return ActorLibraryLimitsV1{
       1U,
       1U,
@@ -205,14 +213,23 @@ make_player_actor_library_limits() {
 [[nodiscard]] constexpr ActorLibraryIoLimitsV1
 make_player_actor_io_limits() {
   return ActorLibraryIoLimitsV1{kMaximumPlayerActorPayloadBytes,
-                                make_player_actor_library_limits()};
+                                make_single_actor_library_limits()};
 }
 
 [[nodiscard]] constexpr EntitySceneIoLimitsV1
-make_player_entity_scene_io_limits() {
+make_native_entity_scene_io_limits() {
   return EntitySceneIoLimitsV1{
-      kMaximumPlayerEntityScenePayloadBytes,
-      EntitySceneLimitsV1{1U, 1U, 1U, 1U, 1U, 128U, 128U, 256U}};
+      kMaximumEntityScenePayloadBytes,
+      EntitySceneLimitsV1{65'536U, 65'536U, 65'536U, 16U, 1U, 256U, 256U,
+                          UINT64_C(16) * 1024U * 1024U}};
+}
+
+[[nodiscard]] constexpr GameplaySceneIoLimitsV1
+make_native_gameplay_scene_io_limits() {
+  return GameplaySceneIoLimitsV1{
+      kMaximumGameplayScenePayloadBytes,
+      GameplaySceneLimitsV1{65'536U, 256U,
+                            UINT64_C(16) * 1024U * 1024U}};
 }
 
 [[nodiscard]] std::string level_source_locator(const std::uint32_t level_id,
@@ -447,12 +464,98 @@ compile_player_actor_library(RacLevelMobyAssetsV1 &assets) {
   request.model_semantic_key = kPlayerHighModelKey;
   request.bind_pose = compile_rac_moby_bind_pose_geometry_v1(
       player.source_bytes, player.source_class, RacMobyLodV1::high,
-      make_player_bind_pose_limits());
+      make_single_moby_bind_pose_limits());
   request.texture_slots = player.texture_slots;
   request.used_texture_slot_count = player.used_texture_slot_count;
   request.texture_bank = std::move(assets.textures);
   return compile_rac_actor_library_v1(request,
-                                      make_player_actor_library_limits());
+                                      make_single_actor_library_limits());
+}
+
+[[nodiscard]] bool has_static_moby_class(const RacLevelMobyAssetsV1 &assets,
+                                         const std::uint32_t class_id) {
+  return std::ranges::any_of(
+      assets.gameplay.static_mobies,
+      [class_id](const RacGameplayMobyInstanceV1 &instance) {
+        return instance.class_id == class_id;
+      });
+}
+
+[[nodiscard]] const RacLevelMobyModelV1 &
+require_unique_moby_model(const RacLevelMobyAssetsV1 &assets,
+                          const std::uint32_t class_id,
+                          const std::string_view semantic_description) {
+  const RacLevelMobyModelV1 *result = nullptr;
+  for (const auto &model : assets.models) {
+    if (model.class_id != class_id) {
+      continue;
+    }
+    if (result != nullptr) {
+      fail("The RAC1 level contains more than one retained " +
+           std::string(semantic_description) + " model source");
+    }
+    result = &model;
+  }
+  if (result == nullptr || result->source_bytes.empty() ||
+      result->source_class.input_bytes == 0U ||
+      result->source_class.input_bytes !=
+          static_cast<std::uint64_t>(result->source_bytes.size()) ||
+      result->joint_count == 0U ||
+      result->source_class.joint_count != result->joint_count) {
+    fail("The RAC1 level has no complete retained " +
+         std::string(semantic_description) + " model source");
+  }
+  return *result;
+}
+
+[[nodiscard]] ActorLibraryV1
+compile_bolt_actor_library(const RacLevelMobyAssetsV1 &assets) {
+  const auto &bolt =
+      require_unique_moby_model(assets, kBoltSourceClassId, "Bolt collectible");
+
+  RacActorLibraryCompileRequestV1 request;
+  request.rig_semantic_key = kBoltRigKey;
+  request.model_semantic_key = kBoltHighModelKey;
+  request.bind_pose = compile_rac_moby_bind_pose_geometry_v1(
+      bolt.source_bytes, bolt.source_class, RacMobyLodV1::high,
+      make_single_moby_bind_pose_limits());
+  request.texture_slots = bolt.texture_slots;
+  request.used_texture_slot_count = bolt.used_texture_slot_count;
+  request.texture_bank = assets.textures;
+  return compile_rac_actor_library_v1(request,
+                                      make_single_actor_library_limits());
+}
+
+[[nodiscard]] RacCollectibleCompileProfileV1
+make_bolt_collectible_profile(const RacLevelMobyAssetsV1 &assets) {
+  const auto &source =
+      require_unique_moby_model(assets, kBoltSourceClassId, "Bolt collectible")
+          .source_class;
+  const auto model_to_world = source.scale / 1024.0F;
+  return RacCollectibleCompileProfileV1{
+      kBoltSourceClassId,
+      std::string(kBoltHighModelKey),
+      std::string(kBoltArchetypeKey),
+      std::string(kBoltItemKey),
+      {source.bounding_sphere[0U] * model_to_world,
+       source.bounding_sphere[1U] * model_to_world,
+       source.bounding_sphere[2U] * model_to_world},
+      source.bounding_sphere[3U] * model_to_world,
+      1U,
+  };
+}
+
+[[nodiscard]] RacCollectibleSceneCompileLimitsV1
+make_collectible_scene_compile_limits(
+    const RenderSceneLimitsV1 render_scene_limits) {
+  return RacCollectibleSceneCompileLimitsV1{
+      65'536U,
+      make_single_actor_library_limits(),
+      ActorPoseLimitsV1{255U, 1'000'000U, 1.0e-8, 1.0e-8},
+      render_scene_limits,
+      make_native_entity_scene_io_limits().scene,
+      make_native_gameplay_scene_io_limits().scene,
+  };
 }
 
 [[nodiscard]] EntitySceneV1
@@ -467,7 +570,7 @@ make_player_entity_scene(const std::uint32_t level_id) {
       0U, std::string(kPlayerHighModelKey), ActorAffineTransformV1{}});
   scene.player_bindings.push_back(PlayerEntityBindingV1{0U, 0U});
   return canonicalize_entity_scene_v1(
-      std::move(scene), make_player_entity_scene_io_limits().scene);
+      std::move(scene), make_native_entity_scene_io_limits().scene);
 }
 
 [[nodiscard]] bool
@@ -607,21 +710,24 @@ exact_player_actor_provenance(const LevelPackageV1 &package,
   }
 }
 
-[[nodiscard]] bool exact_player_entity_provenance(
+[[nodiscard]] bool exact_entity_provenance(
     const LevelPackageV1 &package, const std::uint32_t level_id) {
   const auto *const actor_resource =
       find_unique_resource(package, kActorLibraryResourceIdV1);
+  const auto *const render_resource =
+      find_unique_resource(package, kRenderSceneResourceIdV1);
   const auto *const entity_resource =
       find_unique_resource(package, kEntitySceneResourceIdV1);
-  if (actor_resource == nullptr ||
+  if (actor_resource == nullptr || render_resource == nullptr ||
       !exact_upsert_resource_contract(
           entity_resource, kEntitySceneResourceTypeIdV1,
           kEntitySceneResourceSchemaVersionV1) ||
-      entity_resource->provenance.size() != 2U) {
+      entity_resource->provenance.size() != 3U) {
     return false;
   }
 
   bool found_actor = false;
+  bool found_render = false;
   bool found_compiler = false;
   for (const auto &provenance : entity_resource->provenance) {
     found_actor |= exact_provenance(
@@ -629,18 +735,103 @@ exact_player_actor_provenance(const LevelPackageV1 &package,
         kActorLibraryResourceIdV1,
         static_cast<std::uint64_t>(actor_resource->payload.size()),
         actor_resource->payload_sha256);
+    found_render |= exact_provenance(
+        provenance, LevelPackageProvenanceKindV1::prepared_resource,
+        kRenderSceneResourceIdV1,
+        static_cast<std::uint64_t>(render_resource->payload.size()),
+        render_resource->payload_sha256);
     found_compiler |= exact_provenance(
         provenance, LevelPackageProvenanceKindV1::generated,
         kLevelEntitySceneCompilePassV1, 0U, PreparedContentDigestV1{});
   }
-  if (!found_actor || !found_compiler) {
+  if (!found_actor || !found_render || !found_compiler) {
     return false;
   }
 
   try {
     const auto scene = decode_entity_scene_v1(
-        entity_resource->payload, make_player_entity_scene_io_limits());
-    return scene == make_player_entity_scene(level_id);
+        entity_resource->payload, make_native_entity_scene_io_limits());
+    const auto player = make_player_entity_scene(level_id);
+    if (scene.level_id != level_id || scene.definitions.empty() ||
+        scene.definitions.front() != player.definitions.front() ||
+        scene.actor_bindings != player.actor_bindings ||
+        scene.player_bindings != player.player_bindings ||
+        scene.transforms.size() + 1U != scene.definitions.size() ||
+        scene.render_bindings.size() != scene.transforms.size()) {
+      return false;
+    }
+    for (std::size_t index = 1U; index < scene.definitions.size(); ++index) {
+      const auto &definition = scene.definitions[index];
+      const auto &transform = scene.transforms[index - 1U];
+      const auto &render = scene.render_bindings[index - 1U];
+      if (definition.authored_id == 0U ||
+          definition.archetype_key != kBoltArchetypeKey ||
+          definition.flags != kEntityDefinitionInitiallyEnabledV1 ||
+          transform.authored_id != definition.authored_id ||
+          render.authored_id != definition.authored_id) {
+        return false;
+      }
+    }
+    return true;
+  } catch (const EntitySceneIoError &) {
+    return false;
+  } catch (const EntitySceneError &) {
+    return false;
+  }
+}
+
+[[nodiscard]] bool exact_gameplay_provenance(
+    const LevelPackageV1 &package, const std::uint32_t level_id) {
+  const auto *const entity_resource =
+      find_unique_resource(package, kEntitySceneResourceIdV1);
+  const auto *const gameplay_resource =
+      find_unique_resource(package, kGameplaySceneResourceIdV1);
+  if (entity_resource == nullptr ||
+      !exact_upsert_resource_contract(
+          gameplay_resource, kGameplaySceneResourceTypeIdV1,
+          kGameplaySceneResourceSchemaVersionV1) ||
+      gameplay_resource->provenance.size() != 2U) {
+    return false;
+  }
+
+  bool found_entity = false;
+  bool found_compiler = false;
+  for (const auto &provenance : gameplay_resource->provenance) {
+    found_entity |= exact_provenance(
+        provenance, LevelPackageProvenanceKindV1::prepared_resource,
+        kEntitySceneResourceIdV1,
+        static_cast<std::uint64_t>(entity_resource->payload.size()),
+        entity_resource->payload_sha256);
+    found_compiler |= exact_provenance(
+        provenance, LevelPackageProvenanceKindV1::generated,
+        kLevelGameplaySceneCompilePassV1, 0U, PreparedContentDigestV1{});
+  }
+  if (!found_entity || !found_compiler) {
+    return false;
+  }
+
+  try {
+    const auto gameplay = decode_gameplay_scene_v1(
+        gameplay_resource->payload, make_native_gameplay_scene_io_limits());
+    const auto entities = decode_entity_scene_v1(
+        entity_resource->payload, make_native_entity_scene_io_limits());
+    if (gameplay.level_id != level_id || entities.level_id != level_id ||
+        gameplay.collectibles.size() + 1U != entities.definitions.size()) {
+      return false;
+    }
+    for (std::size_t index = 0U; index < gameplay.collectibles.size(); ++index) {
+      const auto &collectible = gameplay.collectibles[index];
+      if (collectible.authored_id != entities.definitions[index + 1U].authored_id ||
+          collectible.item_key != kBoltItemKey || collectible.amount != 1U ||
+          collectible.flags != 0U) {
+        return false;
+      }
+    }
+    return true;
+  } catch (const GameplaySceneIoError &) {
+    return false;
+  } catch (const GameplaySceneError &) {
+    return false;
   } catch (const EntitySceneIoError &) {
     return false;
   } catch (const EntitySceneError &) {
@@ -697,34 +888,35 @@ exact_render_provenance(const LevelPackageV1 &package,
     const PreparedContentDigestV1 &source_image_sha256,
     const std::uint64_t boot_executable_bytes,
     const PreparedContentDigestV1 &boot_executable_sha256) {
-  return package.resources.size() == 5U &&
+  return package.resources.size() == 6U &&
          exact_foundation_provenance(package, level_id) &&
          exact_render_provenance(
              package, source_image_bytes, source_image_sha256,
              boot_executable_bytes, boot_executable_sha256) &&
          exact_player_actor_provenance(package, source_image_bytes,
                                        source_image_sha256) &&
-         exact_player_entity_provenance(package, level_id);
+         exact_entity_provenance(package, level_id) &&
+         exact_gameplay_provenance(package, level_id);
 }
 
-[[nodiscard]] LevelPackageProvenanceV1
-prepared_actor_resource_provenance(const LevelPackageV1 &package) {
+[[nodiscard]] LevelPackageProvenanceV1 prepared_resource_provenance(
+    const LevelPackageV1 &package, const std::string_view resource_id,
+    const std::string_view type_id, const std::uint32_t schema_version,
+    const std::string_view use_description) {
   const auto *const resource =
-      find_unique_resource(package, kActorLibraryResourceIdV1);
-  if (!exact_upsert_resource_contract(
-          resource, kActorLibraryResourceTypeIdV1,
-          kActorLibraryResourceSchemaVersionV1) ||
+      find_unique_resource(package, resource_id);
+  if (!exact_upsert_resource_contract(resource, type_id, schema_version) ||
       resource->payload_sha256 !=
           prepared_content_sha256_v1(resource->payload)) {
-    fail("The compiled actor-library resource cannot serve as entity-scene "
-         "provenance");
+    fail("The compiled " + std::string(resource_id) +
+         " resource cannot serve as " + std::string(use_description) +
+         " provenance");
   }
   return LevelPackageProvenanceV1{
       LevelPackageProvenanceKindV1::prepared_resource,
-      std::string(kActorLibraryResourceIdV1),
+      std::string(resource_id),
       0U,
-      host_size_to_u64(resource->payload.size(),
-                       "The compiled actor-library payload"),
+      host_size_to_u64(resource->payload.size(), "A compiled resource payload"),
       resource->payload_sha256};
 }
 
@@ -960,8 +1152,10 @@ prepare_native_game_v1(const NativeGamePreparationRequestV1 &request,
       runtime::make_level_scene_render_compile_profile_v1();
   const auto render_io_limits = make_render_scene_io_limits();
   const auto player_actor_io_limits = make_player_actor_io_limits();
-  const auto player_entity_scene_io_limits =
-      make_player_entity_scene_io_limits();
+  const auto entity_scene_io_limits = make_native_entity_scene_io_limits();
+  const auto gameplay_scene_io_limits = make_native_gameplay_scene_io_limits();
+  const auto collectible_scene_limits =
+      make_collectible_scene_compile_limits(render_io_limits.scene);
 
   report_progress(control,
                   NativeGamePreparationPhaseV1::checking_existing_publication,
@@ -1028,6 +1222,10 @@ prepare_native_game_v1(const NativeGamePreparationRequestV1 &request,
       report_progress(control,
                       NativeGamePreparationPhaseV1::compiling_player_actor,
                       level_id, level_id);
+      std::optional<ActorLibraryV1> bolt_actor;
+      if (has_static_moby_class(assets, kBoltSourceClassId)) {
+        bolt_actor = compile_bolt_actor_library(assets);
+      }
       const auto player_actor = compile_player_actor_library(assets);
       package = attach_actor_library_to_level_package_v1(
           std::move(package), player_actor, actor_sources,
@@ -1051,19 +1249,28 @@ prepare_native_game_v1(const NativeGamePreparationRequestV1 &request,
       report_progress(control,
                       NativeGamePreparationPhaseV1::compiling_render_scene,
                       level_id, level_id);
-      const auto render_scene =
+      auto render_scene =
           runtime::compile_level_scene_render_v1(recovered, render_profile);
 
-      stage = "compiling and attaching the neutral player entity";
+      stage = "compiling neutral entities and collectible gameplay";
       report_progress(control,
                       NativeGamePreparationPhaseV1::compiling_entity_scene,
                       level_id, level_id);
-      const auto entity_scene = make_player_entity_scene(level_id);
-      const std::array<LevelPackageProvenanceV1, 1U> entity_sources{
-          prepared_actor_resource_provenance(package)};
-      package = attach_entity_scene_to_level_package_v1(
-          std::move(package), entity_scene, entity_sources,
-          player_entity_scene_io_limits, package_limits);
+      auto entity_scene = make_player_entity_scene(level_id);
+      GameplaySceneV1 gameplay_scene;
+      gameplay_scene.level_id = level_id;
+      if (bolt_actor) {
+        auto compiled = compile_rac_collectible_scene_v1(
+            render_scene, entity_scene, gameplay_scene, *bolt_actor,
+            assets.gameplay.static_mobies,
+            make_bolt_collectible_profile(assets), collectible_scene_limits);
+        render_scene = std::move(compiled.render_scene);
+        entity_scene = std::move(compiled.entity_scene);
+        gameplay_scene = std::move(compiled.gameplay_scene);
+      } else {
+        gameplay_scene = canonicalize_gameplay_scene_v1(
+            std::move(gameplay_scene), gameplay_scene_io_limits.scene);
+      }
 
       stage = "attaching and encoding the render scene";
       report_progress(control,
@@ -1072,6 +1279,27 @@ prepare_native_game_v1(const NativeGamePreparationRequestV1 &request,
       package = attach_render_scene_to_level_package_v1(
           std::move(package), render_scene, render_sources, render_io_limits,
           package_limits);
+
+      const std::array<LevelPackageProvenanceV1, 2U> entity_sources{
+          prepared_resource_provenance(
+              package, kActorLibraryResourceIdV1,
+              kActorLibraryResourceTypeIdV1,
+              kActorLibraryResourceSchemaVersionV1, "entity-scene"),
+          prepared_resource_provenance(
+              package, kRenderSceneResourceIdV1, kRenderSceneResourceTypeIdV1,
+              kRenderSceneResourceSchemaVersionV1, "entity-scene")};
+      package = attach_entity_scene_to_level_package_v1(
+          std::move(package), entity_scene, entity_sources,
+          entity_scene_io_limits, package_limits);
+
+      const std::array<LevelPackageProvenanceV1, 1U> gameplay_sources{
+          prepared_resource_provenance(
+              package, kEntitySceneResourceIdV1,
+              kEntitySceneResourceTypeIdV1,
+              kEntitySceneResourceSchemaVersionV1, "gameplay-scene")};
+      package = attach_gameplay_scene_to_level_package_v1(
+          std::move(package), gameplay_scene, gameplay_sources,
+          gameplay_scene_io_limits, package_limits);
       auto package_bytes = encode_level_package_v1(package, package_limits);
       const auto package_byte_count =
           host_size_to_u64(package_bytes.size(), "A native level package");

@@ -2,12 +2,14 @@
 
 #include "openrc/fixed_step.hpp"
 #include "openrc/game_world.hpp"
+#include "openrc/runtime_gameplay_scene.hpp"
 #include "openrc/runtime_level_foundation.hpp"
 
 #include <cstdint>
 #include <functional>
 #include <optional>
 #include <stdexcept>
+#include <string_view>
 #include <vector>
 
 namespace openrc::game {
@@ -29,11 +31,54 @@ struct RuntimeGameplayProfileV1 {
 void validate_runtime_gameplay_profile_v1(
     const RuntimeGameplayProfileV1 &profile);
 
+// Stable allocation policy for materializing the optional neutral scene in
+// the shipped runtime. Frontends should use this instead of inventing their
+// own entity, collectible, or persistent-inventory bounds.
+[[nodiscard]] constexpr EntityGameplayRuntimeLimitsV1
+make_runtime_entity_gameplay_limits_v1() {
+  return EntityGameplayRuntimeLimitsV1{
+      EntitySceneLimitsV1{
+          1'000'000U,
+          1'000'000U,
+          1'000'000U,
+          1'000'000U,
+          16U,
+          256U,
+          256U,
+          UINT64_C(128) * 1024U * 1024U,
+      },
+      GameplaySceneLimitsV1{
+          1'000'000U,
+          256U,
+          UINT64_C(128) * 1024U * 1024U,
+      },
+      EntityGameplayInventoryLimitsV1{
+          1'000'000U,
+          256U,
+          UINT64_C(128) * 1024U * 1024U,
+      },
+  };
+}
+
+// Optional neutral entity/collectible content for one active level. Keeping
+// the validation limits beside the scenes makes every materialization and
+// reload use an explicit bounded policy.
+struct RuntimeGameplayEntityContentV1 {
+  EntitySceneV1 entity_scene;
+  GameplaySceneV1 gameplay_scene;
+  EntityGameplayRuntimeLimitsV1 limits =
+      make_runtime_entity_gameplay_limits_v1();
+
+  [[nodiscard]] bool
+  operator==(const RuntimeGameplayEntityContentV1 &) const = default;
+};
+
 struct RuntimeGameplaySessionOptionsV1 {
   RuntimeGameplayProfileV1 profile = make_runtime_gameplay_profile_v1();
   std::uint64_t deterministic_seed = 0U;
   std::optional<SpawnPointIdV1> spawn_point_id;
   LevelRequestReasonV1 level_request_reason = LevelRequestReasonV1::new_game;
+  std::optional<RuntimeGameplayEntityContentV1> entity_gameplay;
 };
 
 struct RuntimeMovementAxesV1 {
@@ -55,6 +100,8 @@ using RuntimeMovementMapperV1 = std::function<RuntimeMovementAxesV1(
 struct RuntimeGameplayTickV1 {
   GameInputCommandV1 input;
   PlayerSimulationStepV1 player;
+  // Canonical authored-ID order, produced after this tick's player movement.
+  std::vector<EntityGameplayEventV1> gameplay_events;
 
   [[nodiscard]] bool operator==(const RuntimeGameplayTickV1 &) const = default;
 };
@@ -71,6 +118,7 @@ struct RuntimeGameplaySnapshotV1 {
   std::uint64_t interpolation_numerator = 0U;
   std::uint64_t total_dropped_step_count = 0U;
   std::uint64_t total_discarded_elapsed_nanoseconds = 0U;
+  std::optional<EntityGameplaySnapshotV1> entity_gameplay;
 
   [[nodiscard]] bool
   operator==(const RuntimeGameplaySnapshotV1 &) const = default;
@@ -108,6 +156,14 @@ public:
              std::optional<SpawnPointIdV1> spawn_point_id = std::nullopt,
              LevelRequestReasonV1 reason = LevelRequestReasonV1::transition);
 
+  // Reloads the foundation and neutral entity/collectible content as one
+  // transaction. Persistent semantic item totals survive successful reloads.
+  void
+  load_level(RuntimeLevelFoundationV1 foundation,
+             RuntimeGameplayEntityContentV1 entity_gameplay,
+             std::optional<SpawnPointIdV1> spawn_point_id = std::nullopt,
+             LevelRequestReasonV1 reason = LevelRequestReasonV1::transition);
+
   // Samples may be submitted even when a frame emits no fixed tick; button
   // edges remain pending in GameInputStateV1 until exactly one tick consumes
   // them.
@@ -124,7 +180,15 @@ public:
 
   void set_checkpoint(PlayerCheckpointV1 checkpoint, bool reset_immediately);
 
-  [[nodiscard]] RuntimeGameplaySnapshotV1 snapshot() const noexcept;
+  // Restores canonical persistent totals without changing current collected
+  // entity state. Neutral content must be active.
+  void restore_item_totals(std::vector<EntityGameplayItemTotalV1> totals);
+
+  [[nodiscard]] RuntimeGameplaySnapshotV1 snapshot() const;
+  [[nodiscard]] std::uint64_t interpolation_numerator() const noexcept;
+  [[nodiscard]] std::uint64_t
+  item_total(std::string_view item_key) const noexcept;
+  [[nodiscard]] const EntityGameplayRuntimeV1 *entity_gameplay() const noexcept;
   [[nodiscard]] const RuntimeLevelFoundationV1 &foundation() const noexcept;
   [[nodiscard]] const RuntimeGameplayProfileV1 &profile() const noexcept;
   [[nodiscard]] const GameSessionV1 &session() const noexcept;
@@ -136,6 +200,11 @@ private:
   advance_frame_impl(std::uint64_t elapsed_nanoseconds,
                      const std::optional<GameInputSampleV1> &new_sample,
                      const RuntimeMovementMapperV1 &movement_mapper);
+  void
+  load_level_impl(RuntimeLevelFoundationV1 foundation,
+                  std::optional<RuntimeGameplayEntityContentV1> entity_gameplay,
+                  std::optional<SpawnPointIdV1> spawn_point_id,
+                  LevelRequestReasonV1 reason);
   void validate_tick_invariants() const;
 
   RuntimeLevelFoundationV1 foundation_;
@@ -145,6 +214,7 @@ private:
   PlayerSimulationV1 player_;
   GameInputStateV1 input_;
   FixedStepAccumulatorV1 fixed_step_;
+  std::optional<EntityGameplayRuntimeV1> entity_gameplay_;
 };
 
 } // namespace openrc::game

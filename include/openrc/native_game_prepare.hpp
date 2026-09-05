@@ -20,10 +20,10 @@ inline constexpr std::string_view kNativeGameCompilerIdV1 =
 // from the earlier collision/bootstrap/render-only compiler must be rebuilt.
 #ifdef OPENRC_VERSION
 inline constexpr std::string_view kNativeGameCompilerVersionV1 =
-    OPENRC_VERSION "-native-five-resource-v1";
+    OPENRC_VERSION "-native-six-resource-v1";
 #else
 inline constexpr std::string_view kNativeGameCompilerVersionV1 =
-    "0.1.0-dev-native-five-resource-v1";
+    "0.1.0-dev-native-six-resource-v1";
 #endif
 inline constexpr std::uint64_t kNativeGameLevelPackageMaxBytesV1 =
     UINT64_C(768) * 1024U * 1024U;

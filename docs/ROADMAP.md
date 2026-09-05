@@ -155,9 +155,15 @@ fidelity, but does not block movement on Veldin.
 - [x] expose CLI package-only and published-root headless movement smoke paths
 - [x] define canonical `RenderSceneV1` texture/material/mesh/instance data,
   bounded binary I/O, and a source-independent native D3D11 staging path
-- [x] compile and transactionally publish five neutral resources for all 19
+- [x] define canonical, bounded `GameplaySceneV1` overlap-collectible data with
+  semantic item keys, authored-entity references, binary I/O, package
+  attachment, and runtime package loading
+- [x] add a compiler-only RAC collectible adapter and reusable bind-pose actor
+  baking into static `RenderSceneV1` instances; class 13 uses high-confidence
+  community Bolt metadata while `amount = 1` remains an explicit OpenRC policy
+- [x] complete and verify six-resource transactional publication for all 19
   levels: collision, bootstrap, recovered textured render scene, actor library,
-  and entity scene
+  entity scene, and gameplay scene
 - [x] mount and render a PreparedGameV2 level in the graphical runtime without
   reopening the source ISO or boot ELF
 - [x] define canonical, bounded `ActorLibraryV1` and `EntitySceneV1` schemas
@@ -166,6 +172,11 @@ fidelity, but does not block movement on Veldin.
 - [x] load Ratchet's textured high-LOD bind model and rig through the generic
   actor-library path, resolve it through player/entity semantic bindings, and
   CPU-skin it at the simulated player transform
+- [x] implement deterministic authored-entity materialization, fixed-tick
+  capsule/sphere collection in canonical authored-ID order, collect-once events,
+  overflow-safe semantic `u64` item totals, transactional reload, and snapshots
+- [x] pass a fresh supported-image preparation/reuse smoke and a package-only
+  Veldin D3D smoke proving collectible visibility and inventory end to end
 - [ ] decode, package, select, and play Ratchet's animations through the
   generic actor pipeline
 - [x] connect Win32 keyboard input and a deterministic third-person camera to
@@ -177,13 +188,14 @@ fidelity, but does not block movement on Veldin.
   installation independently of the ISO
 - [ ] reconstruct basic interactions, one weapon, and one enemy type
 - [ ] load and save isolated test state
-- [ ] make package-only gameplay smoke on Veldin and at least one second planet
+- [x] make package-only gameplay smoke on Veldin and at least one second planet
   a checked regression using the same published-package code path
 
-The five-resource package and moving Ratchet bind pose are infrastructure
-milestones, not a declaration that Veldin is finished. Animation playback,
-interactive entities, one weapon/enemy loop, original camera behavior, menus,
-and full scene-family coverage remain open.
+The six-resource package and first neutral collectible path are verified on
+fresh prepared data, but that milestone is not a declaration that Veldin is
+finished. Animation playback, original pickup presentation, broader interactive
+entities, one weapon/enemy loop, original camera behavior, menus, and full
+scene-family coverage remain open.
 
 ## Stage 4 — Game-complete runtime
 
