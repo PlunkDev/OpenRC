@@ -200,6 +200,44 @@ void test_inverse_transpose_normal_and_canonical_zero() {
          "posed normal retained negative zero");
 }
 
+void test_position_only_skinning_preserves_singular_animation_scale() {
+  auto palette = openrc::build_actor_bind_pose_palette_v1(rig(), kLimits);
+  palette.global_joint_transforms[1U].values[10U] = 0.0F;
+  palette.skin_transforms[1U].values[10U] = 0.0F;
+
+  auto source = mesh();
+  source.vertices.resize(1U);
+  source.vertices[0U].x = 1.0F;
+  source.vertices[0U].y = 2.0F;
+  source.vertices[0U].z = 3.0F;
+  source.vertices[0U].skin.influence_count = 1U;
+  source.vertices[0U].skin.joint_indices = {1U, 0U, 0U};
+  source.vertices[0U].skin.weight_numerators = {255U, 0U, 0U};
+  source.vertices[0U].skin.weight_sum = 255U;
+
+  openrc::ActorAffineTransformV1 world;
+  world.values[3U] = 4.0F;
+  world.values[7U] = -2.0F;
+  world.values[11U] = 8.0F;
+  const auto posed =
+      openrc::pose_actor_mesh_positions_v1(source, palette, world, kLimits);
+  expect(posed.size() == 1U,
+         "position-only skinning lost a singularly posed vertex");
+  expect_near(posed[0U].x, 5.0F,
+              "position-only singular skinning produced the wrong X");
+  expect_near(posed[0U].y, 0.0F,
+              "position-only singular skinning produced the wrong Y");
+  expect_near(posed[0U].z, 8.0F,
+              "position-only singular skinning did not flatten Z");
+
+  expect_pose_error(
+      [&] {
+        (void)openrc::pose_actor_mesh_vertices_v1(source, palette, world,
+                                                  kLimits);
+      },
+      "full vertex skinning guessed a normal policy for a singular pose");
+}
+
 void test_fail_closed_validation() {
   auto invalid_limits = kLimits;
   invalid_limits.minimum_normal_length = 0.0;
@@ -293,6 +331,7 @@ int main() {
     test_bind_palette_is_identity();
     test_exact_blend_and_world_transform();
     test_inverse_transpose_normal_and_canonical_zero();
+    test_position_only_skinning_preserves_singular_animation_scale();
     test_fail_closed_validation();
     std::cout << "Actor pose tests passed\n";
     return 0;

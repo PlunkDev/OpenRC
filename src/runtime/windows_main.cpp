@@ -4,6 +4,7 @@
 #include "openrc/runtime_gameplay.hpp"
 #include "openrc/runtime_level_content.hpp"
 #include "openrc/runtime_player_actor.hpp"
+#include "openrc/runtime_player_animation.hpp"
 #include "openrc/third_person_camera.hpp"
 
 #ifndef NOMINMAX
@@ -76,6 +77,8 @@ struct GameplaySmokeTargetV1 {
 struct WindowState {
     std::unique_ptr<openrc::runtime::D3d11Renderer> renderer;
     std::unique_ptr<openrc::game::RuntimeGameplaySessionV1> gameplay;
+    std::unique_ptr<openrc::game::RuntimePlayerAnimationV1>
+        gameplay_animation;
     std::optional<openrc::game::ThirdPersonCameraV1> gameplay_camera;
     GameplayKeyboardState gameplay_keyboard;
     std::uint32_t gameplay_pending_pressed_buttons = 0U;
@@ -133,6 +136,52 @@ make_runtime_prepared_game_limits() {
 [[nodiscard]] constexpr openrc::game::RuntimeLevelContentLimitsV1
 make_runtime_level_content_limits() {
     return openrc::game::make_runtime_level_content_limits_v1();
+}
+
+[[nodiscard]] openrc::game::RuntimePlayerAnimationProfileV1
+make_runtime_player_animation_profile() {
+    return openrc::game::RuntimePlayerAnimationProfileV1{
+        "actors/ratchet/idle",
+        "actors/ratchet/walk",
+        "actors/ratchet/run",
+        0.25,
+        2.0,
+        60U,
+    };
+}
+
+[[nodiscard]] constexpr openrc::ActorAnimationPlaybackLimitsV1
+make_runtime_player_animation_playback_limits() {
+    return openrc::ActorAnimationPlaybackLimitsV1{
+        8U,
+        8U,
+        openrc::game::kRuntimePlayerActorMaximumJointsV1,
+        1.0e-8,
+        1'000'000.0F,
+    };
+}
+
+[[nodiscard]] bool has_complete_runtime_player_animation(
+    const openrc::ActorAnimationBankV1& bank,
+    const openrc::game::RuntimePlayerAnimationProfileV1& profile) {
+    const auto has_idle = openrc::find_actor_animation_clip_v1(
+                              bank, profile.idle_clip_key) != nullptr;
+    const auto has_walk = openrc::find_actor_animation_clip_v1(
+                              bank, profile.walk_clip_key) != nullptr;
+    const auto has_run = openrc::find_actor_animation_clip_v1(
+                             bank, profile.run_clip_key) != nullptr;
+    const auto present_count = static_cast<unsigned>(has_idle) +
+                               static_cast<unsigned>(has_walk) +
+                               static_cast<unsigned>(has_run);
+    if (present_count == 0U) {
+        return false;
+    }
+    if (present_count != 3U) {
+        throw std::runtime_error(
+            "The runtime player animation bank contains an incomplete "
+            "locomotion set; idle, walk, and run must be provided together");
+    }
+    return true;
 }
 
 [[nodiscard]] std::wstring utf8_to_wide(const std::string_view value) {
@@ -808,6 +857,13 @@ void advance_gameplay_frame(
     state.gameplay_camera = std::move(next_camera);
     const auto previous_collected_count = state.gameplay_collected_count;
     const auto previous_destroyed_count = state.gameplay_destroyed_count;
+    if (state.gameplay_animation && !frame.ticks.empty()) {
+        for (const auto& tick : frame.ticks) {
+            state.gameplay_animation->fixed_update(tick.player_snapshot);
+        }
+        state.renderer->set_gameplay_actor_pose(
+            state.gameplay_animation->palette());
+    }
     update_gameplay_player_presentation(state, frame.snapshot.player);
     apply_gameplay_events(state, frame.ticks);
     if (state.gameplay_collected_count != previous_collected_count ||
@@ -1051,13 +1107,30 @@ int WINAPI wWinMain(
             if (player_actor) {
                 state.gameplay_actor = true;
                 const auto& library = *level_content.actor_library;
+                const auto& player_rig =
+                    library.rigs[player_actor->actor_rig_index];
                 state.renderer =
                     std::make_unique<openrc::runtime::D3d11Renderer>(
                         window,
                         level_content.render_scene,
-                        library.rigs[player_actor->actor_rig_index].rig,
+                        player_rig.rig,
                         library.models[player_actor->actor_model_index],
                         player_actor->model_to_entity);
+                const auto animation_profile =
+                    make_runtime_player_animation_profile();
+                if (level_content.actor_animation_bank &&
+                    has_complete_runtime_player_animation(
+                        *level_content.actor_animation_bank,
+                        animation_profile)) {
+                    state.gameplay_animation = std::make_unique<
+                        openrc::game::RuntimePlayerAnimationV1>(
+                            *level_content.actor_animation_bank,
+                            player_rig,
+                            animation_profile,
+                            make_runtime_player_animation_playback_limits());
+                    state.renderer->set_gameplay_actor_pose(
+                        state.gameplay_animation->palette());
+                }
             } else {
                 state.renderer =
                     std::make_unique<openrc::runtime::D3d11Renderer>(

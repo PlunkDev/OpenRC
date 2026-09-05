@@ -518,9 +518,9 @@ RuntimeGameplayFrameAdvanceV1 RuntimeGameplaySessionV1::advance_frame_impl(
       }
     }
     next_session.commit_simulation_tick(command);
-    result.ticks.push_back(RuntimeGameplayTickV1{command, player_step,
-                                                 std::move(combat_step),
-                                                 std::move(gameplay_events)});
+    result.ticks.push_back(RuntimeGameplayTickV1{
+        command, player_step, next_player.snapshot(), std::move(combat_step),
+        std::move(gameplay_events)});
   }
 
   if (next_entity_gameplay) {

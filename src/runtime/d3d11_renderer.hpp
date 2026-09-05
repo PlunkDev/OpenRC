@@ -14,6 +14,7 @@
 namespace openrc {
 struct ActorAffineTransformV1;
 struct ActorModelV1;
+struct ActorPosePaletteV1;
 struct ActorRigV1;
 struct CollisionVectorV1;
 struct RenderSceneV1;
@@ -61,6 +62,12 @@ public:
         double facing_yaw_radians,
         double capsule_radius,
         double capsule_height);
+
+    // Replaces the prepared actor's current joint palette independently from
+    // its entity transform. This keeps animation advancing even when the
+    // player remains stationary.
+    void set_gameplay_actor_pose(
+        const openrc::ActorPosePaletteV1& pose);
 
     // EntityRenderBindingV1 visibility is updated independently from static
     // scene allocation. IDs address the neutral RenderSceneV1 instance table.

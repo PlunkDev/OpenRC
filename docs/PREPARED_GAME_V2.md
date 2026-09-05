@@ -157,11 +157,12 @@ one `mod_resource` provenance record.
 
 ## Current native-game resource profile
 
-The current all-level asset compiler emits exactly seven
+The current all-level asset compiler emits exactly eight
 upsert resources in every base `LevelPackageV1`:
 
 | Resource ID | Type ID | Schema | Runtime role |
 | --- | --- | ---: | --- |
+| `actors/animations` | `openrc.actor-animation-bank` | 1 | semantic joint-animation clips bound to exact rig content |
 | `actors/library` | `openrc.actor-library` | 1 | semantic rigs and render-ready skinned actor models |
 | `world/bootstrap` | `openrc.level-bootstrap` | 1 | authored spawn points and absolute death plane |
 | `world/collision` | `openrc.collision-world` | 1 | exact-Q6 native collision geometry and search grid |
@@ -178,22 +179,24 @@ versioned resource types and explicit overlays.
 The runtime compatibility loader requires bootstrap, collision, and render
 scene. It accepts both actor library and entity scene as one feature pair so
 older three-resource development packages remain readable; a package exposing
-only one half is rejected. Gameplay and destructible scenes are optional
-compatibility extensions for older or independently authored packages, but
-each requires entity scene whenever present. The combined loader
-cross-validates the level ID, every semantic entity-to-model-to-rig
-relationship, and every collectible or destructible reference to an entity
-definition with an authored transform before gameplay receives the content.
-New native-game publications require all seven resources. Their compiler ID
-and profile version differ from the earlier six-resource cache, so exact
-current-profile validation rejects old data rather than silently mounting a
-mixture. Fresh preparation, exact validation of all 19 supported levels, and a
-second reuse pass now verify the seven-resource profile on the reference input;
-package-only and graphical Veldin destruction smokes pass against that same
-publication.
+only one half is rejected. Actor animations, gameplay, and destructible scenes
+are optional compatibility extensions for older or independently authored
+packages. An animation bank requires an actor library and every clip must match
+an exact semantic rig key, canonical rig-content digest, and joint count;
+gameplay and destructible scenes each require entity scene whenever present.
+The combined loader also cross-validates the level ID, every semantic
+entity-to-model-to-rig relationship, and every collectible or destructible
+reference to an entity definition with an authored transform before gameplay
+receives the content. New native-game publications require all eight resources.
+Their compiler ID and profile version differ from the earlier seven-resource
+cache, so exact current-profile validation rejects old data rather than
+silently mounting a mixture. Fresh preparation, exact validation of all 19
+supported levels, and a second reuse pass now verify the eight-resource profile
+on the reference input; package-only and graphical Veldin destruction smokes
+pass against that same publication.
 
 RAC class IDs, WAD and ELF offsets, VIF/VU/GIF/GS commands, and PS2 texture
-layouts are compiler-only inputs. They are not fields in these seven runtime
+layouts are compiler-only inputs. They are not fields in these eight runtime
 resources. Cross-resource references use semantic keys, while dense numeric IDs
 remain local to a canonical resource table. This lets later planets and mod
 overlays reuse or replace actor, entity, and gameplay data without embedding
@@ -201,6 +204,26 @@ source-format dispatch in the native runtime. See
 [ActorLibraryV1](ACTOR_LIBRARY_V1.md), [EntitySceneV1](ENTITY_SCENE_V1.md),
 [GameplaySceneV1](GAMEPLAY_SCENE_V1.md), and
 [DestructibleSceneV1](DESTRUCTIBLE_SCENE_V1.md) for those public contracts.
+
+### Current player-animation adapter policy
+
+The compiler preserves the full source sequence table for diagnostics but
+publishes only mappings with clean-room-confirmed locomotion semantics. The V1
+native profile emits three looping clips under `actors/animations`: idle uses
+source slot 0, walk uses slot 3, and run uses slot 4. Runtime code sees only the
+semantic keys `actors/ratchet/idle`, `actors/ratchet/walk`, and
+`actors/ratchet/run`; source offsets, packed records, and slot numbers do not
+cross the compiler boundary.
+
+Each clip records the exact `actors/ratchet/rig` content digest, 111 poses per
+frame, and its integer 50 Hz PAL source cadence. Playback advances those source
+updates on the 60 Hz fixed gameplay clock with an integer accumulator, samples
+shortest-hemisphere quaternion interpolation, and composes hierarchy plus
+inverse bind. Authored zero scales remain finite singular palettes and are
+rendered through the position-only skinning path; no epsilon repair or invented
+normal transform is serialized. Airborne gameplay holds the last grounded pose
+until jump/fall/landing mappings are proven. The wrench action likewise does
+not select an unverified clip.
 
 ### Current collectible adapter policy
 
@@ -232,7 +255,7 @@ dispatch.
 The generic compatibility loader may still mount an older package with no
 destructible scene. That compatibility is not permission to reuse it as a
 current native-game installation: the Launcher validates the exact
-seven-resource profile and rejects stale compiler/profile identities before
+eight-resource profile and rejects stale compiler/profile identities before
 Play. The next Prepare operation rebuilds the same local cache from the
 selected supported disc; it does not install or launch a second client.
 

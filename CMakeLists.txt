@@ -19,6 +19,9 @@ option(
 set(OPENRC_PUBLIC_EXECUTABLE_TARGETS)
 
 add_library(openrc_core STATIC
+    src/core/actor_animation.cpp
+    src/core/actor_animation_io.cpp
+    src/core/actor_animation_player.cpp
     src/core/actor_library.cpp
     src/core/actor_library_io.cpp
     src/core/actor_pose.cpp
@@ -47,6 +50,7 @@ add_library(openrc_core STATIC
     src/core/hash.cpp
     src/core/iso9660.cpp
     src/core/launcher_plan.cpp
+    src/core/level_actor_animation_compile.cpp
     src/core/level_actor_library_compile.cpp
     src/core/level_destructible_scene_compile.cpp
     src/core/level_entity_scene_compile.cpp
@@ -80,6 +84,9 @@ add_library(openrc_core STATIC
     src/core/rac_moby_bind_pose.cpp
     src/core/rac_moby_model_geometry.cpp
     src/core/rac_moby_packet_geometry.cpp
+    src/core/rac_ratchet_animation_compile.cpp
+    src/core/rac_ratchet_pose.cpp
+    src/core/rac_ratchet_sequence.cpp
     src/core/rac_tie_class.cpp
     src/core/render_scene.cpp
     src/core/render_scene_io.cpp
@@ -89,9 +96,11 @@ add_library(openrc_core STATIC
     src/core/runtime_gameplay_scene.cpp
     src/core/runtime_gameplay_scene_resource.cpp
     src/core/runtime_destructible_scene_resource.cpp
+    src/core/runtime_actor_animation.cpp
     src/core/runtime_actor_library.cpp
     src/core/runtime_entity_scene.cpp
     src/core/runtime_player_actor.cpp
+    src/core/runtime_player_animation.cpp
     src/core/runtime_render_scene.cpp
     src/core/scene_animation_bank.cpp
     src/core/scene_block_directory.cpp
@@ -874,6 +883,174 @@ if(OPENRC_BUILD_TESTS)
     endif()
 
     add_executable(
+        openrc-actor-animation-tests
+        tests/actor_animation_tests.cpp
+    )
+    target_link_libraries(
+        openrc-actor-animation-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-actor-animation-tests
+        PRIVATE
+        cxx_std_20
+    )
+    if(MSVC)
+        target_compile_options(
+            openrc-actor-animation-tests
+            PRIVATE
+            /W4 /permissive- /utf-8
+        )
+    else()
+        target_compile_options(
+            openrc-actor-animation-tests
+            PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+    endif()
+
+    add_executable(
+        openrc-actor-animation-player-tests
+        tests/actor_animation_player_tests.cpp
+    )
+    target_link_libraries(
+        openrc-actor-animation-player-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-actor-animation-player-tests
+        PRIVATE
+        cxx_std_20
+    )
+    if(MSVC)
+        target_compile_options(
+            openrc-actor-animation-player-tests
+            PRIVATE
+            /W4 /permissive- /utf-8
+        )
+    else()
+        target_compile_options(
+            openrc-actor-animation-player-tests
+            PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+    endif()
+
+    add_executable(
+        openrc-level-actor-animation-compile-tests
+        tests/level_actor_animation_compile_tests.cpp
+    )
+    target_link_libraries(
+        openrc-level-actor-animation-compile-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-level-actor-animation-compile-tests
+        PRIVATE
+        cxx_std_20
+    )
+    if(MSVC)
+        target_compile_options(
+            openrc-level-actor-animation-compile-tests
+            PRIVATE
+            /W4 /permissive- /utf-8
+        )
+    else()
+        target_compile_options(
+            openrc-level-actor-animation-compile-tests
+            PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+    endif()
+
+    add_executable(
+        openrc-runtime-actor-animation-tests
+        tests/runtime_actor_animation_tests.cpp
+    )
+    target_link_libraries(
+        openrc-runtime-actor-animation-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-runtime-actor-animation-tests
+        PRIVATE
+        cxx_std_20
+    )
+    if(MSVC)
+        target_compile_options(
+            openrc-runtime-actor-animation-tests
+            PRIVATE
+            /W4 /permissive- /utf-8
+        )
+    else()
+        target_compile_options(
+            openrc-runtime-actor-animation-tests
+            PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+    endif()
+
+    add_executable(
+        openrc-rac-ratchet-animation-compile-tests
+        tests/rac_ratchet_animation_compile_tests.cpp
+    )
+    target_link_libraries(
+        openrc-rac-ratchet-animation-compile-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-rac-ratchet-animation-compile-tests
+        PRIVATE
+        cxx_std_20
+    )
+    if(MSVC)
+        target_compile_options(
+            openrc-rac-ratchet-animation-compile-tests
+            PRIVATE
+            /W4 /permissive- /utf-8
+        )
+    else()
+        target_compile_options(
+            openrc-rac-ratchet-animation-compile-tests
+            PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+    endif()
+
+    add_executable(
+        openrc-runtime-player-animation-tests
+        tests/runtime_player_animation_tests.cpp
+    )
+    target_link_libraries(
+        openrc-runtime-player-animation-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-runtime-player-animation-tests
+        PRIVATE
+        cxx_std_20
+    )
+    if(MSVC)
+        target_compile_options(
+            openrc-runtime-player-animation-tests
+            PRIVATE
+            /W4 /permissive- /utf-8
+        )
+    else()
+        target_compile_options(
+            openrc-runtime-player-animation-tests
+            PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+    endif()
+
+    add_executable(
         openrc-actor-pose-tests
         tests/actor_pose_tests.cpp
     )
@@ -1226,6 +1403,36 @@ if(OPENRC_BUILD_TESTS)
     )
 
     add_executable(
+        openrc-rac-ratchet-sequence-tests
+        tests/rac_ratchet_sequence_tests.cpp
+    )
+    target_link_libraries(
+        openrc-rac-ratchet-sequence-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-rac-ratchet-sequence-tests
+        PRIVATE
+        cxx_std_20
+    )
+
+    add_executable(
+        openrc-rac-ratchet-pose-tests
+        tests/rac_ratchet_pose_tests.cpp
+    )
+    target_link_libraries(
+        openrc-rac-ratchet-pose-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-rac-ratchet-pose-tests
+        PRIVATE
+        cxx_std_20
+    )
+
+    add_executable(
         openrc-rac-moby-packet-geometry-tests
         tests/rac_moby_packet_geometry_tests.cpp
     )
@@ -1494,6 +1701,8 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-rac-level-core-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-level-moby-texture-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-moby-class-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-rac-ratchet-pose-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-rac-ratchet-sequence-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-moby-model-geometry-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-moby-packet-geometry-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-tie-class-tests PRIVATE /W4 /permissive- /utf-8)
@@ -1546,6 +1755,8 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-rac-level-core-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-level-moby-texture-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-moby-class-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-rac-ratchet-pose-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-rac-ratchet-sequence-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-moby-model-geometry-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-moby-packet-geometry-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-tie-class-tests PRIVATE -Wall -Wextra -Wpedantic)
@@ -1622,6 +1833,12 @@ if(OPENRC_BUILD_TESTS)
     add_test(NAME entity-scene COMMAND openrc-entity-scene-tests)
     add_test(NAME gameplay-scene COMMAND openrc-gameplay-scene-tests)
     add_test(NAME actor-library COMMAND openrc-actor-library-tests)
+    add_test(NAME actor-animation COMMAND openrc-actor-animation-tests)
+    add_test(NAME actor-animation-player COMMAND openrc-actor-animation-player-tests)
+    add_test(NAME level-actor-animation-compile COMMAND openrc-level-actor-animation-compile-tests)
+    add_test(NAME runtime-actor-animation COMMAND openrc-runtime-actor-animation-tests)
+    add_test(NAME rac-ratchet-animation-compile COMMAND openrc-rac-ratchet-animation-compile-tests)
+    add_test(NAME runtime-player-animation COMMAND openrc-runtime-player-animation-tests)
     add_test(NAME actor-pose COMMAND openrc-actor-pose-tests)
     add_test(NAME actor-render-bake COMMAND openrc-actor-render-bake-tests)
     add_test(NAME rac-actor-library-compile COMMAND openrc-rac-actor-library-compile-tests)
@@ -1637,6 +1854,8 @@ if(OPENRC_BUILD_TESTS)
     add_test(NAME rac-level-core COMMAND openrc-rac-level-core-tests)
     add_test(NAME rac-level-moby-texture COMMAND openrc-rac-level-moby-texture-tests)
     add_test(NAME rac-moby-class COMMAND openrc-rac-moby-class-tests)
+    add_test(NAME rac-ratchet-pose COMMAND openrc-rac-ratchet-pose-tests)
+    add_test(NAME rac-ratchet-sequence COMMAND openrc-rac-ratchet-sequence-tests)
     add_test(NAME rac-moby-model-geometry COMMAND openrc-rac-moby-model-geometry-tests)
     add_test(NAME rac-moby-packet-geometry COMMAND openrc-rac-moby-packet-geometry-tests)
     add_test(NAME rac-tie-class COMMAND openrc-rac-tie-class-tests)

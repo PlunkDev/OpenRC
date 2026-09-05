@@ -348,4 +348,60 @@ std::vector<ActorPosedVertexV1> pose_actor_mesh_vertices_v1(
   return result;
 }
 
+std::vector<ActorPosedPositionV1> pose_actor_mesh_positions_v1(
+    const ActorSkinnedMeshV1 &mesh, const ActorPosePaletteV1 &palette,
+    const ActorAffineTransformV1 &model_to_world,
+    const ActorPoseLimitsV1 limits) {
+  validate_limits(limits);
+  if (mesh.vertices.size() > limits.max_vertices) {
+    fail("Actor mesh exceeds the pose vertex limit");
+  }
+  if (palette.global_joint_transforms.empty() ||
+      palette.global_joint_transforms.size() !=
+          palette.skin_transforms.size() ||
+      palette.skin_transforms.size() > limits.max_joints) {
+    fail("Actor skin palette has an invalid joint domain");
+  }
+  for (const auto &transform : palette.global_joint_transforms) {
+    validate_transform(transform, "Actor global-palette transform");
+  }
+  for (const auto &transform : palette.skin_transforms) {
+    validate_transform(transform, "Actor skin-palette transform");
+  }
+  require_invertible(model_to_world, limits, "Actor model-to-world transform");
+
+  std::vector<ActorPosedPositionV1> result;
+  result.reserve(mesh.vertices.size());
+  for (const auto &vertex : mesh.vertices) {
+    const std::array<double, 3U> source_position{
+        vertex.x, vertex.y, vertex.z};
+    for (const auto value : source_position) {
+      static_cast<void>(finite_value(value, "source position"));
+    }
+    validate_binding(vertex.skin, palette.skin_transforms.size());
+
+    std::array<double, 3U> skinned_position{};
+    for (std::size_t influence = 0U;
+         influence < vertex.skin.influence_count; ++influence) {
+      const auto joint = vertex.skin.joint_indices[influence];
+      const auto weight =
+          static_cast<double>(vertex.skin.weight_numerators[influence]) /
+          static_cast<double>(vertex.skin.weight_sum);
+      const auto position = transform_position(
+          palette.skin_transforms[joint], source_position);
+      for (std::size_t axis = 0U; axis < 3U; ++axis) {
+        skinned_position[axis] += weight * position[axis];
+      }
+    }
+
+    const auto world_position =
+        transform_position(model_to_world, skinned_position);
+    result.push_back(ActorPosedPositionV1{
+        canonical_float(world_position[0U], "world X"),
+        canonical_float(world_position[1U], "world Y"),
+        canonical_float(world_position[2U], "world Z")});
+  }
+  return result;
+}
+
 } // namespace openrc

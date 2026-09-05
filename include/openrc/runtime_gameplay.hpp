@@ -116,6 +116,10 @@ using RuntimeMovementMapperV1 = std::function<RuntimeMovementAxesV1(
 struct RuntimeGameplayTickV1 {
   GameInputCommandV1 input;
   PlayerSimulationStepV1 player;
+  // Post-tick state for deterministic presentation systems. Keeping it per
+  // tick prevents catch-up frames from losing a landing, reset, or locomotion
+  // transition that occurred before the final frame snapshot.
+  PlayerSimulationSnapshotV1 player_snapshot;
   PlayerCombatStepV1 combat;
   // Canonical authored-ID order, produced after this tick's player movement.
   std::vector<EntityGameplayEventV1> gameplay_events;

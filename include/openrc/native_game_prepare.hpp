@@ -17,13 +17,13 @@ inline constexpr std::string_view kNativeGameBuildIdV1 = "SCES-50916-PAL-v2.00";
 inline constexpr std::string_view kNativeGameCompilerIdV1 =
     "openrc-asset-compiler";
 // The profile suffix is intentionally part of publication identity: packages
-// without the neutral destructible resource must be rebuilt.
+// without the neutral actor-animation resource must be rebuilt.
 #ifdef OPENRC_VERSION
 inline constexpr std::string_view kNativeGameCompilerVersionV1 =
-    OPENRC_VERSION "-native-seven-resource-v1";
+    OPENRC_VERSION "-native-eight-resource-v1";
 #else
 inline constexpr std::string_view kNativeGameCompilerVersionV1 =
-    "0.1.0-dev-native-seven-resource-v1";
+    "0.1.0-dev-native-eight-resource-v1";
 #endif
 inline constexpr std::uint64_t kNativeGameLevelPackageMaxBytesV1 =
     UINT64_C(768) * 1024U * 1024U;
@@ -64,6 +64,7 @@ enum class NativeGamePreparationPhaseV1 : std::uint32_t {
   reusing_existing_publication = 12U,
   compiling_player_actor = 13U,
   compiling_entity_scene = 14U,
+  compiling_player_animation = 15U,
 };
 
 struct NativeGamePreparationProgressV1 {
@@ -115,7 +116,7 @@ public:
 // Verifies that an already loaded publication is the exact current native
 // OpenRC profile, not merely a generically mountable PreparedGameV2 tree. The
 // check is read-only and covers manifest/compiler identity, the canonical
-// 19-level set, the complete seven-resource/provenance contract, and a neutral
+// 19-level set, the complete eight-resource/provenance contract, and a neutral
 // runtime mount of every level. Older generated data therefore routes back to
 // preparation instead of silently starting with missing gameplay features.
 void validate_current_native_game_publication_v1(

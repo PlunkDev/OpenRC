@@ -274,8 +274,15 @@ run_partition(const std::vector<std::uint64_t> &frame_times) {
                frame.ticks.size() == frame.fixed_step.step_count,
            "a frame returned the wrong replay tick range");
     for (std::size_t index = 0U; index < frame.ticks.size(); ++index) {
-      expect(frame.ticks[index].input.tick_index == expected_tick + index,
-             "per-tick gameplay output is not in replay order");
+      expect(frame.ticks[index].input.tick_index == expected_tick + index &&
+                 frame.ticks[index].player_snapshot.next_tick_index ==
+                     expected_tick + index + 1U,
+             "per-tick gameplay output or player snapshot is not in replay "
+             "order");
+    }
+    if (!frame.ticks.empty()) {
+      expect(frame.ticks.back().player_snapshot == frame.snapshot.player,
+             "the final per-tick player snapshot disagrees with the frame");
     }
     expected_tick += frame.fixed_step.step_count;
     assert_tick_invariants(frame.snapshot, expected_tick);

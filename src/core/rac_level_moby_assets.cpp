@@ -258,7 +258,7 @@ RacLevelMobyAssetsV1 load_rac_level_moby_assets_v1(
       primary_span, asset_subrange, "The RAC1 level-core asset WadV1");
   const auto decoded_assets =
       decode_wad_bytes(encoded_assets, limits.max_decoded_wad_bytes);
-  const auto core = parse_rac_level_core_index_v1(
+  auto core = parse_rac_level_core_index_v1(
       index_bytes, encoded_assets, decoded_assets.bytes, limits.level_core);
   if (core.collision_asset_range.size == 0U) {
     fail("The RAC1 level-core collision asset is absent");
@@ -510,6 +510,8 @@ RacLevelMobyAssetsV1 load_rac_level_moby_assets_v1(
   result.external_model_count = core.moby_classes.size() -
                                 result.local_model_count -
                                 result.shared_model_count;
+  result.level_core_source_bytes = std::move(decoded_assets.bytes);
+  result.level_core = std::move(core);
   result.gameplay = std::move(gameplay);
   return result;
 }

@@ -31,6 +31,7 @@
 #include "openrc/rac_moby_class.hpp"
 #include "openrc/rac_moby_model_geometry.hpp"
 #include "openrc/rac_moby_packet_geometry.hpp"
+#include "openrc/rac_ratchet_sequence.hpp"
 #include "openrc/runtime_gameplay.hpp"
 #include "openrc/runtime_level_content.hpp"
 #include "openrc/runtime_level_foundation.hpp"
@@ -484,6 +485,10 @@ void require_publication_root_outside_source(
         case openrc::NativeGamePreparationPhaseV1::compiling_player_actor:
             std::cout << level_prefix()
                       << "compiling the reusable player actor...\n";
+            break;
+        case openrc::NativeGamePreparationPhaseV1::compiling_player_animation:
+            std::cout << level_prefix()
+                      << "compiling the player locomotion animations...\n";
             break;
         case openrc::NativeGamePreparationPhaseV1::compiling_entity_scene:
             std::cout << level_prefix()
@@ -5383,6 +5388,11 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                         ? content.actor_library->models.size()
                         : 0U)
                 << '\n'
+                << "Actor animation clips:  "
+                << (content.actor_animation_bank
+                        ? content.actor_animation_bank->clips.size()
+                        : 0U)
+                << '\n'
                 << "Entities/render bindings: "
                 << entity_gameplay_smoke.entity_definition_count << '/'
                 << entity_gameplay_smoke.entity_render_binding_count << '\n'
@@ -5939,6 +5949,7 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 std::uint8_t low_packets = 0U;
                 std::uint8_t metal_packets = 0U;
                 std::uint8_t joints = 0U;
+                std::uint8_t sequences = 0U;
                 std::uint64_t decoded_regular_packets = 0U;
                 std::uint64_t diagnostic_source_vertices = 0U;
                 std::uint64_t transfer_vertices = 0U;
@@ -6006,7 +6017,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                     model.high_lod_packet_count,
                     model.low_lod_packet_count,
                     model.metal_packet_count,
-                    model.joint_count};
+                    model.joint_count,
+                    model.sequence_count};
                 const auto description =
                     "Local Moby class " + std::to_string(entry.class_id);
                 add_geometry_summary(
@@ -6049,7 +6061,8 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                     model.high_lod_packet_count,
                     model.low_lod_packet_count,
                     model.metal_packet_count,
-                    model.joint_count};
+                    model.joint_count,
+                    model.sequence_count};
                 const auto description =
                     "Shared gadget Moby class " +
                     std::to_string(entry.class_id);
@@ -6082,6 +6095,49 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 instance_counts.begin(),
                 instance_counts.end(),
                 [](const std::uint32_t count) { return count != 0U; }));
+            const auto present_ratchet_sequence_slots =
+                static_cast<std::size_t>(std::count_if(
+                    core.ratchet_sequence_offsets.begin(),
+                    core.ratchet_sequence_offsets.end(),
+                    [](const std::uint32_t offset) { return offset != 0U; }));
+            std::uint64_t ratchet_sequence_bytes = 0U;
+            for (const auto& sequence : core.ratchet_sequences) {
+                if (sequence.asset_range.size >
+                    std::numeric_limits<std::uint64_t>::max() -
+                        ratchet_sequence_bytes) {
+                    throw std::runtime_error(
+                        "Ratchet sequence byte total overflows uint64_t");
+                }
+                ratchet_sequence_bytes += sequence.asset_range.size;
+            }
+            std::vector<openrc::RacRatchetSequenceV1>
+                parsed_ratchet_sequences;
+            parsed_ratchet_sequences.reserve(core.ratchet_sequences.size());
+            std::uint64_t ratchet_animation_frames = 0U;
+            std::uint64_t ratchet_animation_triggers = 0U;
+            for (const auto& sequence : core.ratchet_sequences) {
+                try {
+                    parsed_ratchet_sequences.push_back(
+                        openrc::parse_rac_ratchet_sequence_v1(
+                            decoded_assets.bytes,
+                            openrc::RacRatchetSequenceRangeV1{
+                                sequence.asset_range.offset,
+                                sequence.asset_range.size},
+                            openrc::RacRatchetSequenceLimitsV1{
+                                kMaximumCliDecodedWadBytes,
+                                kMaximumCliDecodedWadBytes,
+                                255U,
+                                255U}));
+                } catch (const openrc::RacRatchetSequenceError& error) {
+                    throw std::runtime_error(
+                        "Ratchet sequence at " +
+                        hexadecimal(sequence.asset_offset, 8) +
+                        " failed structural validation: " + error.what());
+                }
+                const auto& parsed = parsed_ratchet_sequences.back();
+                ratchet_animation_frames += parsed.frames.size();
+                ratchet_animation_triggers += parsed.trigger_words.size();
+            }
             std::uint64_t decoded_regular_packets = 0U;
             std::uint64_t diagnostic_source_vertices = 0U;
             std::uint64_t transfer_vertices = 0U;
@@ -6138,6 +6194,17 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 << '\n'
                 << "Classes placed:        " << used_classes << '\n'
                 << "Gameplay class link:   exact count and order\n\n"
+                << "Ratchet sequence slots: "
+                << present_ratchet_sequence_slots << '/'
+                << openrc::kRacLevelCoreRatchetSequenceCountV1 << '\n'
+                << "Unique sequence assets: " << core.ratchet_sequences.size()
+                << " (" << ratchet_sequence_bytes << " bounded bytes)\n"
+                << "Validated sequences:   "
+                << parsed_ratchet_sequences.size() << " regular V1\n"
+                << "Animation frames:      " << ratchet_animation_frames
+                << '\n'
+                << "Animation triggers:    " << ratchet_animation_triggers
+                << "\n\n"
                 << "Regular mesh packets:  " << decoded_regular_packets
                 << '\n'
                 << "Source vertices:       " << diagnostic_source_vertices
@@ -6165,12 +6232,48 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                     << static_cast<std::uint32_t>(model.metal_packets)
                     << ", joints "
                     << static_cast<std::uint32_t>(model.joints)
+                    << ", sequences "
+                    << static_cast<std::uint32_t>(model.sequences)
                     << ", textures "
                     << static_cast<std::uint32_t>(
                            class_entry->used_texture_slot_count)
                     << ", triangles " << model.diagnostic_triangles
                     << ", placements " << instance_counts[class_index]
                     << '\n';
+            }
+            std::cout << "\nRatchet sequence slots:\n";
+            for (std::size_t slot = 0U;
+                 slot < core.ratchet_sequence_offsets.size(); ++slot) {
+                const auto offset = core.ratchet_sequence_offsets[slot];
+                if (offset == 0U) {
+                    continue;
+                }
+                const auto sequence = std::lower_bound(
+                    core.ratchet_sequences.begin(),
+                    core.ratchet_sequences.end(),
+                    offset,
+                    [](const openrc::RacLevelCoreRatchetSequenceV1& candidate,
+                       const std::uint32_t value) {
+                        return candidate.asset_offset < value;
+                    });
+                if (sequence == core.ratchet_sequences.end() ||
+                    sequence->asset_offset != offset) {
+                    throw std::runtime_error(
+                        "A Ratchet sequence slot lacks its bounded asset");
+                }
+                const auto parsed_index = static_cast<std::size_t>(
+                    std::distance(core.ratchet_sequences.begin(), sequence));
+                if (parsed_index >= parsed_ratchet_sequences.size()) {
+                    throw std::runtime_error(
+                        "A Ratchet sequence slot lacks parsed metadata");
+                }
+                const auto& parsed = parsed_ratchet_sequences[parsed_index];
+                std::cout
+                    << "  [" << std::setw(3) << slot << "] "
+                    << hexadecimal(sequence->asset_range.offset, 8) << "+"
+                    << hexadecimal(sequence->asset_range.size, 8)
+                    << ", regular V1, frames " << parsed.frames.size()
+                    << ", triggers " << parsed.trigger_words.size() << '\n';
             }
             return 0;
         } catch (const std::exception& error) {

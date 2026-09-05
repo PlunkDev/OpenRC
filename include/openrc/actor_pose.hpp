@@ -35,6 +35,14 @@ struct ActorPosedVertexV1 {
   [[nodiscard]] bool operator==(const ActorPosedVertexV1 &) const = default;
 };
 
+struct ActorPosedPositionV1 {
+  float x = 0.0F;
+  float y = 0.0F;
+  float z = 0.0F;
+
+  [[nodiscard]] bool operator==(const ActorPosedPositionV1 &) const = default;
+};
+
 struct ActorPoseLimitsV1 {
   std::uint32_t max_joints = 0U;
   std::uint64_t max_vertices = 0U;
@@ -71,6 +79,15 @@ build_actor_bind_pose_palette_v1(const ActorRigV1 &rig,
 // space, and normalized. Topology and material ranges remain immutable in the
 // ActorSkinnedMeshV1 owned by the model.
 [[nodiscard]] std::vector<ActorPosedVertexV1> pose_actor_mesh_vertices_v1(
+    const ActorSkinnedMeshV1 &mesh, const ActorPosePaletteV1 &palette,
+    const ActorAffineTransformV1 &model_to_world,
+    ActorPoseLimitsV1 limits);
+
+// Position-only linear-blend skinning for unlit and diagnostic consumers.
+// Unlike the full vertex path, this accepts finite singular joint transforms:
+// authored animation can deliberately flatten geometry, while transforming a
+// normal through such a matrix requires a separately selected policy.
+[[nodiscard]] std::vector<ActorPosedPositionV1> pose_actor_mesh_positions_v1(
     const ActorSkinnedMeshV1 &mesh, const ActorPosePaletteV1 &palette,
     const ActorAffineTransformV1 &model_to_world,
     ActorPoseLimitsV1 limits);

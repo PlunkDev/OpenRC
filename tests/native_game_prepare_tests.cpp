@@ -1,3 +1,4 @@
+#include "openrc/actor_animation_io.hpp"
 #include "openrc/actor_library_io.hpp"
 #include "openrc/collision_world_io.hpp"
 #include "openrc/content_api.hpp"
@@ -5,6 +6,7 @@
 #include "openrc/entity_scene_io.hpp"
 #include "openrc/gameplay_scene_io.hpp"
 #include "openrc/level_actor_library_compile.hpp"
+#include "openrc/level_actor_animation_compile.hpp"
 #include "openrc/level_bootstrap.hpp"
 #include "openrc/level_destructible_scene_compile.hpp"
 #include "openrc/level_entity_scene_compile.hpp"
@@ -58,6 +60,12 @@ enum class ProfileMutation {
   split_crate_mesh,
   inconsistent_hit_sphere,
   hit_sphere_misses_mesh,
+  missing_animation,
+  animation_wrong_key,
+  animation_bad_cadence,
+  animation_clamp,
+  animation_stale_rig_digest,
+  animation_wrong_joint_count,
 };
 
 [[nodiscard]] std::vector<std::byte> bytes_of(const std::string_view value) {
@@ -259,6 +267,45 @@ make_bootstrap(const std::uint32_t level_id) {
   return result;
 }
 
+[[nodiscard]] openrc::ActorAnimationBankV1
+make_actor_animations(const ProfileMutation mutation) {
+  const auto library = make_actor_library();
+  const auto rig_digest =
+      openrc::actor_rig_content_sha256_v1(library.rigs.front().rig);
+  const std::array<std::string_view, 3U> keys{
+      "actors/ratchet/idle", "actors/ratchet/walk", "actors/ratchet/run"};
+  const std::array<float, 3U> rates{0.125F, 0.25F, 0.5F};
+
+  openrc::ActorAnimationBankV1 result;
+  for (std::size_t index = 0U; index < keys.size(); ++index) {
+    openrc::ActorAnimationClipV1 clip;
+    clip.id = static_cast<std::uint32_t>(index);
+    clip.semantic_key = std::string(keys[index]);
+    clip.rig_key = std::string(kPlayerRigKey);
+    clip.rig_content_sha256 = rig_digest;
+    clip.source_updates_per_second = 50U;
+    clip.wrap_mode = openrc::ActorAnimationWrapModeV1::loop;
+    clip.frames.push_back(openrc::ActorAnimationFrameV1{
+        rates[index], {openrc::ActorJointPoseV1{}}});
+    result.clips.push_back(std::move(clip));
+  }
+
+  if (mutation == ProfileMutation::animation_wrong_key) {
+    result.clips.front().semantic_key = "actors/ratchet/not-idle";
+  } else if (mutation == ProfileMutation::animation_bad_cadence) {
+    result.clips.front().source_updates_per_second = 60U;
+  } else if (mutation == ProfileMutation::animation_clamp) {
+    result.clips.front().wrap_mode = openrc::ActorAnimationWrapModeV1::clamp;
+  } else if (mutation == ProfileMutation::animation_stale_rig_digest) {
+    result.clips.front().rig_content_sha256 =
+        digest_of("stale-player-animation-rig");
+  } else if (mutation == ProfileMutation::animation_wrong_joint_count) {
+    result.clips.front().frames.front().joint_poses.push_back(
+        openrc::ActorJointPoseV1{});
+  }
+  return result;
+}
+
 [[nodiscard]] openrc::RenderSceneMeshV1 triangle_mesh(const std::uint32_t id,
                                                       const float extent) {
   openrc::RenderSceneMeshV1 mesh;
@@ -431,6 +478,16 @@ make_level_package(const std::uint32_t level_id,
                          "rac1/disc-image", kSourceImageBytes,
                          kSourceImageSha256),
        generated_provenance(openrc::kLevelActorLibraryCompilePassV1)});
+  auto animation = make_resource(
+      openrc::kActorAnimationResourceIdV1,
+      openrc::kActorAnimationResourceTypeIdV1,
+      openrc::kActorAnimationResourceSchemaVersionV1,
+      openrc::encode_actor_animation_bank_v1(
+          make_actor_animations(mutation), kRuntimeLimits.actor_animation),
+      {source_provenance(openrc::LevelPackageProvenanceKindV1::iso_range,
+                         "rac1/disc-image", kSourceImageBytes,
+                         kSourceImageSha256),
+       generated_provenance(openrc::kLevelActorAnimationCompilePassV1)});
   auto entity = make_resource(
       openrc::kEntitySceneResourceIdV1, openrc::kEntitySceneResourceTypeIdV1,
       openrc::kEntitySceneResourceSchemaVersionV1,
@@ -469,9 +526,12 @@ make_level_package(const std::uint32_t level_id,
   result.build_id = std::string(openrc::kNativeGameBuildIdV1);
   result.resources = {
       std::move(collision),    std::move(bootstrap), std::move(render),
-      std::move(actor),        std::move(entity),    std::move(gameplay),
-      std::move(destructible),
+      std::move(actor),        std::move(animation), std::move(entity),
+      std::move(gameplay),     std::move(destructible),
   };
+  if (mutation == ProfileMutation::missing_animation) {
+    result.resources.erase(result.resources.begin() + 4);
+  }
   return result;
 }
 
@@ -543,7 +603,7 @@ void test_empty_crate_profile_is_rejected() {
   PublicationFixture fixture(ProfileMutation::empty_crates);
   expect_native_profile_rejected(
       [&] { fixture.validate(); },
-      "the exact seven-resource profile accepted an empty crate scene");
+      "the exact eight-resource profile accepted an empty crate scene");
 }
 
 void test_crate_binding_chain_is_rejected_when_broken() {
@@ -587,6 +647,32 @@ void test_crates_must_share_one_containing_hit_sphere() {
       "the exact profile accepted a crate hit sphere missing its mesh");
 }
 
+void test_player_animation_profile_is_exact() {
+  const std::array mutations{
+      ProfileMutation::missing_animation,
+      ProfileMutation::animation_wrong_key,
+      ProfileMutation::animation_bad_cadence,
+      ProfileMutation::animation_clamp,
+      ProfileMutation::animation_stale_rig_digest,
+      ProfileMutation::animation_wrong_joint_count,
+  };
+  const std::array<std::string_view, mutations.size()> descriptions{
+      "a missing animation bank",
+      "an unexpected player animation key",
+      "an unexpected player animation cadence",
+      "a clamped player animation",
+      "a stale player rig digest",
+      "a player animation joint-count mismatch",
+  };
+
+  for (std::size_t index = 0U; index < mutations.size(); ++index) {
+    PublicationFixture fixture(mutations[index]);
+    expect_native_profile_rejected(
+        [&] { fixture.validate(); },
+        "the exact profile accepted " + std::string(descriptions[index]));
+  }
+}
+
 } // namespace
 
 int main() {
@@ -596,6 +682,7 @@ int main() {
     test_crate_binding_chain_is_rejected_when_broken();
     test_crates_must_share_one_render_mesh();
     test_crates_must_share_one_containing_hit_sphere();
+    test_player_animation_profile_is_exact();
     std::cout << "Native game preparation profile tests passed\n";
     return 0;
   } catch (const std::exception &error) {

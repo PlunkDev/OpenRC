@@ -105,15 +105,16 @@ runtime only receives those neutral IDs.
 The generic compatibility loader lets packages made before this schema omit
 `world/destructibles` and mounts an empty destructible scene. The exact current
 native-game profile is deliberately stricter: every level must contain all
-seven resources, including a structurally and cross-resource-valid
-`world/destructibles`. Its compiler/profile version differs from the old
-six-resource cache, so the Launcher rejects stale data before Play and the next
-normal Prepare operation rebuilds the same content-addressed local installation
-from the user's supported disc. There is still one OpenRC runtime and one
+eight resources, including structurally and cross-resource-valid
+`world/destructibles` and `actors/animations`. Its compiler/profile version
+differs from the old six- and seven-resource caches, so the Launcher rejects
+stale data before Play and the next normal Prepare operation rebuilds the same
+content-addressed local installation from the user's supported disc. There is
+still one OpenRC runtime and one
 Launcher—the package is data prepared locally, not a second client.
 
 Schema, compiler-adapter, package, replay, and runtime tests cover this path
-without copyrighted data. The current seven-resource RAC profile is also
+without copyrighted data. The current eight-resource RAC profile is also
 verified on freshly prepared real data across all 19 levels. Reuse and
 package-only Veldin smokes pass, and the D3D11 smoke proves a real mounted crate
 is submitted while visible, destroyed by the primary attack, grants its drop,

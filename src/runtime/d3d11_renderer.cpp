@@ -695,7 +695,7 @@ struct D3d11Renderer::Implementation {
                 "The D3D11 gameplay actor has an invalid draw envelope");
         }
 
-        gameplay_actor_bind_palette =
+        gameplay_actor_pose_palette =
             build_actor_bind_pose_palette_v1(
                 rig, game::kRuntimePlayerActorPoseLimitsV1);
         gameplay_actor_model_to_entity = model_to_entity;
@@ -1080,29 +1080,32 @@ struct D3d11Renderer::Implementation {
 
         std::size_t output_offset = 0U;
         for (const auto& mesh : gameplay_actor_meshes) {
-            const auto posed = pose_actor_mesh_vertices_v1(
+            const auto posed = pose_actor_mesh_positions_v1(
                 mesh,
-                gameplay_actor_bind_palette,
+                gameplay_actor_pose_palette,
                 model_to_world,
                 game::kRuntimePlayerActorPoseLimitsV1);
-            if (posed.size() > gameplay_actor_vertices.size() - output_offset) {
+            if (posed.size() != mesh.vertices.size() ||
+                posed.size() > gameplay_actor_vertices.size() - output_offset) {
                 throw std::logic_error(
                     "The gameplay actor pose exceeded its flattened vertex storage");
             }
-            for (const auto& vertex : posed) {
+            for (std::size_t index = 0U; index < posed.size(); ++index) {
+                const auto& position = posed[index];
+                const auto& source = mesh.vertices[index];
                 gameplay_actor_vertices[output_offset] =
                     RenderSceneD3dVertexV1{
-                        vertex.x,
-                        vertex.y,
-                        vertex.z,
-                        vertex.u,
-                        vertex.v,
-                        vertex.rgba8,
+                        position.x,
+                        position.y,
+                        position.z,
+                        source.u,
+                        source.v,
+                        source.rgba8,
                     };
                 gameplay_actor_projected_vertices[output_offset].rgba =
-                    vertex.rgba8;
-                gameplay_actor_projected_vertices[output_offset].u = vertex.u;
-                gameplay_actor_projected_vertices[output_offset].v = vertex.v;
+                    source.rgba8;
+                gameplay_actor_projected_vertices[output_offset].u = source.u;
+                gameplay_actor_projected_vertices[output_offset].v = source.v;
                 ++output_offset;
             }
         }
@@ -1197,9 +1200,15 @@ struct D3d11Renderer::Implementation {
         if (gameplay_presentation == next) {
             return;
         }
+        const auto actor_world_changed =
+            !gameplay_presentation ||
+            gameplay_presentation->feet_position != next.feet_position ||
+            gameplay_presentation->facing_yaw_radians !=
+                next.facing_yaw_radians;
         gameplay_presentation = next;
         if (has_gameplay_actor) {
-            rebuild_gameplay_actor_vertices();
+            gameplay_actor_vertices_dirty =
+                gameplay_actor_vertices_dirty || actor_world_changed;
         } else {
             if (!gameplay_proxy_vertex_buffer ||
                 !gameplay_proxy_index_buffer) {
@@ -1207,6 +1216,39 @@ struct D3d11Renderer::Implementation {
             }
             rebuild_gameplay_proxy_vertices();
         }
+        projected_vertices_dirty = true;
+    }
+
+    void set_gameplay_actor_pose(const ActorPosePaletteV1& pose) {
+        if (!has_gameplay_actor) {
+            throw std::logic_error(
+                "The D3D11 renderer has no gameplay actor to pose");
+        }
+        const auto joint_count =
+            gameplay_actor_pose_palette.global_joint_transforms.size();
+        if (pose.global_joint_transforms.size() != joint_count ||
+            pose.skin_transforms.size() != joint_count) {
+            throw std::invalid_argument(
+                "The D3D11 gameplay actor pose joint count does not match its rig");
+        }
+        const auto require_finite = [](const auto& transforms) {
+            for (const auto& transform : transforms) {
+                for (const auto component : transform.values) {
+                    if (!std::isfinite(component)) {
+                        throw std::invalid_argument(
+                            "The D3D11 gameplay actor pose contains a non-finite transform");
+                    }
+                }
+            }
+        };
+        require_finite(pose.global_joint_transforms);
+        require_finite(pose.skin_transforms);
+
+        if (gameplay_actor_pose_palette == pose) {
+            return;
+        }
+        gameplay_actor_pose_palette = pose;
+        gameplay_actor_vertices_dirty = true;
         projected_vertices_dirty = true;
     }
 
@@ -1502,6 +1544,10 @@ struct D3d11Renderer::Implementation {
         }
         if (gameplay_presentation) {
             if (has_gameplay_actor) {
+                if (gameplay_actor_vertices_dirty) {
+                    rebuild_gameplay_actor_vertices();
+                    gameplay_actor_vertices_dirty = false;
+                }
                 project_and_upload_vertices(
                     camera,
                     gameplay_actor_vertices,
@@ -1748,7 +1794,7 @@ struct D3d11Renderer::Implementation {
     std::vector<RenderSceneD3dVertexV1> render_scene_vertices;
     std::vector<ProjectedVertex> render_scene_projected_vertices;
     std::vector<ActorSkinnedMeshV1> gameplay_actor_meshes;
-    ActorPosePaletteV1 gameplay_actor_bind_palette;
+    ActorPosePaletteV1 gameplay_actor_pose_palette;
     ActorAffineTransformV1 gameplay_actor_model_to_entity;
     std::vector<std::uint32_t> gameplay_actor_triangle_indices;
     std::vector<RenderSceneD3dDrawV1> gameplay_actor_draws;
@@ -1773,6 +1819,7 @@ struct D3d11Renderer::Implementation {
     std::optional<GameplayPresentation> gameplay_presentation;
     bool has_render_scene_geometry = false;
     bool has_gameplay_actor = false;
+    bool gameplay_actor_vertices_dirty = false;
     bool projected_vertices_dirty = false;
 
     ComPtr<ID3D11Device> device;
@@ -1877,6 +1924,11 @@ void D3d11Renderer::set_gameplay_presentation(
         facing_yaw_radians,
         capsule_radius,
         capsule_height);
+}
+
+void D3d11Renderer::set_gameplay_actor_pose(
+    const ActorPosePaletteV1& pose) {
+    implementation_->set_gameplay_actor_pose(pose);
 }
 
 } // namespace openrc::runtime

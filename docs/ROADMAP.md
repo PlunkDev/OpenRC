@@ -133,8 +133,11 @@ decoders remain compiler/diagnostic-side evidence feeding neutral packages.
   PAL v2.00 levels
 - [x] recover Ratchet's high-LOD bind-pose geometry, hierarchy, inverse binds,
   exact bounded skin weights, material slots, and base textures
-- [ ] parse and classify remaining terrain, metal/bangle geometry, and actor
-  animation transforms
+- [x] preserve Ratchet's complete 256-slot sequence table, parse all regular
+  frame partitions, and decode rotation/scale/translation palettes across all
+  19 PAL levels
+- [ ] parse and classify remaining terrain, metal/bangle geometry, and
+  non-Ratchet actor animation transforms
 - [ ] decode and render the remaining shrub, animated-Moby, and specialized
   Veldin asset families as one complete textured scene in the native window
 - [ ] compare geometry and transforms with reference captures
@@ -168,9 +171,12 @@ decoders remain compiler/diagnostic-side evidence feeding neutral packages.
 - [x] complete and verify the earlier six-resource transactional publication
   baseline for all 19 levels: collision, bootstrap, recovered textured render
   scene, actor library, entity scene, and gameplay scene
-- [x] extend the current native compiler/profile contract to exactly seven
+- [x] extend the earlier native compiler/profile contract to exactly seven
   resources by adding neutral `DestructibleSceneV1`, cross-resource validation,
   and stale six-resource cache rejection
+- [x] extend the current native compiler/profile contract to exactly eight
+  resources by adding neutral `ActorAnimationBankV1`, exact rig-digest and
+  joint-count binding, and stale seven-resource cache rejection
 - [x] mount and render a PreparedGameV2 level in the graphical runtime without
   reopening the source ISO or boot ELF
 - [x] define canonical, bounded `ActorLibraryV1` and `EntitySceneV1` schemas
@@ -189,9 +195,14 @@ decoders remain compiler/diagnostic-side evidence feeding neutral packages.
 - [x] add a compiler-only class-500 Bolt-Crate adapter with one shared model and
   stable per-placement entity/render/destructible identities
 - [x] pass a fresh supported-image all-level preparation/reuse validation and
-  package-only Veldin graphical smoke for the seven-resource crate/wrench path
-- [ ] decode, package, select, and play Ratchet's animations through the
-  generic actor pipeline
+  package-only Veldin graphical smoke for the eight-resource
+  crate/wrench/locomotion path
+- [x] decode, package, select, and play Ratchet's confirmed idle slot 0, walk
+  slot 3, and run slot 4 through the generic actor pipeline, advancing PAL
+  50 Hz source updates on the 60 Hz fixed simulation with an integer cadence
+  accumulator
+- [ ] identify and connect Ratchet's airborne, landing, wrench, and remaining
+  gameplay animation mappings without guessing source slots
 - [x] connect Win32 keyboard input and a deterministic third-person camera to
   package-only fixed-step movement in the graphical runtime
 - [x] package actor and entity data independently of RAC/PS2 source layouts
@@ -205,12 +216,14 @@ decoders remain compiler/diagnostic-side evidence feeding neutral packages.
 - [x] make package-only gameplay smoke on Veldin and at least one second planet
   a checked regression using the same published-package code path
 
-The seven-resource collectible and crate/wrench profile is verified on fresh
-prepared data across all 19 levels, including deterministic reuse, package-only
-Veldin gameplay, and visible-to-destroyed D3D11 smoke. This does not declare
-Veldin finished: animation playback, original pickup and destruction
-presentation, broader interactive entities, one weapon/enemy loop, original
-camera behavior, menus, and full scene-family coverage remain open.
+The eight-resource collectible, crate/wrench, and grounded-locomotion profile
+is verified on fresh prepared data across all 19 levels, including deterministic
+reuse, package-only Veldin gameplay, exact animation-to-rig validation, and
+visible-to-destroyed D3D11 smoke. Airborne ticks intentionally hold the last
+grounded pose. This does not declare Veldin finished: airborne and wrench
+animation, original pickup and destruction presentation, broader interactive
+entities, one weapon/enemy loop, original camera behavior, menus, and full
+scene-family coverage remain open.
 
 ## Stage 4 — Game-complete runtime
 

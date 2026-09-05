@@ -654,6 +654,44 @@ placements. All 2,972 local model cores and all 399 shared occurrences parse as
 storage, sequence metadata, optional skeleton/common-translation ranges, and
 owned high-LOD, low-LOD, metal, and shadow ranges.
 
+The same index preserves Ratchet's fixed 256 sequence slots without collapsing
+zero entries or aliases. Across all 19 levels, 1,804 unique non-zero sequence
+assets contain 33,977 regular frames. Every frame has one eight-byte signed
+XYZW quaternion per each of Ratchet's 111 joints, followed by sparse eight-byte
+scale and translation records. The parser validates the redundant partition
+boundaries and 16-byte payload envelope before the compiler assigns transform
+semantics.
+
+The PAL executable independently establishes quaternion conversion as
+`s16 / 32768` followed by normalization, scale as `u16 / 4096`, and sparse
+translation as an absolute replacement for the common local translation.
+Scale tag bit 15 selects local hierarchical scale; a clear bit selects a
+terminal scale applied after hierarchy so it does not affect children. The
+compiler composes `R * S + T`, parent hierarchy, terminal scale, and finally
+the recovered inverse bind. The all-level sweep decodes 90,514,728 finite
+matrix components. It intentionally retains 25,267 singular global matrices
+and the corresponding skin matrices caused by authored zero scale components.
+Veldin sequence 0 frame 0 position-skins all 5,583 high-LOD Ratchet vertices to
+finite bounds X `[-0.391791, 0.376465]`, Y `[-0.465786, 0.388369]`, and Z
+`[-0.0195114, 1.54662]`. Normal transformation for those singular poses remains
+separate until the original VU0 policy is proven; no epsilon or identity repair
+is substituted.
+
+The matching player-control audit identifies three grounded locomotion slots:
+slot 0 is idle (10 frames, phase rate `0.125`), slot 3 is walk (33 frames,
+phase rate `0.25`), and slot 4 is run (23 frames, phase rate `0.5`). A non-zero
+sequence word at `+0x18` overrides the per-frame phase rate; zero retains the
+current frame's rate. The source player increments phase once per PAL 50 Hz
+update and wraps these sequences on a cycle boundary. Trigger words are audio
+events, not melee-hit notifications. No jump, fall, landing, or wrench semantic
+mapping is claimed by this evidence.
+
+OpenRC's current neutral profile therefore publishes only those three confirmed
+looping clips. The runtime converts 50 source updates to its 60 fixed ticks with
+an integer accumulator and holds the last grounded pose while airborne. This
+timing and selection policy is deterministic and package-only; it does not
+embed the source slot table in the runtime.
+
 The regular packet decoder validates signed TOPS-relative VIF UNPACKs for
 fixed-12 texture coordinates, V4-8 strip indices, and optional V4-32 AD-GIF
 texture primitives. It reconstructs delayed 512-entry vertex-cache indices,

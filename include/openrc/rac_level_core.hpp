@@ -18,6 +18,7 @@ inline constexpr std::uint32_t kRacLevelCoreShrubClassEntryBytesV1 = 0x30U;
 inline constexpr std::uint32_t kRacLevelCoreGadgetEntryBytesV1 = 0x10U;
 inline constexpr std::uint32_t kRacLevelCoreIndexAlignmentV1 = 0x10U;
 inline constexpr std::uint32_t kRacLevelCoreAssetAlignmentV1 = 0x40U;
+inline constexpr std::uint32_t kRacLevelCoreRatchetSequenceCountV1 = 256U;
 inline constexpr std::uint8_t kRacLevelCoreUnusedTextureSlotV1 = 0xffU;
 
 struct RacLevelCoreLimitsV1 {
@@ -44,6 +45,14 @@ struct RacLevelCoreArrayRangeV1 {
     std::uint32_t count = 0U;
     std::uint32_t offset = 0U;
     RacLevelCoreRangeV1 byte_range;
+};
+
+struct RacLevelCoreRatchetSequenceV1 {
+    std::uint32_t asset_offset = 0U;
+    RacLevelCoreRangeV1 asset_range;
+
+    [[nodiscard]] bool
+    operator==(const RacLevelCoreRatchetSequenceV1&) const = default;
 };
 
 struct RacLevelCoreHeaderV1 {
@@ -165,6 +174,13 @@ struct RacLevelCoreIndexV1 {
     RacLevelCoreRangeV1 gadget_asset_chain_range;
     std::uint64_t total_gadget_encoded_bytes = 0U;
     std::uint64_t total_gadget_padding_bytes = 0U;
+    // Exact table slots, including zero entries and duplicate aliases.
+    std::array<std::uint32_t, kRacLevelCoreRatchetSequenceCountV1>
+        ratchet_sequence_offsets{};
+    // One entry per distinct non-zero table offset, ordered by asset offset.
+    // Each opaque range ends at the next greater proven decoded-core boundary;
+    // duplicate table slots therefore share this single range description.
+    std::vector<RacLevelCoreRatchetSequenceV1> ratchet_sequences;
     std::vector<RacLevelCoreMobyClassEntryV1> moby_classes;
     std::vector<RacLevelCoreTieClassEntryV1> tie_classes;
     std::vector<RacLevelCoreShrubClassEntryV1> shrub_classes;

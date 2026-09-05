@@ -2,6 +2,7 @@
 
 #include "openrc/actor_pose.hpp"
 #include "openrc/content_api.hpp"
+#include "openrc/runtime_actor_animation.hpp"
 #include "openrc/runtime_actor_library.hpp"
 #include "openrc/runtime_destructible_scene_resource.hpp"
 #include "openrc/runtime_entity_scene.hpp"
@@ -44,6 +45,7 @@ struct RuntimeLevelContentV1 {
   RuntimeLevelFoundationV1 foundation;
   RenderSceneV1 render_scene;
   std::optional<ActorLibraryV1> actor_library;
+  std::optional<ActorAnimationBankV1> actor_animation_bank;
   std::optional<EntitySceneV1> entity_scene;
   std::optional<GameplaySceneV1> gameplay_scene;
   std::optional<DestructibleSceneV1> destructible_scene;
@@ -55,6 +57,7 @@ struct RuntimeLevelContentLimitsV1 {
   RuntimeLevelFoundationLimitsV1 foundation;
   RenderSceneIoLimitsV1 render_scene;
   ActorLibraryIoLimitsV1 actor_library;
+  ActorAnimationIoLimitsV1 actor_animation;
   EntitySceneIoLimitsV1 entity_scene;
   GameplaySceneIoLimitsV1 gameplay_scene;
   DestructibleSceneIoLimitsV1 destructible_scene;
@@ -126,6 +129,21 @@ make_runtime_level_content_limits_v1() {
               UINT64_C(256) * 1024U * 1024U,
           },
       },
+      ActorAnimationIoLimitsV1{
+          UINT64_C(512) * 1024U * 1024U,
+          ActorAnimationLimitsV1{
+              4096U,
+              65'536U,
+              1'000'000U,
+              kRuntimePlayerActorMaximumJointsV1,
+              8'000'000U,
+              4096U,
+              UINT64_C(16) * 1024U * 1024U,
+              1000U,
+              1'000'000.0F,
+              1.0e-8,
+          },
+      },
       EntitySceneIoLimitsV1{
           UINT64_C(256) * 1024U * 1024U,
           EntitySceneLimitsV1{
@@ -175,7 +193,9 @@ make_runtime_level_content_limits_v1() {
 // binding remains optional for intentionally invisible semantic entities;
 // EntityGameplayRuntimeV1 validates uniform scale and the composed world-space
 // hit sphere before transactional materialization. The content API policy is
-// explicit and shared by all resource loaders.
+// explicit and shared by all resource loaders. ActorAnimationBankV1 is also
+// optional for old packages, but every clip must bind an exact rig key, rig
+// content digest, and joint count from ActorLibraryV1.
 [[nodiscard]] RuntimeLevelContentV1
 load_runtime_level_content_v1(const ResolvedLevelPackageV1 &package,
                               RuntimeLevelContentLimitsV1 limits);

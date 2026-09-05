@@ -1,5 +1,6 @@
 #include "openrc/rac_level_core.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -89,6 +90,24 @@ void fill_unused_textures(
     }
 }
 
+void write_ratchet_sequence_offset(
+    std::vector<std::byte>& bytes,
+    const std::size_t slot,
+    const std::uint32_t offset) {
+    write_le32(
+        bytes,
+        kRatchetSequenceTableOffset + slot * sizeof(std::uint32_t),
+        offset);
+}
+
+void clear_ratchet_sequence_table(std::vector<std::byte>& bytes) {
+    for (std::size_t slot = 0U;
+         slot < openrc::kRacLevelCoreRatchetSequenceCountV1;
+         ++slot) {
+        write_ratchet_sequence_offset(bytes, slot, 0U);
+    }
+}
+
 [[nodiscard]] Fixture make_fixture() {
     Fixture fixture{
         std::vector<std::byte>(kIndexBytes, std::byte{0}),
@@ -161,7 +180,13 @@ void fill_unused_textures(
     write_le16(index, 0x1aaU, 5U);
     write_le16(index, 0x1acU, 6U);
     write_le16(index, 0x1aeU, 7U);
-    write_le32(index, kRatchetSequenceTableOffset, 0x300U);
+    write_ratchet_sequence_offset(index, 0U, 0x300U);
+    write_ratchet_sequence_offset(index, 2U, 0x340U);
+    write_ratchet_sequence_offset(index, 3U, 0x300U);
+    write_ratchet_sequence_offset(
+        index,
+        openrc::kRacLevelCoreRatchetSequenceCountV1 - 1U,
+        0x340U);
 
     write_le32(index, 0x670U, 0x380U);
     write_le32(index, 0x674U, 11U);
@@ -285,6 +310,109 @@ void test_valid_level_core() {
             result.total_gadget_encoded_bytes == 0x150U &&
             result.total_gadget_padding_bytes == 0x30U,
         "RAC level-core gadget records are wrong");
+    expect(
+        result.ratchet_sequence_offsets.size() ==
+                openrc::kRacLevelCoreRatchetSequenceCountV1 &&
+            result.ratchet_sequence_offsets[0U] == 0x300U &&
+            result.ratchet_sequence_offsets[1U] == 0U &&
+            result.ratchet_sequence_offsets[2U] == 0x340U &&
+            result.ratchet_sequence_offsets[3U] == 0x300U &&
+            result.ratchet_sequence_offsets.back() == 0x340U,
+        "RAC level-core Ratchet-sequence table slots were not preserved");
+    expect(
+        result.ratchet_sequences ==
+            std::vector<openrc::RacLevelCoreRatchetSequenceV1>{
+                {0x300U, {0x300U, 0x40U}},
+                {0x340U, {0x340U, 0x40U}},
+            },
+        "RAC level-core unique Ratchet-sequence ranges are wrong");
+}
+
+void test_ratchet_sequence_zero_and_alias_tables() {
+    auto zero_fixture = make_fixture();
+    clear_ratchet_sequence_table(zero_fixture.index);
+    const auto zero_result = parse(zero_fixture);
+    expect(
+        std::all_of(
+            zero_result.ratchet_sequence_offsets.begin(),
+            zero_result.ratchet_sequence_offsets.end(),
+            [](const auto offset) { return offset == 0U; }) &&
+            zero_result.ratchet_sequences.empty(),
+        "an all-zero Ratchet-sequence table produced an asset range");
+
+    auto alias_fixture = make_fixture();
+    clear_ratchet_sequence_table(alias_fixture.index);
+    for (std::size_t slot = 0U;
+         slot < openrc::kRacLevelCoreRatchetSequenceCountV1;
+         ++slot) {
+        write_ratchet_sequence_offset(alias_fixture.index, slot, 0x300U);
+    }
+    const auto alias_result = parse(alias_fixture);
+    expect(
+        std::all_of(
+            alias_result.ratchet_sequence_offsets.begin(),
+            alias_result.ratchet_sequence_offsets.end(),
+            [](const auto offset) { return offset == 0x300U; }) &&
+            alias_result.ratchet_sequences ==
+                std::vector<openrc::RacLevelCoreRatchetSequenceV1>{
+                    {0x300U, {0x300U, 0x80U}},
+                },
+        "256 aliasing Ratchet-sequence slots did not share one bounded range");
+}
+
+void test_ratchet_sequence_ranges_are_monotonic_and_deterministic() {
+    auto fixture = make_fixture();
+    clear_ratchet_sequence_table(fixture.index);
+    write_ratchet_sequence_offset(fixture.index, 0U, 0x360U);
+    write_ratchet_sequence_offset(fixture.index, 1U, 0x300U);
+    write_ratchet_sequence_offset(fixture.index, 2U, 0x330U);
+    write_ratchet_sequence_offset(fixture.index, 3U, 0x300U);
+
+    const auto first = parse(fixture);
+    const auto second = parse(fixture);
+    const std::vector<openrc::RacLevelCoreRatchetSequenceV1> expected{
+        {0x300U, {0x300U, 0x30U}},
+        {0x330U, {0x330U, 0x30U}},
+        {0x360U, {0x360U, 0x20U}},
+    };
+    expect(
+        first.ratchet_sequences == expected &&
+            second.ratchet_sequences == expected &&
+            first.ratchet_sequence_offsets ==
+                second.ratchet_sequence_offsets,
+        "Ratchet-sequence ranges are not deterministic and monotonic");
+
+    auto reordered = fixture;
+    write_ratchet_sequence_offset(reordered.index, 0U, 0x330U);
+    write_ratchet_sequence_offset(reordered.index, 1U, 0x360U);
+    write_ratchet_sequence_offset(reordered.index, 2U, 0x300U);
+    const auto reordered_result = parse(reordered);
+    expect(
+        reordered_result.ratchet_sequences == expected,
+        "Ratchet-sequence range order depends on table-slot order");
+
+    auto opaque_payload = fixture;
+    opaque_payload.decoded[0x300U] = std::byte{0xa5};
+    opaque_payload.decoded[0x32fU] = std::byte{0x5a};
+    opaque_payload.decoded[0x330U] = std::byte{0xff};
+    opaque_payload.decoded[0x37fU] = std::byte{0x7e};
+    expect(
+        parse(opaque_payload).ratchet_sequences == expected,
+        "the level-core parser interpreted opaque Ratchet-sequence payloads");
+}
+
+void test_ratchet_sequence_offset_rejections() {
+    expect_rejected(
+        [](auto& fixture) {
+            write_ratchet_sequence_offset(fixture.index, 17U, 0x301U);
+        },
+        "an unaligned Ratchet-sequence offset was accepted");
+    expect_rejected(
+        [](auto& fixture) {
+            write_ratchet_sequence_offset(
+                fixture.index, 17U, kDecodedBytes);
+        },
+        "an out-of-range Ratchet-sequence offset was accepted");
 }
 
 void test_non_numeric_class_order_is_allowed() {
@@ -420,6 +548,9 @@ void test_gadget_rejections() {
 int main() {
     try {
         test_valid_level_core();
+        test_ratchet_sequence_zero_and_alias_tables();
+        test_ratchet_sequence_ranges_are_monotonic_and_deterministic();
+        test_ratchet_sequence_offset_rejections();
         test_non_numeric_class_order_is_allowed();
         test_limits();
         test_header_and_table_rejections();

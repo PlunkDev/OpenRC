@@ -72,6 +72,8 @@ struct RacLevelMobyAssetsV1 {
   // Complete decoded logical sources retained for the deterministic native
   // package compiler. They contain no host paths and are bounded by the same
   // source limits used for the parsed views below.
+  std::vector<std::byte> level_core_source_bytes;
+  RacLevelCoreIndexV1 level_core;
   std::vector<std::byte> collision_source_bytes;
   std::vector<std::byte> gameplay_source_bytes;
   RacLevelCollisionV1 collision;

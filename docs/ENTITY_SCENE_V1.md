@@ -80,11 +80,11 @@ ID and assigns the overlap and semantic inventory grant. The Bolt model itself
 is baked in bind pose into `RenderSceneV1`, so these definitions do not require
 an actor binding or expose a RAC class ID to the runtime.
 
-The current seven-resource compiler path also emits definitions, transforms,
+The current eight-resource compiler path also emits definitions, transforms,
 and render bindings for compiler-recognized Bolt Crates. The separate
 [DestructibleSceneV1](DESTRUCTIBLE_SCENE_V1.md) resource owns their health,
 damage channels, hit volumes, and drops; EntitySceneV1 remains only the shared
-identity and structural-binding layer. The seven-resource crate path now has
+identity and structural-binding layer. The crate path now has
 fresh all-level preparation/reuse, package-only Veldin gameplay, and graphical
 visible-to-destroyed crate evidence. Enemies, weapons,
 scripts, save persistence, menus, and reconstructed original camera behavior

@@ -260,6 +260,26 @@ void validate_actor_entity_contract(const ActorLibraryV1 &actor_library,
   preflight_player_actor(actor_library, *slot_zero_actor);
 }
 
+void validate_actor_animation_contract(
+    const ActorAnimationBankV1 &animation_bank,
+    const ActorLibraryV1 &actor_library) {
+  for (const auto &clip : animation_bank.clips) {
+    const auto *const rig = find_actor_rig(actor_library, clip.rig_key);
+    if (rig == nullptr) {
+      fail("Mounted actor animation references a missing actor rig");
+    }
+    if (is_zero_prepared_digest_v1(clip.rig_content_sha256) ||
+        clip.rig_content_sha256 != actor_rig_content_sha256_v1(rig->rig)) {
+      fail("Mounted actor animation references a stale actor rig digest");
+    }
+    for (const auto &frame : clip.frames) {
+      if (frame.joint_poses.size() != rig->rig.joints.size()) {
+        fail("Mounted actor animation and actor rig joint counts disagree");
+      }
+    }
+  }
+}
+
 void validate_gameplay_entity_contract(const GameplaySceneV1 &gameplay_scene,
                                        const EntitySceneV1 &entity_scene,
                                        const std::uint32_t package_level_id) {
@@ -351,6 +371,16 @@ load_runtime_level_content_v1(const ResolvedLevelPackageV1 &package,
   }
 
   try {
+    result.actor_animation_bank =
+        load_optional_runtime_actor_animation_bank_v1(
+            package, limits.foundation.required_content_api_version,
+            limits.actor_animation);
+  } catch (const RuntimeActorAnimationError &error) {
+    fail("Cannot mount the runtime actor-animation bank: " +
+         std::string(error.what()));
+  }
+
+  try {
     result.entity_scene = load_optional_runtime_entity_scene_v1(
         package, limits.foundation.required_content_api_version,
         limits.entity_scene);
@@ -384,6 +414,13 @@ load_runtime_level_content_v1(const ResolvedLevelPackageV1 &package,
   }
   if (result.actor_library.has_value() != result.entity_scene.has_value()) {
     fail("Runtime actor/entity feature pair is incomplete");
+  }
+  if (result.actor_animation_bank && !result.actor_library) {
+    fail("Runtime actor-animation bank is present without its actor library");
+  }
+  if (result.actor_animation_bank) {
+    validate_actor_animation_contract(*result.actor_animation_bank,
+                                      *result.actor_library);
   }
   if (result.actor_library && result.entity_scene) {
     validate_actor_entity_contract(*result.actor_library, *result.entity_scene,

@@ -67,6 +67,21 @@ constexpr openrc::ActorLibraryIoLimitsV1 kActorLibraryLimits{
         16'384U,
     },
 };
+constexpr openrc::ActorAnimationIoLimitsV1 kActorAnimationLimits{
+    1U << 20U,
+    {
+        8U,
+        64U,
+        256U,
+        64U,
+        4096U,
+        128U,
+        1024U,
+        120U,
+        1000.0F,
+        1.0e-8,
+    },
+};
 constexpr openrc::EntitySceneIoLimitsV1 kEntitySceneLimits{
     1U << 20U,
     {
@@ -110,6 +125,7 @@ constexpr openrc::game::RuntimeLevelContentLimitsV1 kRuntimeLimits{
     },
     kRenderSceneLimits,
     kActorLibraryLimits,
+    kActorAnimationLimits,
     kEntitySceneLimits,
     kGameplaySceneLimits,
     kDestructibleSceneLimits,
@@ -256,6 +272,23 @@ actor_vertex(const float x, const float y, const float u, const float v) {
   return result;
 }
 
+[[nodiscard]] openrc::ActorAnimationBankV1 make_actor_animation_bank(
+    const openrc::ActorLibraryV1 &library = make_actor_library()) {
+  openrc::ActorAnimationClipV1 clip;
+  clip.id = 0U;
+  clip.semantic_key = "actors/player/idle";
+  clip.rig_key = library.rigs.front().semantic_key;
+  clip.rig_content_sha256 =
+      openrc::actor_rig_content_sha256_v1(library.rigs.front().rig);
+  clip.source_updates_per_second = 50U;
+  clip.wrap_mode = openrc::ActorAnimationWrapModeV1::loop;
+  clip.frames = {{0.125F, {openrc::ActorJointPoseV1{}}}};
+
+  openrc::ActorAnimationBankV1 result;
+  result.clips.push_back(std::move(clip));
+  return result;
+}
+
 [[nodiscard]] openrc::EntitySceneV1 make_entity_scene() {
   openrc::EntityDefinitionV1 prop;
   prop.authored_id = 40U;
@@ -368,6 +401,20 @@ void add_actor_library_resource(openrc::ResolvedLevelPackageV1 &package) {
                              kActorLibraryLimits);
 }
 
+void add_actor_animation_resource(
+    openrc::ResolvedLevelPackageV1 &package,
+    const openrc::ActorAnimationBankV1 &bank) {
+  package.resources.push_back(make_resource(
+      openrc::kActorAnimationResourceIdV1,
+      openrc::kActorAnimationResourceTypeIdV1,
+      openrc::kActorAnimationResourceSchemaVersionV1,
+      openrc::encode_actor_animation_bank_v1(bank, kActorAnimationLimits)));
+}
+
+void add_actor_animation_resource(openrc::ResolvedLevelPackageV1 &package) {
+  add_actor_animation_resource(package, make_actor_animation_bank());
+}
+
 void add_entity_scene_resource(openrc::ResolvedLevelPackageV1 &package,
                                const openrc::EntitySceneV1 &scene) {
   package.resources.push_back(make_resource(
@@ -400,6 +447,13 @@ make_package_with_actor_entities() {
   auto result = make_package();
   add_actor_library_resource(result);
   add_entity_scene_resource(result, make_entity_scene());
+  return result;
+}
+
+[[nodiscard]] openrc::ResolvedLevelPackageV1
+make_package_with_actor_entities_and_animation() {
+  auto result = make_package_with_actor_entities();
+  add_actor_animation_resource(result);
   return result;
 }
 
@@ -447,7 +501,8 @@ void test_mounts_complete_content_from_one_package() {
              content.foundation.bootstrap == make_bootstrap() &&
              content.foundation.collision_world == make_collision_world() &&
              content.render_scene == make_render_scene() &&
-             !content.actor_library && !content.entity_scene &&
+             !content.actor_library && !content.actor_animation_bank &&
+             !content.entity_scene &&
              !content.gameplay_scene && !content.destructible_scene,
          "combined runtime loader changed or disconnected mounted content");
 }
@@ -465,6 +520,70 @@ void test_mounts_complete_actor_entity_feature_pair() {
                      make_entity_scene(), kEntitySceneLimits.scene) &&
              !content.gameplay_scene && !content.destructible_scene,
          "combined runtime loader changed the mounted actor/entity pair");
+}
+
+void test_mounts_actor_animation_with_matching_actor_library() {
+  const auto content = openrc::game::load_runtime_level_content_v1(
+      make_package_with_actor_entities_and_animation(), kRuntimeLimits);
+  expect(content.actor_library.has_value() &&
+             content.actor_animation_bank.has_value() &&
+             content.entity_scene.has_value() &&
+             *content.actor_animation_bank ==
+                 openrc::canonicalize_actor_animation_bank_v1(
+                     make_actor_animation_bank(), kActorAnimationLimits.bank),
+         "combined runtime loader changed or disconnected the actor-animation "
+         "bank");
+}
+
+void test_rejects_actor_animation_without_actor_library() {
+  auto package = make_package();
+  add_actor_animation_resource(package);
+  expect_runtime_error(
+      [&] {
+        static_cast<void>(openrc::game::load_runtime_level_content_v1(
+            package, kRuntimeLimits));
+      },
+      "without its actor library",
+      "combined loader accepted actor animations without an actor library");
+}
+
+void test_rejects_actor_animation_rig_contract_mismatches() {
+  auto missing_rig_bank = make_actor_animation_bank();
+  missing_rig_bank.clips[0U].rig_key = "actors/missing/rig";
+  auto missing_rig = make_package_with_actor_entities();
+  add_actor_animation_resource(missing_rig, missing_rig_bank);
+  expect_runtime_error(
+      [&] {
+        static_cast<void>(openrc::game::load_runtime_level_content_v1(
+            missing_rig, kRuntimeLimits));
+      },
+      "missing actor rig",
+      "combined loader accepted an animation with a missing rig key");
+
+  auto stale_digest_bank = make_actor_animation_bank();
+  stale_digest_bank.clips[0U].rig_content_sha256[0U] ^= std::byte{0x01U};
+  auto stale_digest = make_package_with_actor_entities();
+  add_actor_animation_resource(stale_digest, stale_digest_bank);
+  expect_runtime_error(
+      [&] {
+        static_cast<void>(openrc::game::load_runtime_level_content_v1(
+            stale_digest, kRuntimeLimits));
+      },
+      "stale actor rig digest",
+      "combined loader accepted an animation with a stale rig digest");
+
+  auto wrong_joint_count_bank = make_actor_animation_bank();
+  wrong_joint_count_bank.clips[0U].frames[0U].joint_poses.push_back(
+      openrc::ActorJointPoseV1{});
+  auto wrong_joint_count = make_package_with_actor_entities();
+  add_actor_animation_resource(wrong_joint_count, wrong_joint_count_bank);
+  expect_runtime_error(
+      [&] {
+        static_cast<void>(openrc::game::load_runtime_level_content_v1(
+            wrong_joint_count, kRuntimeLimits));
+      },
+      "joint counts disagree",
+      "combined loader accepted an animation with the wrong joint count");
 }
 
 void test_mounts_gameplay_scene_with_entity_contract() {
@@ -992,6 +1111,9 @@ int main() {
   try {
     test_mounts_complete_content_from_one_package();
     test_mounts_complete_actor_entity_feature_pair();
+    test_mounts_actor_animation_with_matching_actor_library();
+    test_rejects_actor_animation_without_actor_library();
+    test_rejects_actor_animation_rig_contract_mismatches();
     test_mounts_gameplay_scene_with_entity_contract();
     test_mounts_destructible_scene_with_entity_contract();
     test_rejects_gameplay_without_entity_scene();

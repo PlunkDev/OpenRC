@@ -15,9 +15,8 @@ namespace openrc {
 namespace {
 
 constexpr std::uint32_t kWadV1MinimumLogicalBytes = 0x10U;
-constexpr std::uint32_t kRatchetSequenceCountV1 = 256U;
 constexpr std::uint32_t kRatchetSequenceTableBytesV1 =
-    kRatchetSequenceCountV1 * sizeof(std::uint32_t);
+    kRacLevelCoreRatchetSequenceCountV1 * sizeof(std::uint32_t);
 
 // This is not all-zero padding. These bytes are identical in all 19 original
 // PAL level-core indices and are deliberately kept separate from the 0xbc
@@ -735,7 +734,7 @@ RacLevelCoreIndexV1 parse_rac_level_core_index_v1(
         "the level-core asset-boundary capacity");
     asset_boundary_capacity = checked_add(
         asset_boundary_capacity,
-        kRatchetSequenceCountV1,
+        kRacLevelCoreRatchetSequenceCountV1,
         "the level-core asset-boundary capacity");
     asset_boundary_capacity = checked_add(
         asset_boundary_capacity,
@@ -802,11 +801,14 @@ RacLevelCoreIndexV1 parse_rac_level_core_index_v1(
             kRacLevelCoreAssetAlignmentV1,
             "A shrub-class asset");
     }
-    for (std::uint32_t index = 0U; index < kRatchetSequenceCountV1; ++index) {
+    for (std::uint32_t index = 0U;
+         index < kRacLevelCoreRatchetSequenceCountV1;
+         ++index) {
         const auto offset = read_le32(
             index_bytes,
             static_cast<std::size_t>(header.ratchet_sequences_offset) +
                 static_cast<std::size_t>(index) * sizeof(std::uint32_t));
+        result.ratchet_sequence_offsets[index] = offset;
         add_aligned_asset_boundary(
             asset_boundaries,
             offset,
@@ -912,6 +914,48 @@ RacLevelCoreIndexV1 parse_rac_level_core_index_v1(
     asset_boundaries.erase(
         std::unique(asset_boundaries.begin(), asset_boundaries.end()),
         asset_boundaries.end());
+
+    std::vector<std::uint32_t> unique_ratchet_sequence_offsets;
+    if (static_cast<std::uint64_t>(kRacLevelCoreRatchetSequenceCountV1) >
+            static_cast<std::uint64_t>(
+                unique_ratchet_sequence_offsets.max_size()) ||
+        static_cast<std::uint64_t>(kRacLevelCoreRatchetSequenceCountV1) >
+            static_cast<std::uint64_t>(result.ratchet_sequences.max_size())) {
+        fail("RacLevelCoreIndexV1 Ratchet-sequence metadata exceeds a host "
+             "container limit");
+    }
+    unique_ratchet_sequence_offsets.reserve(
+        kRacLevelCoreRatchetSequenceCountV1);
+    for (const auto offset : result.ratchet_sequence_offsets) {
+        if (offset != 0U) {
+            unique_ratchet_sequence_offsets.push_back(offset);
+        }
+    }
+    std::sort(
+        unique_ratchet_sequence_offsets.begin(),
+        unique_ratchet_sequence_offsets.end());
+    unique_ratchet_sequence_offsets.erase(
+        std::unique(
+            unique_ratchet_sequence_offsets.begin(),
+            unique_ratchet_sequence_offsets.end()),
+        unique_ratchet_sequence_offsets.end());
+    result.ratchet_sequences.reserve(unique_ratchet_sequence_offsets.size());
+    for (const auto offset : unique_ratchet_sequence_offsets) {
+        const auto next = std::upper_bound(
+            asset_boundaries.begin(), asset_boundaries.end(), offset);
+        if (next == asset_boundaries.end() || *next <= offset) {
+            fail("A Ratchet-sequence asset has no greater proven block "
+                 "boundary");
+        }
+        result.ratchet_sequences.push_back(RacLevelCoreRatchetSequenceV1{
+            offset,
+            RacLevelCoreRangeV1{
+                offset,
+                static_cast<std::uint64_t>(*next) - offset,
+            },
+        });
+    }
+
     if (header.collision_offset != 0U) {
         const auto next = std::upper_bound(
             asset_boundaries.begin(), asset_boundaries.end(),

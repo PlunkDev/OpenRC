@@ -100,8 +100,9 @@ spin, hover, effects, sound, or original pickup timing.
 The neutral collectible schema, compiler adapter, deterministic collection
 state, and render-instance visibility path were verified end to end for the
 supported PAL v2.00 image through the earlier six-resource profile. The current
-native profile adds `world/destructibles` as a seventh resource. Its synthetic
-tests preserve the collectible behavior, and fresh preparation plus exact
-validation now cover all 19 real-data packages. A second preparation reused the
-same cache, while package-only smokes for both Veldin level IDs preserved the
-collectible and inventory path.
+native profile first added `world/destructibles` as a seventh resource and now
+adds `actors/animations` as the eighth. Its synthetic tests preserve the
+collectible behavior, and fresh preparation plus exact validation now cover all
+19 real-data packages. A second preparation reused the same cache, while
+package-only smokes for both Veldin level IDs preserved the collectible and
+inventory path.

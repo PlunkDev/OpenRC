@@ -6,6 +6,7 @@
 #include "openrc/content_api.hpp"
 #include "openrc/disc.hpp"
 #include "openrc/hash.hpp"
+#include "openrc/level_actor_animation_compile.hpp"
 #include "openrc/level_actor_library_compile.hpp"
 #include "openrc/level_destructible_scene_compile.hpp"
 #include "openrc/level_entity_scene_compile.hpp"
@@ -16,6 +17,7 @@
 #include "openrc/rac_destructible_scene_compile.hpp"
 #include "openrc/rac_level_foundation_compile.hpp"
 #include "openrc/rac_level_moby_assets.hpp"
+#include "openrc/rac_ratchet_animation_compile.hpp"
 #include "openrc/runtime_level_content.hpp"
 #include "openrc/scene_block_geometry.hpp"
 
@@ -61,6 +63,8 @@ constexpr std::uint64_t kMaximumRenderScenePayloadBytes =
     UINT64_C(512) * 1024U * 1024U;
 constexpr std::uint64_t kMaximumPlayerActorPayloadBytes =
     UINT64_C(256) * 1024U * 1024U;
+constexpr std::uint64_t kMaximumPlayerAnimationPayloadBytes =
+    UINT64_C(64) * 1024U * 1024U;
 constexpr std::uint64_t kMaximumEntityScenePayloadBytes = 64U * 1024U * 1024U;
 constexpr std::uint64_t kMaximumGameplayScenePayloadBytes =
     64U * 1024U * 1024U;
@@ -69,6 +73,10 @@ constexpr std::uint64_t kMaximumDestructibleScenePayloadBytes =
 constexpr std::uint64_t kMaximumTwoFipPixels = 16U * 1024U * 1024U;
 constexpr std::string_view kPlayerRigKey = "actors/ratchet/rig";
 constexpr std::string_view kPlayerHighModelKey = "actors/ratchet/high";
+constexpr std::string_view kPlayerIdleAnimationKey = "actors/ratchet/idle";
+constexpr std::string_view kPlayerWalkAnimationKey = "actors/ratchet/walk";
+constexpr std::string_view kPlayerRunAnimationKey = "actors/ratchet/run";
+constexpr std::uint32_t kPlayerAnimationSourceUpdatesPerSecond = 50U;
 constexpr std::string_view kPlayerArchetypeKey = "openrc.player/default";
 constexpr std::uint32_t kBoltSourceClassId = 13U;
 constexpr std::string_view kBoltRigKey = "actors/collectibles/bolt/rig";
@@ -222,6 +230,51 @@ make_single_actor_library_limits() {
 make_player_actor_io_limits() {
   return ActorLibraryIoLimitsV1{kMaximumPlayerActorPayloadBytes,
                                 make_single_actor_library_limits()};
+}
+
+[[nodiscard]] constexpr ActorAnimationIoLimitsV1
+make_player_animation_io_limits() {
+  return ActorAnimationIoLimitsV1{
+      kMaximumPlayerAnimationPayloadBytes,
+      ActorAnimationLimitsV1{
+          3U,
+          255U,
+          3U * 255U,
+          255U,
+          3U * 255U * 255U,
+          128U,
+          512U,
+          kPlayerAnimationSourceUpdatesPerSecond,
+          1'000'000.0F,
+          1.0e-8,
+      },
+  };
+}
+
+[[nodiscard]] constexpr RacRatchetAnimationCompileLimitsV1
+make_player_animation_compile_limits() {
+  return RacRatchetAnimationCompileLimitsV1{
+      RacRatchetSequenceLimitsV1{kMaximumDecodedWadBytes,
+                                 kMaximumDecodedWadBytes, 255U, 255U},
+      RacRatchetPoseLimitsV1{255U, kMaximumDecodedWadBytes, 65'535U,
+                             65'535U, 1.0e-8},
+      make_player_animation_io_limits().bank,
+  };
+}
+
+[[nodiscard]] std::array<RacRatchetAnimationClipProfileV1, 3U>
+make_player_animation_profiles() {
+  return {
+      RacRatchetAnimationClipProfileV1{
+          0U, 0U, std::string(kPlayerIdleAnimationKey),
+          ActorAnimationWrapModeV1::loop},
+      RacRatchetAnimationClipProfileV1{
+          1U, 3U, std::string(kPlayerWalkAnimationKey),
+          ActorAnimationWrapModeV1::loop},
+      RacRatchetAnimationClipProfileV1{
+          2U, 4U, std::string(kPlayerRunAnimationKey),
+          ActorAnimationWrapModeV1::loop},
+  };
 }
 
 [[nodiscard]] constexpr EntitySceneIoLimitsV1
@@ -463,16 +516,31 @@ require_unique_player_model(const RacLevelMobyAssetsV1 &assets) {
   return *player;
 }
 
-[[nodiscard]] ActorLibraryV1
-compile_player_actor_library(RacLevelMobyAssetsV1 &assets) {
-  const auto &player = require_unique_player_model(assets);
+[[nodiscard]] RacMobyBindPoseGeometryV1
+compile_player_bind_pose(const RacLevelMobyModelV1 &player) {
+  return compile_rac_moby_bind_pose_geometry_v1(
+      player.source_bytes, player.source_class, RacMobyLodV1::high,
+      make_single_moby_bind_pose_limits());
+}
 
+[[nodiscard]] ActorAnimationBankV1 compile_player_animation_bank(
+    const RacLevelMobyAssetsV1 &assets, const RacLevelMobyModelV1 &player,
+    const RacMobyBindRigV1 &bind_rig) {
+  const auto profiles = make_player_animation_profiles();
+  return compile_rac_ratchet_animation_bank_v1(
+      assets.level_core_source_bytes, assets.level_core, bind_rig,
+      player.source_class.scale, std::string(kPlayerRigKey), profiles,
+      kPlayerAnimationSourceUpdatesPerSecond,
+      make_player_animation_compile_limits());
+}
+
+[[nodiscard]] ActorLibraryV1 compile_player_actor_library(
+    RacLevelMobyAssetsV1 &assets, const RacLevelMobyModelV1 &player,
+    RacMobyBindPoseGeometryV1 bind_pose) {
   RacActorLibraryCompileRequestV1 request;
   request.rig_semantic_key = kPlayerRigKey;
   request.model_semantic_key = kPlayerHighModelKey;
-  request.bind_pose = compile_rac_moby_bind_pose_geometry_v1(
-      player.source_bytes, player.source_class, RacMobyLodV1::high,
-      make_single_moby_bind_pose_limits());
+  request.bind_pose = std::move(bind_pose);
   request.texture_slots = player.texture_slots;
   request.used_texture_slot_count = player.used_texture_slot_count;
   request.texture_bank = std::move(assets.textures);
@@ -876,6 +944,77 @@ exact_player_actor_provenance(const LevelPackageV1 &package,
   }
 }
 
+[[nodiscard]] bool exact_player_animation_provenance(
+    const LevelPackageV1 &package, const std::uint64_t source_image_bytes,
+    const PreparedContentDigestV1 &source_image_sha256) {
+  const auto *const animation_resource =
+      find_unique_resource(package, kActorAnimationResourceIdV1);
+  const auto *const actor_resource =
+      find_unique_resource(package, kActorLibraryResourceIdV1);
+  if (actor_resource == nullptr ||
+      !exact_upsert_resource_contract(
+          animation_resource, kActorAnimationResourceTypeIdV1,
+          kActorAnimationResourceSchemaVersionV1) ||
+      animation_resource->provenance.size() != 2U) {
+    return false;
+  }
+
+  bool found_image = false;
+  bool found_compiler = false;
+  for (const auto &provenance : animation_resource->provenance) {
+    found_image |= exact_provenance(
+        provenance, LevelPackageProvenanceKindV1::iso_range,
+        "rac1/disc-image", source_image_bytes, source_image_sha256);
+    found_compiler |= exact_provenance(
+        provenance, LevelPackageProvenanceKindV1::generated,
+        kLevelActorAnimationCompilePassV1, 0U, PreparedContentDigestV1{});
+  }
+  if (!found_image || !found_compiler) {
+    return false;
+  }
+
+  try {
+    const auto library = decode_actor_library_v1(
+        actor_resource->payload, make_player_actor_io_limits());
+    const auto animations = decode_actor_animation_bank_v1(
+        animation_resource->payload, make_player_animation_io_limits());
+    if (library.rigs.size() != 1U || animations.clips.size() != 3U) {
+      return false;
+    }
+    const auto &rig = library.rigs.front();
+    const auto rig_digest = actor_rig_content_sha256_v1(rig.rig);
+    const std::array expected_keys{kPlayerIdleAnimationKey,
+                                   kPlayerWalkAnimationKey,
+                                   kPlayerRunAnimationKey};
+    for (std::size_t index = 0U; index < animations.clips.size(); ++index) {
+      const auto &clip = animations.clips[index];
+      if (clip.id != index || clip.semantic_key != expected_keys[index] ||
+          clip.rig_key != kPlayerRigKey ||
+          clip.rig_content_sha256 != rig_digest ||
+          clip.source_updates_per_second !=
+              kPlayerAnimationSourceUpdatesPerSecond ||
+          clip.wrap_mode != ActorAnimationWrapModeV1::loop ||
+          clip.frames.empty()) {
+        return false;
+      }
+      for (const auto &frame : clip.frames) {
+        if (frame.joint_poses.size() != rig.rig.joints.size()) {
+          return false;
+        }
+      }
+    }
+    return true;
+  } catch (const ActorAnimationIoError &) {
+    return false;
+  } catch (const ActorAnimationError &) {
+    return false;
+  } catch (const ActorLibraryIoError &) {
+    return false;
+  } catch (const ActorLibraryError &) {
+    return false;
+  }
+}
+
 [[nodiscard]] bool exact_entity_provenance(
     const LevelPackageV1 &package, const std::uint32_t level_id) {
   const auto *const actor_resource =
@@ -1210,13 +1349,15 @@ exact_render_provenance(const LevelPackageV1 &package,
     const PreparedContentDigestV1 &source_image_sha256,
     const std::uint64_t boot_executable_bytes,
     const PreparedContentDigestV1 &boot_executable_sha256) {
-  return package.resources.size() == 7U &&
+  return package.resources.size() == 8U &&
          exact_foundation_provenance(package, level_id) &&
          exact_render_provenance(
              package, source_image_bytes, source_image_sha256,
              boot_executable_bytes, boot_executable_sha256) &&
          exact_player_actor_provenance(package, source_image_bytes,
                                        source_image_sha256) &&
+         exact_player_animation_provenance(
+             package, source_image_bytes, source_image_sha256) &&
          exact_entity_provenance(package, level_id) &&
          exact_gameplay_provenance(package, level_id) &&
          exact_destructible_provenance(
@@ -1497,7 +1638,7 @@ void validate_current_native_game_publication_v1(
               manifest.provenance.source_image_sha256, boot.bytes, boot.sha256,
               limits)) {
         fail("Prepared native level " + std::to_string(level_id) +
-             " does not match the current seven-resource runtime profile");
+             " does not match the current eight-resource runtime profile");
       }
     }
   } catch (const NativeGamePreparationErrorV1 &) {
@@ -1583,6 +1724,8 @@ prepare_native_game_v1(const NativeGamePreparationRequestV1 &request,
       runtime::make_level_scene_render_compile_profile_v1();
   const auto render_io_limits = make_render_scene_io_limits();
   const auto player_actor_io_limits = make_player_actor_io_limits();
+  const auto player_animation_io_limits =
+      make_player_animation_io_limits();
   const auto entity_scene_io_limits = make_native_entity_scene_io_limits();
   const auto gameplay_scene_io_limits = make_native_gameplay_scene_io_limits();
   const auto destructible_scene_io_limits =
@@ -1728,10 +1871,24 @@ prepare_native_game_v1(const NativeGamePreparationRequestV1 &request,
       report_progress(control,
                       NativeGamePreparationPhaseV1::compiling_player_actor,
                       level_id, level_id);
-      const auto player_actor = compile_player_actor_library(assets);
+      const auto &player_model = require_unique_player_model(assets);
+      auto player_bind_pose = compile_player_bind_pose(player_model);
+      const auto animation_bind_rig = player_bind_pose.bind_rig;
+      const auto player_actor = compile_player_actor_library(
+          assets, player_model, std::move(player_bind_pose));
       package = attach_actor_library_to_level_package_v1(
           std::move(package), player_actor, actor_sources,
           player_actor_io_limits, package_limits);
+
+      stage = "compiling and attaching the neutral player animations";
+      report_progress(control,
+                      NativeGamePreparationPhaseV1::compiling_player_animation,
+                      level_id, level_id);
+      const auto player_animation = compile_player_animation_bank(
+          assets, player_model, animation_bind_rig);
+      package = attach_actor_animation_bank_to_level_package_v1(
+          std::move(package), player_animation, actor_sources,
+          player_animation_io_limits, package_limits);
 
       stage = "attaching and encoding the render scene";
       report_progress(control,
