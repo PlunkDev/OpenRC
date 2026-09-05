@@ -81,14 +81,17 @@ openrc-cli
 openrc-launcher
 ├── image selection
 ├── disc inspection
-├── asynchronous Prepare/Cancel and progress
+├── asynchronous all-level native Prepare/Cancel and progress
+├── persisted content-addressed PreparedGameV2 selection
 ├── data-directory access
-├── verified adjacent-runtime process launch
+├── verified adjacent package-only runtime process launch
 └── adjacent PE architecture and forbidden compiler-runtime import guard
 
 openrc-runtime
 ├── current diagnostic named ISO/ELF/level/record/entry process contract
 ├── exact ISO-to-prepared-ELF SHA-256 binding before scene access
+├── package-only PreparedGameV2 level/resource mounting
+├── fixed-step movement, collision, jump/reset, and third-person camera
 ├── emitted GS-triangle conversion with raster-context coordinates
 ├── recovered-level 3D tfrag material batches with bounded debug orbit controls
 ├── explicit world-to-SceneBlock ×1024 Moby/TIE conversion and bounded merge
@@ -117,8 +120,7 @@ runnable package.
 compiler/
 ├── neutral RenderScene/GameplayScene/ActorRig and remaining resource schemas
 ├── deterministic render/entity/actor compilation for every supported level
-├── compatibility-aware package rebuild and cache migration
-└── Launcher orchestration of the implemented PreparedGameV2 publisher
+└── compatibility-aware package rebuild and cache migration
 
 tools/
 ├── remaining audio, texture, terrain, and TOC-table decoders
@@ -127,10 +129,10 @@ tools/
 └── asset converters
 
 runtime/
-├── platform input feeding quantized fixed-tick commands
-├── graphical PreparedGameV2 mounting and explicit overlay selection
-├── level manager integration, gameplay entities, and third-person camera
-├── renderer
+├── explicit ordered package-overlay selection
+├── level-manager expansion and gameplay entities
+├── generic actor-rig and animation integration
+├── renderer fidelity and remaining specialized scene families
 ├── audio
 ├── game memory model
 ├── reconstructed game logic
@@ -142,8 +144,10 @@ VIF, VU, GIF, and GS formats terminate at the compiler boundary; package
 loaders consume only versioned neutral OpenRC resources in normal world units.
 The graphical `openrc-runtime` has crossed that boundary through its explicit
 `--prepared-root` path and can load collision, bootstrap, and `RenderSceneV1`
-without the source ISO or boot ELF. The Launcher Play path has not switched yet
-and still starts the ISO/ELF diagnostic route.
+without the source ISO or boot ELF. The Launcher now drives the shared all-level
+compiler once, remembers the exact content-addressed installation, validates
+Veldin before launch, and passes only the prepared root and level ID to Play.
+The ISO/ELF route remains an explicit developer diagnostic path.
 
 ## Native-code strategy decision
 
@@ -324,8 +328,8 @@ writing. A verified sibling staging tree is promoted with same-parent renames;
 replacement retains and restores the previous destination on cancellation or
 failure. It neither opens an ISO nor discovers overlay files. The current CLI
 compiler supplies all 19 collision/bootstrap/render-scene packages to this
-publisher, and the graphical runtime mounts the result directly; the Launcher
-does not invoke that flow yet.
+publisher. Both the CLI and Launcher invoke the same compiler service, and the
+graphical runtime mounts the published result directly.
 
 ## Configuration and generated data
 
@@ -336,7 +340,10 @@ On Windows:
   state;
 - cache and logs are stored in `cache` and `logs` below the local directory.
 
-The selected ISO path is stored in
-`%LOCALAPPDATA%\PlunkDev\OpenRC\launcher.ini`. On first load, an older
-roaming `launcher.ini` is copied there automatically and retained as a backup.
-Game data must never be written to the roaming configuration directory.
+The selected ISO path plus the exact prepared-root path and manifest digest are
+stored in `%LOCALAPPDATA%\PlunkDev\OpenRC\launcher.ini`. On first load, an older
+roaming `launcher.ini` is copied there automatically and retained as a backup;
+the one-line settings format is migrated without losing the ISO selection.
+Content-addressed native installations live below the local
+`prepared-v2/openrc-rac-2002` directory. Game data must never be written to the
+roaming configuration directory.

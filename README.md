@@ -145,12 +145,15 @@ both in progress. The repository currently provides:
   projection for comparison, and falls back from hardware rendering to WARP;
 - a package-only graphical runtime path that mounts PreparedGameV2, verifies
   the selected level and its neutral resources, and renders without reopening
-  the source ISO or boot ELF;
+  the source ISO or boot ELF, with deterministic fixed-step movement, collision,
+  jumping, fall/reset handling, and a third-person camera around a temporary
+  debug player marker;
 - recognition of the PAL (`SCES-50916`) reference executable and detection of
   the NTSC-U/C (`SCUS-97199`) release;
-- a native Windows launcher with disc inspection, asynchronous Prepare,
-  progress, cancellation, and a Play action that starts the verified adjacent
-  runtime with the prepared game files;
+- a native Windows launcher with disc inspection, asynchronous one-time
+  compilation of all 19 levels into a content-addressed PreparedGameV2
+  installation, progress, cancellation, persisted installation identity, and a
+  package-only Play action that starts the verified adjacent runtime;
 - CLI-only compilation/publication of all 19 collision/bootstrap foundation
   packages and deterministic movement smoke paths that can consume either one
   `.orlvl` file or a published PreparedGameV2 root without reopening the ISO;
@@ -168,26 +171,26 @@ both in progress. The repository currently provides:
   companion-WAD-index, and preparation tests that contain no copyrighted game
   data.
 
-**Prepare game files** becomes available after the supported reference
-executable is detected. After preparation succeeds, **Play** starts the native
-level viewer with level 0, every record, and SceneBlock entry pair 16. Records
-are executed independently from the same validated entry-0 state; records that
-stop diagnostically after a complete GS packet and non-drawing records are
-counted rather than allowed to abort the aggregate.
+**Prepare native game** becomes available after the supported disc is detected.
+It verifies and extracts the required source data, compiles all 19 levels once,
+and atomically publishes a content-addressed installation below
+`%LOCALAPPDATA%\PlunkDev\OpenRC\prepared-v2`. The Launcher remembers the exact
+manifest. Later **Play** runs level 0 from that installation alone: the ISO and
+boot ELF are not passed to or reopened by the runtime.
 
-The initial viewer opens in **recovered level 3D (debug orbit)** mode. Drag the
-left mouse button or use the arrow keys to orbit, use the mouse wheel or `+/-`
-to zoom, press `R` to reset, and press `Tab` to compare the decoded GS 2D
-output. This camera belongs only to the diagnostic viewer; it is not presented
-as Ratchet & Clank's original gameplay camera.
+Prepared-game mode is now an early playable Veldin prototype. Use `W/A/S/D` to
+move relative to the camera, the arrow keys to rotate and pitch it, `Space` to
+jump, and `R` to reset to the authored checkpoint. A magenta marker deliberately
+stands in for Ratchet until the generic actor-rig and animation pipeline is
+ready. The map still lacks animated and specialized object families, and the
+new deterministic chase camera is not yet claimed to reproduce the original
+game camera.
 
-The graphical runtime can now consume a PreparedGameV2 installation directly
-through `--prepared-root`; that path does not reopen the ISO or boot ELF. The
-Launcher has not switched to the new compiler/runtime route yet, so its current
-Prepare/Play buttons still start the ISO/ELF-backed diagnostic viewer described
-above. Actor animation, gameplay entities, the reconstructed camera, and the
-remaining specialized scene families still need to join the package boundary
-before this becomes a playable Veldin build.
+The ISO/ELF-backed recovered-level viewer remains available through explicit
+developer command-line arguments. In that diagnostic mode, drag with the left
+mouse button or use the arrow keys to orbit, use the mouse wheel or `+/-` to
+zoom, press `R` to reset the orbit, and press `Tab` to compare decoded GS 2D
+output.
 
 ## Build on Windows
 
@@ -305,9 +308,10 @@ build/Debug/openrc-cli.exe prepared-native-level-smoke $nativeRoot 0
 build/Debug/openrc-runtime.exe --prepared-root $nativeRoot --level 0
 ```
 
-This is the package boundary intended for the Launcher and future mod tooling.
-It contains neutral OpenRC resources rather than copied source WAD records. The
-Launcher integration and full gameplay systems are still in progress.
+This is the package boundary used by the Launcher and intended for future mod
+tooling. It contains neutral OpenRC resources rather than copied source WAD
+records. Ratchet's actor rig, gameplay entities/interactions, and full gameplay
+systems are still in progress.
 
 The `wad-bundle` LBA and sector count above identify a container in the exact
 PAL v2.00 reference image; they are not assumed for other revisions.
@@ -352,8 +356,9 @@ primitive emissions. Its optional TGA is an auto-fit diagnostic wireframe. The
 current identity frame transform is deterministic debug input, not a claim to
 reproduce the game's live camera.
 
-The native D3D11 window is still a diagnostic level viewer, not a playable
-runtime. For the confirmed entry-16 path it follows the game's VU-memory
+The explicit ISO/ELF-backed D3D11 path is still a diagnostic level viewer, not
+the package-only playable prototype described above. For the confirmed entry-16
+path it follows the game's VU-memory
 indirection and recovers signed source XYZ for each GS vertex, while using only
 the already-decoded emitted triangle topology. It also snapshots both GS
 texture contexts, decodes TEX0/CLAMP writes, converts complete STQ to logical

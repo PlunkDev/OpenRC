@@ -12,6 +12,7 @@
 
 #include "openrc/render_scene.hpp"
 #include "openrc/rac_level_moby_texture.hpp"
+#include "openrc/third_person_camera.hpp"
 
 #include <d3d11.h>
 #include <dxgi.h>
@@ -95,11 +96,46 @@ struct GpuRenderSceneSampler {
 constexpr float kPi = 3.14159265358979323846F;
 constexpr float kDefaultVerticalFov = kPi / 3.0F;
 constexpr float kMaximumPitch = 89.0F * kPi / 180.0F;
+constexpr std::uint32_t kGameplayProxyRingSegments = 12U;
+constexpr std::uint32_t kGameplayProxyVertexCount =
+    2U + 2U * kGameplayProxyRingSegments + 3U;
+constexpr std::uint32_t kGameplayProxyIndexCount =
+    12U * kGameplayProxyRingSegments + 3U;
 
 struct Vec3 {
     float x = 0.0F;
     float y = 0.0F;
     float z = 0.0F;
+
+    [[nodiscard]] bool operator==(const Vec3&) const = default;
+};
+
+struct GameplayPresentation {
+    Vec3 eye{};
+    Vec3 target{};
+    Vec3 up{};
+    float vertical_field_of_view_radians = 0.0F;
+    float aspect_ratio = 0.0F;
+    float near_plane_distance = 0.0F;
+    float far_plane_distance = 0.0F;
+    Vec3 feet_position{};
+    float facing_yaw_radians = 0.0F;
+    float capsule_radius = 0.0F;
+    float capsule_height = 0.0F;
+
+    [[nodiscard]] bool
+    operator==(const GameplayPresentation&) const = default;
+};
+
+struct CameraProjection {
+    Vec3 eye{};
+    Vec3 forward{};
+    Vec3 right{};
+    Vec3 up{};
+    float tangent_half_vertical = 0.0F;
+    float tangent_half_horizontal = 0.0F;
+    float depth_scale = 0.0F;
+    float depth_offset = 0.0F;
 };
 
 [[nodiscard]] Vec3 operator+(const Vec3 a, const Vec3 b) noexcept {
@@ -137,8 +173,95 @@ struct Vec3 {
     return value * static_cast<float>(1.0 / std::sqrt(length_squared));
 }
 
+[[nodiscard]] float squared_length(const Vec3 value) noexcept {
+    return dot(value, value);
+}
+
 [[nodiscard]] Vec3 as_vec3(const SceneVertex3dV1& vertex) noexcept {
     return {vertex.x, vertex.y, vertex.z};
+}
+
+[[nodiscard]] GameplayPresentation checked_gameplay_presentation(
+    const game::ThirdPersonCameraViewV1& camera,
+    const CollisionVectorV1& feet_position,
+    const double facing_yaw_radians,
+    const double capsule_radius,
+    const double capsule_height) {
+    constexpr double kMaximumGameplayCoordinate =
+        static_cast<double>(std::numeric_limits<float>::max()) / 16.0;
+    const std::array values{
+        camera.eye.x,
+        camera.eye.y,
+        camera.eye.z,
+        camera.target.x,
+        camera.target.y,
+        camera.target.z,
+        camera.up.x,
+        camera.up.y,
+        camera.up.z,
+        camera.vertical_field_of_view_radians,
+        camera.aspect_ratio,
+        camera.near_plane_distance,
+        camera.far_plane_distance,
+        feet_position.x,
+        feet_position.y,
+        feet_position.z,
+        facing_yaw_radians,
+        capsule_radius,
+        capsule_height,
+    };
+    if (!std::ranges::all_of(values, [](const double value) {
+            return std::isfinite(value) &&
+                   std::abs(value) <= kMaximumGameplayCoordinate;
+        })) {
+        throw std::invalid_argument(
+            "The gameplay presentation contains a non-finite or out-of-range value");
+    }
+    if (!(camera.vertical_field_of_view_radians > 0.0) ||
+        !(camera.vertical_field_of_view_radians <
+          static_cast<double>(kPi)) ||
+        !(camera.aspect_ratio > 0.0) ||
+        !(camera.near_plane_distance > 0.0) ||
+        !(camera.far_plane_distance > camera.near_plane_distance) ||
+        !(capsule_radius > 0.0) ||
+        capsule_height < capsule_radius * 2.0) {
+        throw std::invalid_argument(
+            "The gameplay presentation has an invalid projection or player envelope");
+    }
+
+    const Vec3 eye{static_cast<float>(camera.eye.x),
+                   static_cast<float>(camera.eye.y),
+                   static_cast<float>(camera.eye.z)};
+    const Vec3 target{static_cast<float>(camera.target.x),
+                      static_cast<float>(camera.target.y),
+                      static_cast<float>(camera.target.z)};
+    const Vec3 up{static_cast<float>(camera.up.x),
+                  static_cast<float>(camera.up.y),
+                  static_cast<float>(camera.up.z)};
+    const auto forward = normalized(target - eye);
+    const auto right = normalized(cross(forward, up));
+    if (!(squared_length(forward) > 0.99F) ||
+        !(squared_length(right) > 0.99F)) {
+        throw std::invalid_argument(
+            "The gameplay camera has a degenerate view basis");
+    }
+
+    return GameplayPresentation{
+        eye,
+        target,
+        up,
+        static_cast<float>(camera.vertical_field_of_view_radians),
+        static_cast<float>(camera.aspect_ratio),
+        static_cast<float>(camera.near_plane_distance),
+        static_cast<float>(camera.far_plane_distance),
+        Vec3{static_cast<float>(feet_position.x),
+             static_cast<float>(feet_position.y),
+             static_cast<float>(feet_position.z)},
+        static_cast<float>(std::remainder(
+            facing_yaw_radians, 2.0 * static_cast<double>(kPi))),
+        static_cast<float>(capsule_radius),
+        static_cast<float>(capsule_height),
+    };
 }
 
 [[nodiscard]] std::string hresult_message(
@@ -918,6 +1041,175 @@ struct D3d11Renderer::Implementation {
             "ID3D11Device::CreateBuffer(source indices)");
     }
 
+    void create_gameplay_proxy_buffers() {
+        static_assert(kGameplayProxyVertexCount > 0U);
+        static_assert(kGameplayProxyIndexCount > 0U);
+
+        gameplay_proxy_vertices.resize(kGameplayProxyVertexCount);
+        gameplay_proxy_projected_vertices.resize(kGameplayProxyVertexCount);
+        std::vector<std::uint32_t> indices;
+        indices.reserve(kGameplayProxyIndexCount);
+        constexpr std::uint32_t kBottomPole = 0U;
+        constexpr std::uint32_t kTopPole = 1U;
+        constexpr std::uint32_t kLowerRing = 2U;
+        constexpr std::uint32_t kUpperRing =
+            kLowerRing + kGameplayProxyRingSegments;
+        constexpr std::uint32_t kArrow =
+            kUpperRing + kGameplayProxyRingSegments;
+
+        for (std::uint32_t index = 0U;
+             index < kGameplayProxyRingSegments; ++index) {
+            const auto next = (index + 1U) % kGameplayProxyRingSegments;
+            indices.insert(indices.end(), {
+                kBottomPole,
+                kLowerRing + next,
+                kLowerRing + index,
+                kLowerRing + index,
+                kLowerRing + next,
+                kUpperRing + next,
+                kLowerRing + index,
+                kUpperRing + next,
+                kUpperRing + index,
+                kTopPole,
+                kUpperRing + index,
+                kUpperRing + next,
+            });
+        }
+        indices.insert(indices.end(), {kArrow, kArrow + 1U, kArrow + 2U});
+        if (indices.size() != kGameplayProxyIndexCount) {
+            throw std::logic_error(
+                "The gameplay debug proxy topology changed unexpectedly");
+        }
+        gameplay_proxy_index_count = static_cast<UINT>(indices.size());
+
+        D3D11_BUFFER_DESC vertex_description{};
+        vertex_description.ByteWidth = checked_buffer_size(
+            gameplay_proxy_projected_vertices.size(),
+            sizeof(ProjectedSourceVertex),
+            "Gameplay debug-proxy vertex buffer");
+        vertex_description.Usage = D3D11_USAGE_DYNAMIC;
+        vertex_description.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+        vertex_description.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        require_success(
+            device->CreateBuffer(
+                &vertex_description,
+                nullptr,
+                gameplay_proxy_vertex_buffer.GetAddressOf()),
+            "ID3D11Device::CreateBuffer(gameplay debug-proxy vertices)");
+
+        D3D11_BUFFER_DESC index_description{};
+        index_description.ByteWidth = checked_buffer_size(
+            indices.size(), sizeof(std::uint32_t),
+            "Gameplay debug-proxy index buffer");
+        index_description.Usage = D3D11_USAGE_IMMUTABLE;
+        index_description.BindFlags = D3D11_BIND_INDEX_BUFFER;
+        D3D11_SUBRESOURCE_DATA index_data{};
+        index_data.pSysMem = indices.data();
+        require_success(
+            device->CreateBuffer(
+                &index_description,
+                &index_data,
+                gameplay_proxy_index_buffer.GetAddressOf()),
+            "ID3D11Device::CreateBuffer(gameplay debug-proxy indices)");
+    }
+
+    void rebuild_gameplay_proxy_vertices() {
+        if (!gameplay_presentation ||
+            gameplay_proxy_vertices.size() != kGameplayProxyVertexCount) {
+            throw std::logic_error(
+                "The gameplay debug proxy has no valid presentation storage");
+        }
+        const auto& presentation = *gameplay_presentation;
+        constexpr std::uint32_t kProxyColor = UINT32_C(0xffff00ff);
+        constexpr std::uint32_t kDirectionColor = UINT32_C(0xff00ffff);
+        constexpr std::uint32_t kLowerRing = 2U;
+        constexpr std::uint32_t kUpperRing =
+            kLowerRing + kGameplayProxyRingSegments;
+        constexpr std::uint32_t kArrow =
+            kUpperRing + kGameplayProxyRingSegments;
+        const auto make_vertex = [](const Vec3 position,
+                                    const std::uint32_t color) {
+            return SceneVertex3dV1{
+                position.x, position.y, position.z, color, 0.0F, 0.0F};
+        };
+
+        const auto feet = presentation.feet_position;
+        gameplay_proxy_vertices[0U] = make_vertex(feet, kProxyColor);
+        gameplay_proxy_vertices[1U] = make_vertex(
+            {feet.x, feet.y, feet.z + presentation.capsule_height},
+            kProxyColor);
+        const auto lower_z = feet.z + presentation.capsule_radius;
+        const auto upper_z =
+            feet.z + presentation.capsule_height -
+            presentation.capsule_radius;
+        for (std::uint32_t index = 0U;
+             index < kGameplayProxyRingSegments; ++index) {
+            const auto angle = 2.0F * kPi * static_cast<float>(index) /
+                               static_cast<float>(kGameplayProxyRingSegments);
+            const auto offset_x = presentation.capsule_radius * std::cos(angle);
+            const auto offset_y = presentation.capsule_radius * std::sin(angle);
+            gameplay_proxy_vertices[kLowerRing + index] = make_vertex(
+                {feet.x + offset_x, feet.y + offset_y, lower_z},
+                kProxyColor);
+            gameplay_proxy_vertices[kUpperRing + index] = make_vertex(
+                {feet.x + offset_x, feet.y + offset_y, upper_z},
+                kProxyColor);
+        }
+
+        const Vec3 direction{
+            std::cos(presentation.facing_yaw_radians),
+            std::sin(presentation.facing_yaw_radians),
+            0.0F,
+        };
+        const Vec3 side{-direction.y, direction.x, 0.0F};
+        const auto arrow_z = feet.z + presentation.capsule_height * 0.62F;
+        const Vec3 arrow_center{feet.x, feet.y, arrow_z};
+        const auto arrow_length = presentation.capsule_radius + 0.80F;
+        const auto arrow_half_width = presentation.capsule_radius * 0.72F;
+        gameplay_proxy_vertices[kArrow] = make_vertex(
+            arrow_center + direction * arrow_length, kDirectionColor);
+        gameplay_proxy_vertices[kArrow + 1U] = make_vertex(
+            arrow_center - direction * (presentation.capsule_radius * 0.15F) +
+                side * arrow_half_width,
+            kDirectionColor);
+        gameplay_proxy_vertices[kArrow + 2U] = make_vertex(
+            arrow_center - direction * (presentation.capsule_radius * 0.15F) -
+                side * arrow_half_width,
+            kDirectionColor);
+
+        for (std::size_t index = 0U;
+             index < gameplay_proxy_vertices.size(); ++index) {
+            gameplay_proxy_projected_vertices[index].rgba =
+                gameplay_proxy_vertices[index].rgba;
+            gameplay_proxy_projected_vertices[index].u = 0.0F;
+            gameplay_proxy_projected_vertices[index].v = 0.0F;
+        }
+    }
+
+    void set_gameplay_presentation(
+        const game::ThirdPersonCameraViewV1& camera,
+        const CollisionVectorV1& feet_position,
+        const double facing_yaw_radians,
+        const double capsule_radius,
+        const double capsule_height) {
+        if (!native_scene_mode) {
+            throw std::logic_error(
+                "Gameplay presentation is only available for prepared native scenes");
+        }
+        const auto next = checked_gameplay_presentation(
+            camera, feet_position, facing_yaw_radians, capsule_radius,
+            capsule_height);
+        if (gameplay_presentation == next) {
+            return;
+        }
+        if (!gameplay_proxy_vertex_buffer || !gameplay_proxy_index_buffer) {
+            create_gameplay_proxy_buffers();
+        }
+        gameplay_presentation = next;
+        rebuild_gameplay_proxy_vertices();
+        projected_vertices_dirty = true;
+    }
+
     void create_texture_resources(
         const std::span<const RacLevelMobyTextureV1> textures,
         std::vector<ComPtr<ID3D11ShaderResourceView>>& texture_views) {
@@ -1217,53 +1509,97 @@ struct D3d11Renderer::Implementation {
             (has_source_geometry && show_source_geometry);
     }
 
-    void update_projected_vertices() {
-        if (!has_source_geometry || !projected_vertices_dirty || width == 0U ||
-            height == 0U) {
-            return;
-        }
-        if (!camera_initialized) {
-            reset_camera();
+    [[nodiscard]] CameraProjection make_camera_projection() {
+        CameraProjection result;
+        float near_plane = 0.0F;
+        float far_plane = 0.0F;
+        if (gameplay_presentation) {
+            const auto& presentation = *gameplay_presentation;
+            result.eye = presentation.eye;
+            result.forward = normalized(presentation.target - result.eye);
+            result.right = normalized(
+                cross(result.forward, presentation.up));
+            result.up = normalized(cross(result.right, result.forward));
+            result.tangent_half_vertical = std::tan(
+                presentation.vertical_field_of_view_radians * 0.5F);
+            result.tangent_half_horizontal =
+                result.tangent_half_vertical * presentation.aspect_ratio;
+            near_plane = presentation.near_plane_distance;
+            far_plane = presentation.far_plane_distance;
+        } else {
+            if (!camera_initialized) {
+                reset_camera();
+            }
+            const auto cosine_pitch = std::cos(orbit_pitch);
+            const Vec3 target_to_eye{
+                cosine_pitch * std::cos(orbit_yaw),
+                cosine_pitch * std::sin(orbit_yaw),
+                std::sin(orbit_pitch),
+            };
+            result.eye = orbit_target + target_to_eye * orbit_distance;
+            result.forward = normalized(orbit_target - result.eye);
+            constexpr Vec3 kDebugUp{0.0F, 0.0F, 1.0F};
+            result.right = normalized(cross(result.forward, kDebugUp));
+            result.up = normalized(cross(result.right, result.forward));
+            result.tangent_half_vertical =
+                std::tan(kDefaultVerticalFov * 0.5F);
+            result.tangent_half_horizontal =
+                result.tangent_half_vertical * aspect_ratio();
+            near_plane = std::max(orbit_radius * 0.001F, 0.001F);
+            far_plane = std::max(
+                near_plane * 2.0F,
+                orbit_distance + orbit_radius * 4.0F);
         }
 
-        const auto cosine_pitch = std::cos(orbit_pitch);
-        const Vec3 target_to_eye{
-            cosine_pitch * std::cos(orbit_yaw),
-            cosine_pitch * std::sin(orbit_yaw),
-            std::sin(orbit_pitch),
-        };
-        const auto eye = orbit_target + target_to_eye * orbit_distance;
-        const auto forward = normalized(orbit_target - eye);
-        constexpr Vec3 kDebugUp{0.0F, 0.0F, 1.0F};
-        const auto right = normalized(cross(forward, kDebugUp));
-        const auto camera_up = normalized(cross(right, forward));
-
-        const auto tangent_half_vertical =
-            std::tan(kDefaultVerticalFov * 0.5F);
-        const auto tangent_half_horizontal =
-            tangent_half_vertical * aspect_ratio();
-        const auto near_plane = std::max(orbit_radius * 0.001F, 0.001F);
-        const auto far_plane = std::max(
-            near_plane * 2.0F,
-            orbit_distance + orbit_radius * 4.0F);
         const auto depth_denominator =
             static_cast<double>(far_plane) - near_plane;
-        const auto depth_scale = static_cast<float>(
+        result.depth_scale = static_cast<float>(
             static_cast<double>(far_plane) / depth_denominator);
-        const auto depth_offset = static_cast<float>(
-            static_cast<double>(near_plane) * far_plane / depth_denominator);
+        result.depth_offset = static_cast<float>(
+            static_cast<double>(near_plane) * far_plane /
+            depth_denominator);
+        const std::array values{
+            squared_length(result.forward),
+            squared_length(result.right),
+            squared_length(result.up),
+            result.tangent_half_vertical,
+            result.tangent_half_horizontal,
+            result.depth_scale,
+            result.depth_offset,
+        };
+        if (!(near_plane > 0.0F) || !(far_plane > near_plane) ||
+            !std::ranges::all_of(values, [](const float value) {
+                return std::isfinite(value) && value > 0.0F;
+            })) {
+            throw std::runtime_error(
+                "The D3D11 camera produced an invalid projection basis");
+        }
+        return result;
+    }
 
-        for (std::size_t index = 0U; index < source_vertices.size(); ++index) {
-            const auto relative = as_vec3(source_vertices[index]) - eye;
-            const auto camera_z = dot(relative, forward);
-            projected_vertices[index].clip_position = {
-                dot(relative, right) / tangent_half_horizontal,
-                dot(relative, camera_up) / tangent_half_vertical,
-                depth_scale * camera_z - depth_offset,
+    void project_and_upload_vertices(
+        const CameraProjection& camera,
+        const std::span<const SceneVertex3dV1> vertices,
+        const std::span<ProjectedSourceVertex> output,
+        ID3D11Buffer* const buffer,
+        const char* const map_operation) {
+        if (vertices.empty() || vertices.size() != output.size() ||
+            buffer == nullptr) {
+            throw std::logic_error(
+                "The D3D11 projected-vertex storage is inconsistent");
+        }
+        for (std::size_t index = 0U; index < vertices.size(); ++index) {
+            const auto relative = as_vec3(vertices[index]) - camera.eye;
+            const auto camera_z = dot(relative, camera.forward);
+            output[index].clip_position = {
+                dot(relative, camera.right) /
+                    camera.tangent_half_horizontal,
+                dot(relative, camera.up) /
+                    camera.tangent_half_vertical,
+                camera.depth_scale * camera_z - camera.depth_offset,
                 camera_z,
             };
-            for (const auto component :
-                 projected_vertices[index].clip_position) {
+            for (const auto component : output[index].clip_position) {
                 if (!std::isfinite(component)) {
                     throw std::runtime_error(
                         "The D3D11 camera produced a non-finite projected vertex");
@@ -1274,17 +1610,37 @@ struct D3d11Renderer::Implementation {
         D3D11_MAPPED_SUBRESOURCE mapped{};
         require_success(
             context->Map(
-                source_vertex_buffer.Get(),
-                0U,
-                D3D11_MAP_WRITE_DISCARD,
-                0U,
-                &mapped),
-            "ID3D11DeviceContext::Map(projected source vertices)");
+                buffer, 0U, D3D11_MAP_WRITE_DISCARD, 0U, &mapped),
+            map_operation);
         std::memcpy(
             mapped.pData,
-            projected_vertices.data(),
-            projected_vertices.size() * sizeof(ProjectedSourceVertex));
-        context->Unmap(source_vertex_buffer.Get(), 0U);
+            output.data(),
+            output.size_bytes());
+        context->Unmap(buffer, 0U);
+    }
+
+    void update_projected_vertices() {
+        if ((!has_source_geometry && !gameplay_presentation) ||
+            !projected_vertices_dirty || width == 0U || height == 0U) {
+            return;
+        }
+        const auto camera = make_camera_projection();
+        if (has_source_geometry) {
+            project_and_upload_vertices(
+                camera,
+                source_vertices,
+                projected_vertices,
+                source_vertex_buffer.Get(),
+                "ID3D11DeviceContext::Map(projected source vertices)");
+        }
+        if (gameplay_presentation) {
+            project_and_upload_vertices(
+                camera,
+                gameplay_proxy_vertices,
+                gameplay_proxy_projected_vertices,
+                gameplay_proxy_vertex_buffer.Get(),
+                "ID3D11DeviceContext::Map(gameplay debug-proxy vertices)");
+        }
         projected_vertices_dirty = false;
     }
 
@@ -1319,7 +1675,7 @@ struct D3d11Renderer::Implementation {
             -center_x * fit_constants.scale[0U],
             -center_y * fit_constants.scale[1U],
         };
-        if (has_source_geometry) {
+        if (has_source_geometry || gameplay_presentation) {
             if (!camera_initialized) {
                 reset_camera();
             }
@@ -1350,9 +1706,9 @@ struct D3d11Renderer::Implementation {
         set_dimensions(new_width, new_height);
     }
 
-    void render() {
+    bool render() {
         if (width == 0U || height == 0U || !render_target || !depth_view) {
-            return;
+            return false;
         }
 
         const auto render_source = native_scene_mode || is_3d_view();
@@ -1568,6 +1924,34 @@ struct D3d11Renderer::Implementation {
                     suffix_index_count, next_uncovered_index);
             }
             }
+            if (gameplay_presentation) {
+                constexpr UINT kGameplayProxyStride =
+                    sizeof(ProjectedSourceVertex);
+                ID3D11Buffer* const gameplay_vertex_buffers[] = {
+                    gameplay_proxy_vertex_buffer.Get()};
+                context->IASetVertexBuffers(
+                    0U,
+                    1U,
+                    gameplay_vertex_buffers,
+                    &kGameplayProxyStride,
+                    &kOffset);
+                context->IASetIndexBuffer(
+                    gameplay_proxy_index_buffer.Get(),
+                    DXGI_FORMAT_R32_UINT,
+                    0U);
+                context->RSSetState(solid_rasterizer_state.Get());
+                context->OMSetDepthStencilState(depth_write_state.Get(), 0U);
+                context->OMSetBlendState(
+                    nullptr, kBlendFactor.data(), kAllSamples);
+                context->PSSetShader(
+                    wireframe_pixel_shader.Get(), nullptr, 0U);
+                context->PSSetShaderResources(0U, 1U, no_texture);
+                ID3D11Buffer* const no_proxy_constant_buffer[] = {nullptr};
+                context->PSSetConstantBuffers(
+                    0U, 1U, no_proxy_constant_buffer);
+                context->DrawIndexed(
+                    gameplay_proxy_index_count, 0U, 0);
+            }
             context->PSSetShaderResources(0U, 1U, no_texture);
             ID3D11Buffer* const no_pixel_constant_buffer[] = {nullptr};
             context->PSSetConstantBuffers(
@@ -1578,7 +1962,7 @@ struct D3d11Renderer::Implementation {
 
         const auto result = swap_chain->Present(1U, 0U);
         if (result == DXGI_STATUS_OCCLUDED) {
-            return;
+            return false;
         }
         if (result == DXGI_ERROR_DEVICE_REMOVED ||
             result == DXGI_ERROR_DEVICE_RESET) {
@@ -1588,6 +1972,7 @@ struct D3d11Renderer::Implementation {
                     device->GetDeviceRemovedReason()));
         }
         require_success(result, "IDXGISwapChain::Present");
+        return true;
     }
 
     HWND window = nullptr;
@@ -1599,10 +1984,13 @@ struct D3d11Renderer::Implementation {
     std::uint32_t height = 0U;
     UINT raster_index_count = 0U;
     UINT source_index_count = 0U;
+    UINT gameplay_proxy_index_count = 0U;
     D3D_FEATURE_LEVEL feature_level = D3D_FEATURE_LEVEL_10_0;
     FitConstants fit_constants{};
     std::vector<SceneVertex3dV1> source_vertices;
     std::vector<ProjectedSourceVertex> projected_vertices;
+    std::vector<SceneVertex3dV1> gameplay_proxy_vertices;
+    std::vector<ProjectedSourceVertex> gameplay_proxy_projected_vertices;
     std::vector<GpuSourceTextureRegion> texture_regions;
     std::vector<RenderSceneD3dDrawV1> render_scene_draws;
     std::vector<RenderSceneD3dMaterialV1> render_scene_materials;
@@ -1611,6 +1999,7 @@ struct D3d11Renderer::Implementation {
     std::vector<ComPtr<ID3D11SamplerState>>
         render_scene_material_samplers;
     std::vector<GpuRenderSceneSampler> render_scene_sampler_cache;
+    std::optional<GameplayPresentation> gameplay_presentation;
     Vec3 orbit_target{};
     float orbit_radius = 1.0F;
     float orbit_yaw = 0.0F;
@@ -1649,6 +2038,8 @@ struct D3d11Renderer::Implementation {
     ComPtr<ID3D11Buffer> raster_index_buffer;
     ComPtr<ID3D11Buffer> source_vertex_buffer;
     ComPtr<ID3D11Buffer> source_index_buffer;
+    ComPtr<ID3D11Buffer> gameplay_proxy_vertex_buffer;
+    ComPtr<ID3D11Buffer> gameplay_proxy_index_buffer;
     ComPtr<ID3D11Buffer> fit_buffer;
     ComPtr<ID3D11Buffer> render_scene_material_buffer;
 };
@@ -1688,8 +2079,22 @@ void D3d11Renderer::resize(const std::uint32_t width,
     implementation_->resize(width, height);
 }
 
-void D3d11Renderer::render() {
-    implementation_->render();
+bool D3d11Renderer::render() {
+    return implementation_->render();
+}
+
+void D3d11Renderer::set_gameplay_presentation(
+    const game::ThirdPersonCameraViewV1& camera,
+    const CollisionVectorV1& feet_position,
+    const double facing_yaw_radians,
+    const double capsule_radius,
+    const double capsule_height) {
+    implementation_->set_gameplay_presentation(
+        camera,
+        feet_position,
+        facing_yaw_radians,
+        capsule_radius,
+        capsule_height);
 }
 
 void D3d11Renderer::orbit(

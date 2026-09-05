@@ -1,0 +1,395 @@
+#include "openrc/runtime_gameplay.hpp"
+
+#include <cmath>
+#include <cstdint>
+#include <functional>
+#include <iostream>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace {
+
+constexpr openrc::CollisionWorldBuildLimitsV1 kWorldLimits{
+    1024U, 1024U, 16'384U, 65'536U, openrc::kCollisionDefaultGridCellSizeQ6V1,
+};
+
+void expect(const bool condition, const std::string &message) {
+  if (!condition) {
+    throw std::runtime_error(message);
+  }
+}
+
+template <typename Callback>
+void expect_gameplay_error(Callback &&callback, const std::string &message) {
+  try {
+    std::invoke(std::forward<Callback>(callback));
+  } catch (const openrc::game::RuntimeGameplayError &) {
+    return;
+  }
+  throw std::runtime_error(message);
+}
+
+[[nodiscard]] openrc::CollisionWorldV1 floor_world() {
+  openrc::CollisionMeshV1 mesh;
+  mesh.vertices = {
+      {-4096, -4096, 0},
+      {4096, -4096, 0},
+      {4096, 4096, 0},
+      {-4096, 4096, 0},
+  };
+  mesh.triangles = {
+      {{0U, 1U, 2U}, {}, openrc::CollisionLayerV1::world},
+      {{0U, 2U, 3U}, {}, openrc::CollisionLayerV1::world},
+  };
+  return openrc::build_collision_world_v1(std::move(mesh), kWorldLimits);
+}
+
+[[nodiscard]] openrc::CollisionWorldV1 empty_world() {
+  return openrc::build_collision_world_v1({}, kWorldLimits);
+}
+
+[[nodiscard]] openrc::game::RuntimeLevelFoundationV1
+foundation(const std::uint32_t level_id = 7U,
+           const std::uint32_t spawn_id = 10U,
+           const openrc::CollisionVectorV1 spawn = {0.0, 0.0, 0.0},
+           const double death_height = -5.0,
+           openrc::CollisionWorldV1 collision_world = floor_world()) {
+  openrc::game::RuntimeLevelFoundationV1 result;
+  result.level_id = level_id;
+  result.content_api_version = 1U;
+  result.build_id = "runtime-gameplay-test";
+  result.collision_world = std::move(collision_world);
+  result.bootstrap.level_id = level_id;
+  result.bootstrap.death_height_world = death_height;
+  result.bootstrap.default_spawn_id = spawn_id;
+  result.bootstrap.spawn_points = {
+      {spawn_id, spawn, 0.0},
+      {spawn_id + 1U, {spawn.x + 2.0, spawn.y - 1.0, spawn.z + 1.0}, 0.5},
+  };
+  return result;
+}
+
+[[nodiscard]] openrc::game::GameInputSampleV1
+movement_sample(const std::int16_t x, const std::int16_t y,
+                const std::uint32_t held_buttons = 0U) {
+  openrc::game::GameInputSampleV1 result;
+  result.axes.move_x = x;
+  result.axes.move_y = y;
+  result.held_buttons = held_buttons;
+  return result;
+}
+
+void assert_tick_invariants(
+    const openrc::game::RuntimeGameplaySnapshotV1 &snapshot,
+    const std::uint64_t expected_tick) {
+  expect(snapshot.session.next_tick_index == expected_tick &&
+             snapshot.player.next_tick_index == expected_tick &&
+             snapshot.input_next_tick_index == expected_tick &&
+             snapshot.fixed_step_next_tick_index == expected_tick,
+         "runtime gameplay tick owners diverged");
+}
+
+void test_spawn_session_and_production_profile() {
+  using namespace openrc::game;
+
+  RuntimeGameplaySessionOptionsV1 options;
+  options.deterministic_seed = UINT64_C(0x123456789abcdef0);
+  options.spawn_point_id = 11U;
+  RuntimeGameplaySessionV1 runtime(foundation(), options);
+  const auto state = runtime.snapshot();
+  const auto expected_profile = make_runtime_gameplay_profile_v1();
+
+  expect(runtime.profile() == expected_profile &&
+             expected_profile.fixed_step ==
+                 FixedStepConfigV1{60U, 8U, 250'000'000U},
+         "the shared production gameplay profile changed unexpectedly");
+  expect(state.session.deterministic_seed == options.deterministic_seed &&
+             state.session.active_level_id == 7U &&
+             state.session.active_spawn_point_id == 11U &&
+             state.session.level_instance_sequence == 1U &&
+             state.active_level == ActiveLevelV1{7U, 11U, 1U},
+         "initial level request was not committed into session and world");
+  expect(state.player.checkpoint.checkpoint_id == 11U &&
+             state.player.character.feet_position ==
+                 openrc::CollisionVectorV1{2.0, -1.0, 1.0} &&
+             runtime.world().entity_count() == 0U,
+         "authored spawn was not used or a synthetic player entity leaked in");
+  assert_tick_invariants(state, 0U);
+
+  auto invalid_profile = expected_profile;
+  invalid_profile.fixed_step.max_steps_per_advance =
+      kRuntimeGameplayMaximumStepsPerAdvanceV1 + 1U;
+  expect_gameplay_error(
+      [&] { validate_runtime_gameplay_profile_v1(invalid_profile); },
+      "an unbounded per-frame gameplay catch-up policy was accepted");
+
+  invalid_profile = expected_profile;
+  invalid_profile.fixed_step.ticks_per_second = 1U;
+  expect_gameplay_error(
+      [&] { validate_runtime_gameplay_profile_v1(invalid_profile); },
+      "a tick/controller combination exceeding the motion budget was accepted");
+
+  auto low_but_safe_rate = expected_profile;
+  low_but_safe_rate.fixed_step.ticks_per_second = 4U;
+  validate_runtime_gameplay_profile_v1(low_but_safe_rate);
+}
+
+[[nodiscard]] openrc::game::RuntimeGameplaySnapshotV1
+run_partition(const std::vector<std::uint64_t> &frame_times) {
+  using namespace openrc::game;
+
+  RuntimeGameplaySessionV1 runtime(foundation());
+  runtime.submit_input_sample(movement_sample(kGameInputAxisMagnitudeV1, 0));
+  std::uint64_t expected_tick = 0U;
+  for (const auto elapsed : frame_times) {
+    const auto frame = runtime.advance_frame(elapsed);
+    expect(frame.fixed_step.first_tick_index == expected_tick &&
+               frame.ticks.size() == frame.fixed_step.step_count,
+           "a frame returned the wrong replay tick range");
+    for (std::size_t index = 0U; index < frame.ticks.size(); ++index) {
+      expect(frame.ticks[index].input.tick_index == expected_tick + index,
+             "per-tick gameplay output is not in replay order");
+    }
+    expected_tick += frame.fixed_step.step_count;
+    assert_tick_invariants(frame.snapshot, expected_tick);
+  }
+  return runtime.snapshot();
+}
+
+void test_determinism_across_frame_partitions() {
+  std::vector<std::uint64_t> sixty_frames(60U, 16'666'666U);
+  sixty_frames.back() += 40U;
+  const std::vector<std::uint64_t> ten_frames(10U, 100'000'000U);
+
+  const auto first = run_partition(sixty_frames);
+  const auto second = run_partition(ten_frames);
+  expect(first == second && first.session.next_tick_index == 60U &&
+             first.interpolation_numerator == 0U &&
+             first.total_dropped_step_count == 0U,
+         "one second of identical input changed with render-frame partition");
+}
+
+void test_per_tick_movement_mapping_and_atomic_failure() {
+  using namespace openrc::game;
+
+  RuntimeGameplaySessionV1 runtime(foundation());
+  const auto sample = movement_sample(kGameInputAxisMagnitudeV1, 0);
+  std::uint32_t mapper_calls = 0U;
+  const RuntimeMovementMapperV1 rotate_to_y =
+      [&mapper_calls](const GameInputCommandV1 &input,
+                      const double fixed_delta_seconds) {
+        expect(input.tick_index == mapper_calls,
+               "movement mapper observed an unexpected fixed-tick index");
+        expect(fixed_delta_seconds == 1.0 / 60.0,
+               "movement mapper received a different delta than the player");
+        ++mapper_calls;
+        return RuntimeMovementAxesV1{0, input.axes.move_x};
+      };
+  const auto frame = runtime.advance_frame(50'000'000U, sample, rotate_to_y);
+  expect(frame.ticks.size() == 3U && mapper_calls == 3U,
+         "movement mapper was not invoked exactly once per fixed tick");
+  for (const auto &tick : frame.ticks) {
+    expect(tick.input.axes.move_x == 0 &&
+               tick.input.axes.move_y == kGameInputAxisMagnitudeV1,
+           "camera-relative movement was not recorded in world axes");
+  }
+  expect(frame.snapshot.player.character.feet_position.y > 0.0 &&
+             std::abs(frame.snapshot.player.character.feet_position.x) < 1.0e-9,
+         "mapped world-space movement did not reach player simulation");
+
+  RuntimeGameplaySessionV1 identity_runtime(foundation());
+  const auto identity = identity_runtime.advance_frame(16'666'667U, sample);
+  expect(identity.ticks.size() == 1U &&
+             identity.ticks[0U].input.axes.move_x ==
+                 kGameInputAxisMagnitudeV1 &&
+             identity.ticks[0U].input.axes.move_y == 0,
+         "an empty movement mapper did not preserve world-space input");
+
+  const auto before_failure = runtime.snapshot();
+  const RuntimeMovementMapperV1 invalid_mapper = [](const GameInputCommandV1 &,
+                                                    const double) {
+    return RuntimeMovementAxesV1{std::numeric_limits<std::int16_t>::min(), 0};
+  };
+  expect_gameplay_error(
+      [&] {
+        static_cast<void>(runtime.advance_frame(16'666'667U, invalid_mapper));
+      },
+      "invalid mapped movement entered the replay stream");
+  expect(runtime.snapshot() == before_failure,
+         "a failed mapped frame partially mutated gameplay state");
+}
+
+void test_snapshot_preserves_pending_edges() {
+  using namespace openrc::game;
+
+  RuntimeGameplaySessionV1 runtime(foundation());
+  const auto neutral = runtime.snapshot();
+  const auto jump_mask = game_button_mask_v1(GameButtonV1::jump);
+  runtime.submit_input_sample(movement_sample(0, 0, jump_mask));
+  runtime.submit_input_sample(movement_sample(0, 0, 0U));
+  const auto pending = runtime.snapshot();
+  expect(pending.raw_input_sample == GameInputSampleV1{} &&
+             pending.pending_pressed_buttons == jump_mask &&
+             pending.pending_released_buttons == jump_mask &&
+             pending != neutral,
+         "runtime snapshot lost a complete button tap between ticks");
+
+  const auto consumed = runtime.advance_frame(16'666'667U);
+  expect(consumed.ticks.size() == 1U &&
+             consumed.snapshot.pending_pressed_buttons == 0U &&
+             consumed.snapshot.pending_released_buttons == 0U,
+         "consumed runtime input edges remained pending in the snapshot");
+}
+
+void test_checkpoint_collision_envelope_is_bounded() {
+  using namespace openrc::game;
+
+  RuntimeGameplaySessionV1 runtime(foundation());
+  const auto before = runtime.snapshot();
+  PlayerCheckpointV1 invalid{
+      90U,
+      {static_cast<double>(std::numeric_limits<std::int32_t>::max()),
+       0.0,
+       10.0},
+      0.0,
+  };
+  expect_gameplay_error(
+      [&] { runtime.set_checkpoint(invalid, true); },
+      "an out-of-domain checkpoint was committed to live gameplay");
+  expect(runtime.snapshot() == before,
+         "a rejected checkpoint partially mutated gameplay state");
+
+  expect_gameplay_error(
+      [&] {
+        static_cast<void>(RuntimeGameplaySessionV1(foundation(
+            7U, 10U, invalid.feet_position, -5.0, empty_world())));
+      },
+      "an out-of-domain authored spawn entered runtime gameplay");
+}
+
+void test_jump_manual_reset_and_input_edges() {
+  using namespace openrc::game;
+
+  RuntimeGameplaySessionV1 runtime(foundation());
+  for (std::uint32_t frame = 0U; frame < 4U; ++frame) {
+    static_cast<void>(runtime.advance_frame(16'666'667U));
+  }
+  expect(runtime.snapshot().player.character.grounded,
+         "player did not settle onto the synthetic floor");
+
+  const auto jump_mask = game_button_mask_v1(GameButtonV1::jump);
+  runtime.submit_input_sample(movement_sample(0, 0, jump_mask));
+  runtime.submit_input_sample(movement_sample(0, 0, 0U));
+  const auto jump = runtime.advance_frame(16'666'667U);
+  expect(jump.ticks.size() == 1U &&
+             (jump.ticks[0U].input.pressed_buttons & jump_mask) != 0U &&
+             (jump.ticks[0U].input.released_buttons & jump_mask) != 0U &&
+             jump.snapshot.player.character.velocity.z > 0.0,
+         "a complete jump tap between ticks was lost");
+
+  runtime.submit_input_sample(movement_sample(kGameInputAxisMagnitudeV1, 0));
+  for (std::uint32_t frame = 0U; frame < 6U; ++frame) {
+    static_cast<void>(runtime.advance_frame(16'666'667U));
+  }
+  const auto reset_mask = game_button_mask_v1(GameButtonV1::reset_checkpoint);
+  const auto reset =
+      runtime.advance_frame(16'666'667U, movement_sample(0, 0, reset_mask));
+  expect(reset.ticks.size() == 1U &&
+             reset.ticks[0U].player.reset_reason ==
+                 PlayerResetReasonV1::manual &&
+             reset.snapshot.player.character.feet_position ==
+                 reset.snapshot.player.checkpoint.feet_position &&
+             reset.snapshot.player.reset_count == 1U,
+         "manual checkpoint reset did not use PlayerSimulation semantics");
+  assert_tick_invariants(reset.snapshot,
+                         reset.fixed_step.first_tick_index + 1U);
+}
+
+void test_death_reset_and_capped_catch_up() {
+  using namespace openrc::game;
+
+  RuntimeGameplaySessionV1 falling(
+      foundation(7U, 10U, {0.0, 0.0, 0.5}, -1.0, empty_world()));
+  bool reset_observed = false;
+  for (std::uint32_t frame_index = 0U; frame_index < 180U; ++frame_index) {
+    const auto frame = falling.advance_frame(16'666'667U);
+    if (!frame.ticks.empty() &&
+        frame.ticks.back().player.reset_reason ==
+            PlayerResetReasonV1::fell_below_death_height) {
+      expect(frame.snapshot.player.character.feet_position ==
+                 frame.snapshot.player.checkpoint.feet_position,
+             "death reset did not restore the authored spawn");
+      reset_observed = true;
+      break;
+    }
+  }
+  expect(reset_observed && falling.snapshot().player.reset_count == 1U,
+         "falling below the package death plane did not reset the player");
+
+  RuntimeGameplaySessionOptionsV1 options;
+  options.profile.fixed_step = FixedStepConfigV1{60U, 4U, 100'000'000U};
+  RuntimeGameplaySessionV1 capped(foundation(), options);
+  const auto overload = capped.advance_frame(250'000'000U);
+  expect(
+      overload.fixed_step == FixedStepAdvanceV1{0U, 4U, 2U, 150'000'000U, 0U} &&
+          overload.ticks.size() == 4U &&
+          overload.snapshot.total_dropped_step_count == 2U &&
+          overload.snapshot.total_discarded_elapsed_nanoseconds == 150'000'000U,
+      "runtime gameplay did not report bounded catch-up loss exactly");
+  assert_tick_invariants(overload.snapshot, 4U);
+}
+
+void test_level_replacement_retains_global_tick_sequence() {
+  using namespace openrc::game;
+
+  RuntimeGameplaySessionV1 runtime(foundation());
+  const auto before = runtime.advance_frame(
+      50'000'000U, movement_sample(kGameInputAxisMagnitudeV1, 0));
+  runtime.submit_input_sample(movement_sample(
+      0, 0, game_button_mask_v1(GameButtonV1::reset_checkpoint)));
+
+  runtime.load_level(foundation(8U, 20U, {4.0, 5.0, 2.0}, -3.0), 21U);
+  const auto after = runtime.snapshot();
+  expect(after.session.next_tick_index ==
+                 before.snapshot.session.next_tick_index &&
+             after.session.active_level_id == 8U &&
+             after.session.active_spawn_point_id == 21U &&
+             after.session.level_instance_sequence == 2U &&
+             after.active_level == ActiveLevelV1{8U, 21U, 2U} &&
+             after.player.checkpoint.checkpoint_id == 21U &&
+             after.player.next_tick_index ==
+                 before.snapshot.player.next_tick_index,
+         "level replacement broke persistent session or replay numbering");
+  expect(after.raw_input_sample == GameInputSampleV1{},
+         "pending input leaked across a committed level boundary");
+  assert_tick_invariants(after, before.snapshot.session.next_tick_index);
+
+  const auto first_new_level_tick = runtime.advance_frame(16'666'667U);
+  expect(first_new_level_tick.ticks.size() == 1U &&
+             first_new_level_tick.ticks[0U].input.pressed_buttons == 0U &&
+             first_new_level_tick.ticks[0U].input.released_buttons == 0U,
+         "an old level's button edge reached the replacement level");
+}
+
+} // namespace
+
+int main() {
+  try {
+    test_spawn_session_and_production_profile();
+    test_determinism_across_frame_partitions();
+    test_per_tick_movement_mapping_and_atomic_failure();
+    test_snapshot_preserves_pending_edges();
+    test_checkpoint_collision_envelope_is_bounded();
+    test_jump_manual_reset_and_input_edges();
+    test_death_reset_and_capped_catch_up();
+    test_level_replacement_retains_global_tick_sequence();
+    std::cout << "runtime_gameplay_tests: ok\n";
+    return 0;
+  } catch (const std::exception &error) {
+    std::cerr << "runtime_gameplay_tests: " << error.what() << '\n';
+    return 1;
+  }
+}

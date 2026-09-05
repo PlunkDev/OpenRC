@@ -16,6 +16,7 @@
 #include "openrc/level_render_scene_compile.hpp"
 #include "openrc/localized_subtitle_bank.hpp"
 #include "openrc/map_art.hpp"
+#include "openrc/native_game_prepare.hpp"
 #include "openrc/paths.hpp"
 #include "openrc/player_simulation.hpp"
 #include "openrc/preparation.hpp"
@@ -340,25 +341,63 @@ make_cli_level_foundation_compile_limits(
     return stream.str();
 }
 
+[[nodiscard]] bool cli_path_component_equal(
+    const std::filesystem::path& left,
+    const std::filesystem::path& right) noexcept {
+#ifdef _WIN32
+    const auto& left_native = left.native();
+    const auto& right_native = right.native();
+    if (left_native.size() >
+            static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+        right_native.size() >
+            static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        return false;
+    }
+    return CompareStringOrdinal(
+               left_native.data(), static_cast<int>(left_native.size()),
+               right_native.data(), static_cast<int>(right_native.size()),
+               TRUE) == CSTR_EQUAL;
+#else
+    return left == right;
+#endif
+}
+
 void require_publication_root_outside_source(
     const std::filesystem::path &destination_root,
     const std::filesystem::path &source, const char *const source_description) {
     std::error_code filesystem_error;
-    const auto relative =
-        std::filesystem::relative(source, destination_root, filesystem_error);
+    const auto normalized_source =
+        std::filesystem::canonical(source, filesystem_error);
     if (filesystem_error) {
         throw std::runtime_error(
-            std::string(
-                "Cannot compare the native publication root with the ") +
-            source_description + ": " + filesystem_error.message());
+            std::string("Cannot resolve the ") + source_description + ": " +
+            filesystem_error.message());
     }
-    if (relative.empty() || relative.is_absolute()) {
-        return;
-    }
-    const auto first = relative.begin();
-    if (first != relative.end() && *first != "..") {
+    filesystem_error.clear();
+    const auto normalized_destination =
+        std::filesystem::weakly_canonical(
+            destination_root, filesystem_error);
+    if (filesystem_error) {
         throw std::runtime_error(
-            std::string("The native publication root cannot contain the ") +
+            "Cannot resolve the native publication root: " +
+            filesystem_error.message());
+    }
+    auto source_component = normalized_source.begin();
+    const auto source_end = normalized_source.end();
+    auto destination_component = normalized_destination.begin();
+    const auto destination_end = normalized_destination.end();
+    for (; destination_component != destination_end &&
+           source_component != source_end;
+         ++destination_component, ++source_component) {
+        if (!cli_path_component_equal(
+                *destination_component, *source_component)) {
+            return;
+        }
+    }
+    if (destination_component == destination_end) {
+        throw std::runtime_error(
+            std::string(
+                "The native publication root cannot contain or equal the ") +
             source_description);
     }
 }
@@ -377,6 +416,75 @@ void require_publication_root_outside_source(
          assets.gameplay_source_bytes}};
     return openrc::compile_rac_level_foundation_package_v1(
         request, make_cli_level_foundation_compile_limits(package_limits));
+}
+
+[[nodiscard]] bool print_native_game_preparation_progress(
+    const openrc::NativeGamePreparationProgressV1& progress,
+    void*) noexcept {
+    try {
+        const auto level_prefix = [&progress]() {
+            std::ostringstream stream;
+            stream << '[' << (progress.completed_levels + 1U) << '/'
+                   << progress.total_levels << "] Level "
+                   << progress.level_id << ": ";
+            return stream.str();
+        };
+        switch (progress.phase) {
+        case openrc::NativeGamePreparationPhaseV1::validating_inputs:
+            std::cout << "Validating native-game source inputs...\n";
+            break;
+        case openrc::NativeGamePreparationPhaseV1::hashing_inputs:
+            std::cout << "Hashing the source image and prepared boot ELF...\n";
+            break;
+        case openrc::NativeGamePreparationPhaseV1::checking_existing_publication:
+            if (progress.level_id ==
+                openrc::kNativeGamePreparationNoLevelV1) {
+                std::cout
+                    << "Checking for a matching verified native game...\n";
+            } else {
+                std::cout << level_prefix()
+                          << "validating existing native package...\n";
+            }
+            break;
+        case openrc::NativeGamePreparationPhaseV1::loading_level_assets:
+            std::cout << level_prefix() << "loading source assets...\n";
+            break;
+        case openrc::NativeGamePreparationPhaseV1::compiling_level_foundation:
+            std::cout << level_prefix()
+                      << "compiling collision and bootstrap...\n";
+            break;
+        case openrc::NativeGamePreparationPhaseV1::recovering_level_scene:
+            std::cout << level_prefix()
+                      << "recovering all scene records...\n";
+            break;
+        case openrc::NativeGamePreparationPhaseV1::compiling_render_scene:
+            std::cout << level_prefix()
+                      << "compiling neutral rendering data...\n";
+            break;
+        case openrc::NativeGamePreparationPhaseV1::encoding_level_package:
+            std::cout << level_prefix() << "encoding native package...\n";
+            break;
+        case openrc::NativeGamePreparationPhaseV1::verifying_inputs:
+            std::cout << "Verifying source inputs after preparation...\n";
+            break;
+        case openrc::NativeGamePreparationPhaseV1::publishing:
+            std::cout << "Publishing the complete verified level set...\n";
+            break;
+        case openrc::NativeGamePreparationPhaseV1::publishing_staged:
+            std::cout << "Verified staging set is ready for commit...\n";
+            break;
+        case openrc::NativeGamePreparationPhaseV1::publishing_commit:
+            std::cout << "Replacing the previous verified installation...\n";
+            break;
+        case openrc::NativeGamePreparationPhaseV1::reusing_existing_publication:
+            std::cout << "The existing native game matches the sources; "
+                         "reusing it.\n";
+            break;
+        }
+        return std::cout.good();
+    } catch (...) {
+        return false;
+    }
 }
 
 [[nodiscard]] openrc::game::PlayerSimulationProfileV1
@@ -4871,244 +4979,61 @@ int run(const std::vector<std::filesystem::path>& arguments) {
     if (command == "prepare-native-game") {
         if (arguments.size() != 4U) {
             std::cerr
-                << "error: prepare-native-game expects an ISO path, the "
-                   "matching prepared boot ELF, and an absolute output root\n";
+                << "error: prepare-native-game expects absolute paths to an "
+                   "ISO, the matching prepared boot ELF, and the output root\n";
             return kUsageError;
         }
-        if (!arguments[3].is_absolute()) {
-            std::cerr
-                << "error: the native prepared-game root must be absolute\n";
-            return kUsageError;
-        }
-
         try {
-            require_publication_root_outside_source(arguments[3], arguments[1],
-                                                    "source ISO");
-            require_publication_root_outside_source(arguments[3], arguments[2],
-                                                    "prepared boot ELF");
-            const auto disc = openrc::inspect_disc(arguments[1]);
-            if (disc.game != openrc::GameId::ratchet_and_clank_2002 ||
-                !disc.supported_build) {
-                throw std::runtime_error(
-                    "The disc is not the supported RAC1 PAL v2.00 build");
-            }
-            if (disc.image_size > std::numeric_limits<std::uint64_t>::max()) {
-                throw std::runtime_error(
-                    "The source image size exceeds the prepared provenance "
-                    "format");
-            }
-
-            const auto boot_executable_size_before =
-                std::filesystem::file_size(arguments[2]);
-            if (boot_executable_size_before == 0U ||
-                boot_executable_size_before > kMaximumCliElfBytes) {
-                throw std::runtime_error(
-                    "The prepared boot ELF is empty or exceeds the 64 MiB "
-                    "compiler limit");
-            }
-
-            std::cout << "Hashing the source image and prepared boot ELF "
-                         "before native compilation...\n";
-            const auto source_digest_before =
-                openrc::sha256_file_digest(arguments[1]);
-            const auto boot_executable_digest_before =
-                openrc::sha256_file_digest(arguments[2]);
-            const auto source_size_before =
-                static_cast<std::uint64_t>(disc.image_size);
-
-            // These policies are intentionally constructed once and reused
-            // unchanged for every planet. A successful output therefore never
-            // depends on level-specific compiler exceptions.
-            const auto package_limits = make_cli_native_level_package_limits();
-            const auto prepared_limits = make_cli_prepared_native_limits();
-            const auto source_asset_limits = make_cli_moby_asset_limits();
-            const auto recovery_limits =
-                openrc::runtime::make_level_scene_recovery_limits_v1();
-            const auto recovery_profile =
-                openrc::runtime::make_level_scene_recovery_profile_v1();
-            const auto render_profile =
-                openrc::runtime::make_level_scene_render_compile_profile_v1();
-            const auto render_io_limits = make_cli_render_scene_io_limits();
-
-            const std::array<openrc::LevelPackageProvenanceV1, 2U>
-                render_sources{
-                    openrc::LevelPackageProvenanceV1{
-                        openrc::LevelPackageProvenanceKindV1::iso_range,
-                        "rac1/disc-image",
-                        0U,
-                        source_size_before,
-                        source_digest_before,
-                    },
-                    openrc::LevelPackageProvenanceV1{
-                        openrc::LevelPackageProvenanceKindV1::prepared_resource,
-                        "rac1/boot-executable",
-                        0U,
-                        static_cast<std::uint64_t>(boot_executable_size_before),
-                        boot_executable_digest_before,
-                    },
-                };
-
-            openrc::PreparedGameV2 manifest;
-            manifest.content_api_version = openrc::kOpenRcContentApiVersionV1;
-            manifest.provenance.game_id = "openrc-rac-2002";
-            manifest.provenance.build_id = kSupportedRacBuildIdV1;
-            manifest.provenance.compiler_id = "openrc-asset-compiler";
-            manifest.provenance.compiler_version = OPENRC_VERSION;
-            manifest.provenance.source_image_bytes = source_size_before;
-            manifest.provenance.source_image_sha256 = source_digest_before;
-
-            std::vector<std::vector<std::byte>> package_storage;
-            package_storage.reserve(openrc::kDiscTocLevelCount);
-            manifest.levels.reserve(openrc::kDiscTocLevelCount);
-            std::uint64_t total_package_bytes = 0U;
-
-            for (std::uint32_t level_id = 0U;
-                 level_id < openrc::kDiscTocLevelCount; ++level_id) {
-                std::string stage = "loading source assets";
-                try {
-                    std::cout << '[' << (level_id + 1U) << '/'
-                              << openrc::kDiscTocLevelCount << "] Level "
-                              << level_id << ": loading source assets...\n";
-                    const auto assets = openrc::load_rac_level_moby_assets_v1(
-                        arguments[1], level_id, source_asset_limits);
-
-                    stage = "compiling the native level foundation";
-                    std::cout << '[' << (level_id + 1U) << '/'
-                              << openrc::kDiscTocLevelCount << "] Level "
-                              << level_id
-                              << ": compiling collision and "
-                                 "bootstrap...\n";
-                    auto package =
-                        compile_cli_level_foundation(assets, package_limits);
-
-                    stage = "recovering the complete level scene";
-                    std::cout << '[' << (level_id + 1U) << '/'
-                              << openrc::kDiscTocLevelCount << "] Level "
-                              << level_id
-                              << ": recovering all scene "
-                                 "records...\n";
-                    const openrc::runtime::LevelSceneRecoveryRequestV1
-                        recovery_request{
-                            arguments[1],
-                            arguments[2],
-                            level_id,
-                            openrc::runtime::LevelSceneRecordSelectionV1::all_records,
-                            0U,
-                            openrc::kSceneBlockSourceGeometryEntrypointV1};
-                    const auto recovered =
-                        openrc::runtime::recover_level_scene_v1(
-                            recovery_request, recovery_limits,
-                            recovery_profile);
-
-                    stage = "compiling the neutral render scene";
-                    std::cout << '[' << (level_id + 1U) << '/'
-                              << openrc::kDiscTocLevelCount << "] Level "
-                              << level_id
-                              << ": compiling neutral rendering "
-                                 "data...\n";
-                    const auto render_scene =
-                        openrc::runtime::compile_level_scene_render_v1(
-                            recovered, render_profile);
-
-                    stage = "attaching and encoding the render scene";
-                    package = openrc::attach_render_scene_to_level_package_v1(
-                        std::move(package), render_scene, render_sources,
-                        render_io_limits, package_limits);
-                    auto package_bytes = openrc::encode_level_package_v1(
-                        package, package_limits);
-                    if (package_bytes.size() >
-                        kMaximumCliPreparedNativeBytes - total_package_bytes) {
-                        throw std::runtime_error(
-                            "The complete native game exceeds its bounded "
-                            "package-byte budget");
-                    }
-                    total_package_bytes += package_bytes.size();
-
-                    manifest.levels.push_back(
-                        openrc::PreparedGameLevelReferenceV2{
-                            level_id, level_package_path(level_id),
-                            package_bytes.size(),
-                            openrc::prepared_content_sha256_v1(package_bytes)});
-                    package_storage.push_back(std::move(package_bytes));
-                    std::cout << '[' << (level_id + 1U) << '/'
-                              << openrc::kDiscTocLevelCount << "] Level "
-                              << level_id << ": ready ("
-                              << package_storage.back().size()
-                              << " package bytes).\n";
-                } catch (const std::exception &error) {
+            const auto absolute_path = [](const std::filesystem::path& path,
+                                          const char* description) {
+                std::error_code error;
+                auto result = std::filesystem::absolute(path, error);
+                if (error) {
                     throw std::runtime_error(
-                        "Native game compilation failed for level " +
-                        std::to_string(level_id) + " while " + stage + ": " +
-                        error.what());
+                        std::string("Cannot resolve the ") + description +
+                        ": " + error.message());
                 }
-            }
-
-            if (manifest.levels.size() != openrc::kDiscTocLevelCount ||
-                package_storage.size() != openrc::kDiscTocLevelCount) {
-                throw std::runtime_error(
-                    "Native game compilation did not produce the canonical "
-                    "19-level set");
-            }
-
-            std::cout << "Hashing the source image and prepared boot ELF "
-                         "after native compilation...\n";
-            const auto source_size_after =
-                std::filesystem::file_size(arguments[1]);
-            const auto boot_executable_size_after =
-                std::filesystem::file_size(arguments[2]);
-            const auto source_digest_after =
-                openrc::sha256_file_digest(arguments[1]);
-            const auto boot_executable_digest_after =
-                openrc::sha256_file_digest(arguments[2]);
-            if (source_size_after != source_size_before ||
-                source_digest_after != source_digest_before) {
-                throw std::runtime_error(
-                    "The source image changed during native game "
-                    "compilation");
-            }
-            if (boot_executable_size_after != boot_executable_size_before ||
-                boot_executable_digest_after != boot_executable_digest_before) {
-                throw std::runtime_error(
-                    "The prepared boot ELF changed during native game "
-                    "compilation");
-            }
-
-            std::vector<openrc::PreparedGameV2LevelPackageBytesV1>
-                package_inputs;
-            package_inputs.reserve(package_storage.size());
-            for (std::size_t index = 0U; index < package_storage.size();
-                 ++index) {
-                package_inputs.push_back(
-                    openrc::PreparedGameV2LevelPackageBytesV1{
-                        static_cast<std::uint32_t>(index),
-                        package_storage[index]});
-            }
-
-            std::cout << "All 19 native level packages are complete; "
-                         "publishing the verified set atomically...\n";
-            const auto published = openrc::publish_prepared_game_v2_v1(
-                arguments[3], manifest, package_inputs, prepared_limits);
-            std::cout << "OpenRC native game published\n"
-                      << "Root:                   "
-                      << openrc::path_to_utf8(published.root) << '\n'
-                      << "Levels:                 " << published.level_count
-                      << '\n'
-                      << "Level package bytes:    " << published.package_bytes
-                      << '\n'
-                      << "Manifest SHA-256:       "
-                      << openrc::hex_digest(published.manifest_sha256) << '\n'
-                      << "Source image SHA-256:   "
-                      << openrc::hex_digest(source_digest_before) << '\n'
-                      << "Prepared ELF SHA-256:   "
-                      << openrc::hex_digest(boot_executable_digest_before)
-                      << '\n';
+                return result.lexically_normal();
+            };
+            const auto source_image =
+                absolute_path(arguments[1], "source ISO path");
+            const auto prepared_boot =
+                absolute_path(arguments[2], "prepared boot ELF path");
+            const auto destination =
+                absolute_path(arguments[3], "native output path");
+            const auto result = openrc::prepare_native_game_v1(
+                openrc::NativeGamePreparationRequestV1{
+                    source_image, prepared_boot, destination, std::nullopt},
+                openrc::NativeGamePreparationControlV1{
+                    print_native_game_preparation_progress, nullptr});
+            std::cout
+                << (result.already_prepared
+                        ? "OpenRC native game is already prepared\n"
+                        : "OpenRC native game published\n")
+                << "Root:                   "
+                << openrc::path_to_utf8(result.publication.root) << '\n'
+                << "Levels:                 "
+                << result.publication.level_count << '\n'
+                << "Level package bytes:    "
+                << result.publication.package_bytes << '\n'
+                << "Manifest SHA-256:       "
+                << openrc::hex_digest(result.publication.manifest_sha256)
+                << '\n'
+                << "Source image SHA-256:   "
+                << openrc::hex_digest(result.source_image_sha256) << '\n'
+                << "Prepared ELF SHA-256:   "
+                << openrc::hex_digest(
+                       result.prepared_boot_executable_sha256)
+                << '\n';
             return 0;
-        } catch (const std::exception &error) {
+        } catch (const openrc::NativeGamePreparationCancelledV1& error) {
+            std::cerr << "cancelled: " << error.what() << '\n';
+            return kCancelled;
+        } catch (const std::exception& error) {
             std::cerr << "error: " << error.what() << '\n';
             return kOperationError;
         }
     }
-
     if (command == "prepared-level-smoke") {
         if (arguments.size() != 3U) {
             std::cerr

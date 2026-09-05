@@ -36,6 +36,7 @@ add_library(openrc_core STATIC
     src/core/gif_gs.cpp
     src/core/hash.cpp
     src/core/iso9660.cpp
+    src/core/launcher_plan.cpp
     src/core/level_render_scene_compile.cpp
     src/core/level_bootstrap.cpp
     src/core/localized_subtitle_bank.cpp
@@ -66,6 +67,7 @@ add_library(openrc_core STATIC
     src/core/render_scene_io.cpp
     src/core/runtime_level_content.cpp
     src/core/runtime_level_foundation.cpp
+    src/core/runtime_gameplay.cpp
     src/core/runtime_render_scene.cpp
     src/core/scene_animation_bank.cpp
     src/core/scene_block_directory.cpp
@@ -81,6 +83,7 @@ add_library(openrc_core STATIC
     src/core/sblk_wav.cpp
     src/core/settings.cpp
     src/core/two_fip.cpp
+    src/core/third_person_camera.cpp
     src/core/vagp.cpp
     src/core/wad.cpp
     src/core/wad_bundle.cpp
@@ -136,6 +139,33 @@ else()
     )
 endif()
 
+add_library(openrc_native_game_prepare STATIC
+    src/compiler/native_game_prepare.cpp
+)
+target_include_directories(openrc_native_game_prepare
+    PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/runtime"
+)
+target_link_libraries(
+    openrc_native_game_prepare
+    PUBLIC
+        openrc_level_scene_recovery
+)
+target_compile_features(openrc_native_game_prepare PUBLIC cxx_std_20)
+if(MSVC)
+    target_compile_options(
+        openrc_native_game_prepare
+        PRIVATE
+        /W4 /permissive- /utf-8
+    )
+else()
+    target_compile_options(
+        openrc_native_game_prepare
+        PRIVATE
+        -Wall -Wextra -Wpedantic
+    )
+endif()
+
 add_library(openrc_render_scene_d3d_data STATIC
     src/runtime/render_scene_d3d_data.cpp
 )
@@ -167,7 +197,12 @@ target_include_directories(openrc-cli
     PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/src/runtime"
 )
-target_link_libraries(openrc-cli PRIVATE openrc_level_scene_recovery)
+target_link_libraries(
+    openrc-cli
+    PRIVATE
+        openrc_level_scene_recovery
+        openrc_native_game_prepare
+)
 target_compile_features(openrc-cli PRIVATE cxx_std_20)
 
 if(MINGW)
@@ -188,7 +223,13 @@ if(OPENRC_BUILD_LAUNCHER)
             src/launcher/openrc-launcher.manifest
         )
         target_compile_definitions(openrc-launcher PRIVATE UNICODE _UNICODE NOMINMAX)
-        target_link_libraries(openrc-launcher PRIVATE openrc_core comdlg32 shell32)
+        target_link_libraries(
+            openrc-launcher
+            PRIVATE
+                openrc_native_game_prepare
+                comdlg32
+                shell32
+        )
         if(MINGW)
             target_link_options(openrc-launcher PRIVATE -municode)
         endif()
@@ -291,6 +332,20 @@ if(OPENRC_BUILD_TESTS)
         PRIVATE
         cxx_std_20
     )
+    add_executable(
+        openrc-launcher-plan-tests
+        tests/launcher_plan_tests.cpp
+    )
+    target_link_libraries(
+        openrc-launcher-plan-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-launcher-plan-tests
+        PRIVATE
+        cxx_std_20
+    )
     add_executable(openrc-disc-tests tests/disc_tests.cpp)
     target_link_libraries(openrc-disc-tests PRIVATE openrc_core)
     target_compile_features(openrc-disc-tests PRIVATE cxx_std_20)
@@ -379,6 +434,36 @@ if(OPENRC_BUILD_TESTS)
     add_executable(openrc-game-world-tests tests/game_world_tests.cpp)
     target_link_libraries(openrc-game-world-tests PRIVATE openrc_core)
     target_compile_features(openrc-game-world-tests PRIVATE cxx_std_20)
+
+    add_executable(
+        openrc-runtime-gameplay-tests
+        tests/runtime_gameplay_tests.cpp
+    )
+    target_link_libraries(
+        openrc-runtime-gameplay-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-runtime-gameplay-tests
+        PRIVATE
+        cxx_std_20
+    )
+
+    add_executable(
+        openrc-third-person-camera-tests
+        tests/third_person_camera_tests.cpp
+    )
+    target_link_libraries(
+        openrc-third-person-camera-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-third-person-camera-tests
+        PRIVATE
+        cxx_std_20
+    )
 
     add_executable(
         openrc-prepared-game-v2-tests
@@ -944,6 +1029,8 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-game-input-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-fixed-step-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-game-world-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-runtime-gameplay-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-third-person-camera-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-prepared-game-v2-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-prepared-game-v2-fs-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-prepared-game-v2-publish-tests PRIVATE /W4 /permissive- /utf-8)
@@ -994,6 +1081,8 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-game-input-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-fixed-step-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-game-world-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-runtime-gameplay-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-third-person-camera-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-prepared-game-v2-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-prepared-game-v2-fs-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-prepared-game-v2-publish-tests PRIVATE -Wall -Wextra -Wpedantic)
@@ -1045,6 +1134,8 @@ if(OPENRC_BUILD_TESTS)
     add_test(NAME game-input COMMAND openrc-game-input-tests)
     add_test(NAME fixed-step COMMAND openrc-fixed-step-tests)
     add_test(NAME game-world COMMAND openrc-game-world-tests)
+    add_test(NAME runtime-gameplay COMMAND openrc-runtime-gameplay-tests)
+    add_test(NAME third-person-camera COMMAND openrc-third-person-camera-tests)
     add_test(NAME prepared-game-v2 COMMAND openrc-prepared-game-v2-tests)
     add_test(NAME prepared-game-v2-fs COMMAND openrc-prepared-game-v2-fs-tests)
     add_test(NAME prepared-game-v2-publish COMMAND openrc-prepared-game-v2-publish-tests)
@@ -1223,6 +1314,7 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-iso9660-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-preparation-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-settings-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-launcher-plan-tests PRIVATE /W4 /permissive- /utf-8)
     else()
         target_compile_options(openrc-elf-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-ee-r5900-boundary-tests PRIVATE -Wall -Wextra -Wpedantic)
@@ -1237,6 +1329,7 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-iso9660-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-preparation-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-settings-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-launcher-plan-tests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
 
     add_test(NAME elf-inspector COMMAND openrc-elf-tests)
@@ -1252,6 +1345,7 @@ if(OPENRC_BUILD_TESTS)
     add_test(NAME iso9660-reader COMMAND openrc-iso9660-tests)
     add_test(NAME preparation COMMAND openrc-preparation-tests)
     add_test(NAME settings-migration COMMAND openrc-settings-tests)
+    add_test(NAME launcher-plan COMMAND openrc-launcher-plan-tests)
 endif()
 
 # LLVM-MinGW otherwise leaves executables dependent on libc++.dll and

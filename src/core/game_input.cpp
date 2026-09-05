@@ -110,6 +110,14 @@ const GameInputSampleV1 &GameInputStateV1::current_sample() const noexcept {
   return current_sample_;
 }
 
+std::uint32_t GameInputStateV1::pending_pressed_buttons() const noexcept {
+  return pending_pressed_buttons_;
+}
+
+std::uint32_t GameInputStateV1::pending_released_buttons() const noexcept {
+  return pending_released_buttons_;
+}
+
 std::uint64_t GameInputStateV1::next_tick_index() const noexcept {
   return next_tick_index_;
 }

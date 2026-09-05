@@ -1,0 +1,150 @@
+#pragma once
+
+#include "openrc/fixed_step.hpp"
+#include "openrc/game_world.hpp"
+#include "openrc/runtime_level_foundation.hpp"
+
+#include <cstdint>
+#include <functional>
+#include <optional>
+#include <stdexcept>
+#include <vector>
+
+namespace openrc::game {
+
+inline constexpr std::uint32_t kRuntimeGameplayMaximumStepsPerAdvanceV1 = 256U;
+
+// Runtime-owned policy shared by every prepared level. The level package
+// supplies collision, authored spawns, and its death plane; none of those
+// source-derived values are duplicated here.
+struct RuntimeGameplayProfileV1 {
+  FixedStepConfigV1 fixed_step;
+  CharacterControllerProfileV1 character;
+
+  [[nodiscard]] bool
+  operator==(const RuntimeGameplayProfileV1 &) const = default;
+};
+
+[[nodiscard]] RuntimeGameplayProfileV1 make_runtime_gameplay_profile_v1();
+void validate_runtime_gameplay_profile_v1(
+    const RuntimeGameplayProfileV1 &profile);
+
+struct RuntimeGameplaySessionOptionsV1 {
+  RuntimeGameplayProfileV1 profile = make_runtime_gameplay_profile_v1();
+  std::uint64_t deterministic_seed = 0U;
+  std::optional<SpawnPointIdV1> spawn_point_id;
+  LevelRequestReasonV1 level_request_reason = LevelRequestReasonV1::new_game;
+};
+
+struct RuntimeMovementAxesV1 {
+  std::int16_t move_x = 0;
+  std::int16_t move_y = 0;
+
+  [[nodiscard]] bool operator==(const RuntimeMovementAxesV1 &) const = default;
+};
+
+// The callback converts device/camera-relative movement into canonical world
+// XY. It runs exactly once per emitted fixed tick, immediately before the
+// player step, and receives the same explicit delta used by player simulation.
+// This lets a separately owned camera advance from look axes without copying
+// the runtime's tick-rate policy. An empty mapper preserves the command's
+// already-world-space movement axes.
+using RuntimeMovementMapperV1 = std::function<RuntimeMovementAxesV1(
+    const GameInputCommandV1 &raw_input, double fixed_delta_seconds)>;
+
+struct RuntimeGameplayTickV1 {
+  GameInputCommandV1 input;
+  PlayerSimulationStepV1 player;
+
+  [[nodiscard]] bool operator==(const RuntimeGameplayTickV1 &) const = default;
+};
+
+struct RuntimeGameplaySnapshotV1 {
+  GameSessionSnapshotV1 session;
+  std::optional<ActiveLevelV1> active_level;
+  PlayerSimulationSnapshotV1 player;
+  GameInputSampleV1 raw_input_sample;
+  std::uint32_t pending_pressed_buttons = 0U;
+  std::uint32_t pending_released_buttons = 0U;
+  std::uint64_t input_next_tick_index = 0U;
+  std::uint64_t fixed_step_next_tick_index = 0U;
+  std::uint64_t interpolation_numerator = 0U;
+  std::uint64_t total_dropped_step_count = 0U;
+  std::uint64_t total_discarded_elapsed_nanoseconds = 0U;
+
+  [[nodiscard]] bool
+  operator==(const RuntimeGameplaySnapshotV1 &) const = default;
+};
+
+struct RuntimeGameplayFrameAdvanceV1 {
+  FixedStepAdvanceV1 fixed_step;
+  std::vector<RuntimeGameplayTickV1> ticks;
+  RuntimeGameplaySnapshotV1 snapshot;
+
+  [[nodiscard]] bool
+  operator==(const RuntimeGameplayFrameAdvanceV1 &) const = default;
+};
+
+class RuntimeGameplayError final : public std::runtime_error {
+public:
+  using std::runtime_error::runtime_error;
+};
+
+// Package-only deterministic gameplay coordinator. It deliberately owns no
+// renderer or platform clock: a frontend submits quantized input and explicit
+// integer elapsed time. Player state remains separate from WorldV1 entities
+// until prepared content defines a stable player-archetype contract.
+class RuntimeGameplaySessionV1 final {
+public:
+  explicit RuntimeGameplaySessionV1(
+      RuntimeLevelFoundationV1 foundation,
+      RuntimeGameplaySessionOptionsV1 options = {});
+
+  // Replaces the active package foundation while retaining persistent session
+  // and global replay tick sequences. Pending input is cleared at the level
+  // boundary so an old jump/reset edge cannot leak into the new instance.
+  void
+  load_level(RuntimeLevelFoundationV1 foundation,
+             std::optional<SpawnPointIdV1> spawn_point_id = std::nullopt,
+             LevelRequestReasonV1 reason = LevelRequestReasonV1::transition);
+
+  // Samples may be submitted even when a frame emits no fixed tick; button
+  // edges remain pending in GameInputStateV1 until exactly one tick consumes
+  // them.
+  void submit_input_sample(const GameInputSampleV1 &sample);
+  void release_input() noexcept;
+
+  [[nodiscard]] RuntimeGameplayFrameAdvanceV1
+  advance_frame(std::uint64_t elapsed_nanoseconds,
+                const RuntimeMovementMapperV1 &movement_mapper = {});
+  [[nodiscard]] RuntimeGameplayFrameAdvanceV1
+  advance_frame(std::uint64_t elapsed_nanoseconds,
+                const GameInputSampleV1 &sample,
+                const RuntimeMovementMapperV1 &movement_mapper = {});
+
+  void set_checkpoint(PlayerCheckpointV1 checkpoint, bool reset_immediately);
+
+  [[nodiscard]] RuntimeGameplaySnapshotV1 snapshot() const noexcept;
+  [[nodiscard]] const RuntimeLevelFoundationV1 &foundation() const noexcept;
+  [[nodiscard]] const RuntimeGameplayProfileV1 &profile() const noexcept;
+  [[nodiscard]] const GameSessionV1 &session() const noexcept;
+  [[nodiscard]] const WorldV1 &world() const noexcept;
+  [[nodiscard]] const PlayerSimulationV1 &player() const noexcept;
+
+private:
+  [[nodiscard]] RuntimeGameplayFrameAdvanceV1
+  advance_frame_impl(std::uint64_t elapsed_nanoseconds,
+                     const std::optional<GameInputSampleV1> &new_sample,
+                     const RuntimeMovementMapperV1 &movement_mapper);
+  void validate_tick_invariants() const;
+
+  RuntimeLevelFoundationV1 foundation_;
+  RuntimeGameplayProfileV1 profile_;
+  GameSessionV1 session_;
+  WorldV1 world_;
+  PlayerSimulationV1 player_;
+  GameInputStateV1 input_;
+  FixedStepAccumulatorV1 fixed_step_;
+};
+
+} // namespace openrc::game

@@ -87,6 +87,8 @@ public:
   void reset(std::uint64_t next_tick_index = 0U) noexcept;
 
   [[nodiscard]] const GameInputSampleV1 &current_sample() const noexcept;
+  [[nodiscard]] std::uint32_t pending_pressed_buttons() const noexcept;
+  [[nodiscard]] std::uint32_t pending_released_buttons() const noexcept;
   [[nodiscard]] std::uint64_t next_tick_index() const noexcept;
 
 private:

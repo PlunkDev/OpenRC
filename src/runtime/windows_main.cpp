@@ -2,7 +2,9 @@
 #include "level_scene_recovery.hpp"
 
 #include "openrc/prepared_game_v2_fs.hpp"
+#include "openrc/runtime_gameplay.hpp"
 #include "openrc/runtime_level_content.hpp"
+#include "openrc/third_person_camera.hpp"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -14,10 +16,14 @@
 #include <windows.h>
 #include <windowsx.h>
 
+#include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <limits>
 #include <memory>
+#include <numbers>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -42,8 +48,28 @@ struct RuntimeArguments {
     bool show_help = false;
 };
 
+struct GameplayKeyboardState {
+    bool move_left = false;
+    bool move_right = false;
+    bool move_forward = false;
+    bool move_backward = false;
+    bool look_left = false;
+    bool look_right = false;
+    bool look_up = false;
+    bool look_down = false;
+    bool jump = false;
+    bool reset = false;
+};
+
 struct WindowState {
     std::unique_ptr<openrc::runtime::D3d11Renderer> renderer;
+    std::unique_ptr<openrc::game::RuntimeGameplaySessionV1> gameplay;
+    std::optional<openrc::game::ThirdPersonCameraV1> gameplay_camera;
+    GameplayKeyboardState gameplay_keyboard;
+    std::uint32_t gameplay_pending_pressed_buttons = 0U;
+    std::uint32_t gameplay_pending_released_buttons = 0U;
+    std::uint32_t gameplay_submitted_buttons = 0U;
+    std::chrono::steady_clock::time_point previous_gameplay_frame{};
     std::optional<std::string> fatal_error;
     std::wstring base_title;
     POINT previous_pointer{};
@@ -264,7 +290,9 @@ void refresh_window_title(const HWND window, const WindowState& state) {
     if (!state.renderer) {
         return;
     }
-    const auto suffix = state.native_content
+    const auto suffix = state.gameplay
+                            ? L" - playable prototype (debug player marker)"
+                        : state.native_content
                             ? L" - native package"
                             : (state.renderer->is_3d_view()
         ? L" - recovered level 3D (debug orbit)"
@@ -280,6 +308,303 @@ void remember_window_error(
         state.fatal_error = message;
     }
     PostMessageW(window, WM_CLOSE, 0U, 0);
+}
+
+[[nodiscard]] constexpr std::int16_t gameplay_axis(
+    const bool positive,
+    const bool negative) noexcept {
+    if (positive == negative) {
+        return 0;
+    }
+    return positive ? openrc::game::kGameInputAxisMagnitudeV1
+                    : static_cast<std::int16_t>(
+                          -openrc::game::kGameInputAxisMagnitudeV1);
+}
+
+[[nodiscard]] openrc::game::GameInputSampleV1
+make_gameplay_input_sample(const GameplayKeyboardState& keyboard) noexcept {
+    openrc::game::GameInputSampleV1 sample;
+    sample.axes.move_x = gameplay_axis(
+        keyboard.move_right, keyboard.move_left);
+    sample.axes.move_y = gameplay_axis(
+        keyboard.move_forward, keyboard.move_backward);
+    sample.axes.look_x = gameplay_axis(
+        keyboard.look_right, keyboard.look_left);
+    sample.axes.look_y = gameplay_axis(
+        keyboard.look_up, keyboard.look_down);
+    if (keyboard.jump) {
+        sample.held_buttons |= openrc::game::game_button_mask_v1(
+            openrc::game::GameButtonV1::jump);
+    }
+    if (keyboard.reset) {
+        sample.held_buttons |= openrc::game::game_button_mask_v1(
+            openrc::game::GameButtonV1::reset_checkpoint);
+    }
+    return sample;
+}
+
+[[nodiscard]] bool set_gameplay_key(
+    GameplayKeyboardState& keyboard,
+    const WPARAM key,
+    const bool held) noexcept {
+    switch (key) {
+    case 'A':
+        keyboard.move_left = held;
+        return true;
+    case 'D':
+        keyboard.move_right = held;
+        return true;
+    case 'W':
+        keyboard.move_forward = held;
+        return true;
+    case 'S':
+        keyboard.move_backward = held;
+        return true;
+    case VK_LEFT:
+        keyboard.look_left = held;
+        return true;
+    case VK_RIGHT:
+        keyboard.look_right = held;
+        return true;
+    case VK_UP:
+        keyboard.look_up = held;
+        return true;
+    case VK_DOWN:
+        keyboard.look_down = held;
+        return true;
+    case VK_SPACE:
+        keyboard.jump = held;
+        return true;
+    case 'R':
+        keyboard.reset = held;
+        return true;
+    default:
+        return false;
+    }
+}
+
+[[nodiscard]] bool update_gameplay_key(
+    WindowState& state,
+    const WPARAM key,
+    const bool held) noexcept {
+    const auto buttons_before =
+        make_gameplay_input_sample(state.gameplay_keyboard).held_buttons;
+    if (!set_gameplay_key(state.gameplay_keyboard, key, held)) {
+        return false;
+    }
+    const auto buttons_after =
+        make_gameplay_input_sample(state.gameplay_keyboard).held_buttons;
+    state.gameplay_pending_pressed_buttons |=
+        buttons_after & ~buttons_before;
+    state.gameplay_pending_released_buttons |=
+        buttons_before & ~buttons_after;
+    return true;
+}
+
+void release_gameplay_keyboard(WindowState& state) noexcept {
+    state.gameplay_keyboard = {};
+    state.gameplay_pending_pressed_buttons = 0U;
+    state.gameplay_pending_released_buttons =
+        state.gameplay_submitted_buttons;
+}
+
+void submit_pending_gameplay_input(WindowState& state) {
+    if (!state.gameplay) {
+        return;
+    }
+    const auto final_sample =
+        make_gameplay_input_sample(state.gameplay_keyboard);
+    auto working_buttons = state.gameplay_submitted_buttons;
+    const auto submit_buttons =
+        [&state, &final_sample, &working_buttons](
+            const std::uint32_t buttons) {
+            auto sample = final_sample;
+            sample.held_buttons = buttons;
+            state.gameplay->submit_input_sample(sample);
+            working_buttons = buttons;
+        };
+
+    for (std::uint8_t index = 0U;
+         index < static_cast<std::uint8_t>(
+                     openrc::game::GameButtonV1::count);
+         ++index) {
+        const auto bit = UINT32_C(1) << index;
+        const auto pressed =
+            (state.gameplay_pending_pressed_buttons & bit) != 0U;
+        const auto released =
+            (state.gameplay_pending_released_buttons & bit) != 0U;
+        if (pressed && released) {
+            if ((working_buttons & bit) != 0U) {
+                submit_buttons(working_buttons & ~bit);
+                submit_buttons(working_buttons | bit);
+            } else {
+                submit_buttons(working_buttons | bit);
+                submit_buttons(working_buttons & ~bit);
+            }
+        } else if (pressed && (working_buttons & bit) == 0U) {
+            submit_buttons(working_buttons | bit);
+        } else if (released && (working_buttons & bit) != 0U) {
+            submit_buttons(working_buttons & ~bit);
+        }
+    }
+    if (working_buttons != final_sample.held_buttons) {
+        submit_buttons(final_sample.held_buttons);
+    } else {
+        // Axes are sampled at the same fixed-tick boundary even when no
+        // button transition occurred.
+        state.gameplay->submit_input_sample(final_sample);
+    }
+}
+
+[[nodiscard]] double gameplay_aspect_ratio(
+    const std::uint32_t width,
+    const std::uint32_t height) noexcept {
+    if (width == 0U || height == 0U) {
+        return 16.0 / 9.0;
+    }
+    return static_cast<double>(width) / static_cast<double>(height);
+}
+
+[[nodiscard]] openrc::game::ThirdPersonCameraProfileV1
+make_gameplay_camera_profile(const double aspect_ratio) {
+    constexpr auto kPi = std::numbers::pi_v<double>;
+    return openrc::game::ThirdPersonCameraProfileV1{
+        2.5,
+        12.0,
+        1.10,
+        -10.0 * kPi / 180.0,
+        70.0 * kPi / 180.0,
+        2.4,
+        1.8,
+        5.0,
+        60.0 * kPi / 180.0,
+        aspect_ratio,
+        0.05,
+        4096.0,
+    };
+}
+
+[[nodiscard]] double canonical_gameplay_yaw(const double yaw) {
+    constexpr auto kTau = 2.0 * std::numbers::pi_v<double>;
+    const auto result = std::remainder(yaw, kTau);
+    if (!std::isfinite(result)) {
+        throw std::runtime_error(
+            "The prepared player spawn has an invalid facing direction");
+    }
+    return result == 0.0 ? 0.0 : result;
+}
+
+void update_gameplay_presentation(WindowState& state) {
+    if (!state.renderer || !state.gameplay || !state.gameplay_camera) {
+        return;
+    }
+    const auto snapshot = state.gameplay->snapshot();
+    const auto& character = snapshot.player.character;
+    const auto& profile = state.gameplay->profile().character;
+    state.renderer->set_gameplay_presentation(
+        state.gameplay_camera->view(character.feet_position),
+        character.feet_position,
+        snapshot.player.facing_yaw_radians,
+        profile.capsule_radius,
+        profile.capsule_height);
+}
+
+void resize_gameplay_camera(
+    WindowState& state,
+    const std::uint32_t width,
+    const std::uint32_t height) {
+    if (!state.gameplay_camera || width == 0U || height == 0U) {
+        return;
+    }
+    auto profile = state.gameplay_camera->profile();
+    profile.aspect_ratio = gameplay_aspect_ratio(width, height);
+    const auto camera_state = state.gameplay_camera->state();
+    state.gameplay_camera.emplace(profile, camera_state);
+    update_gameplay_presentation(state);
+}
+
+[[nodiscard]] std::int16_t quantize_gameplay_axis(const double value) {
+    if (!std::isfinite(value)) {
+        throw std::runtime_error(
+            "The gameplay camera produced a non-finite movement axis");
+    }
+    const auto scaled = std::clamp(value, -1.0, 1.0) *
+                        openrc::game::kGameInputAxisMagnitudeV1;
+    const auto rounded = std::llround(scaled);
+    return static_cast<std::int16_t>(std::clamp<long long>(
+        rounded,
+        -openrc::game::kGameInputAxisMagnitudeV1,
+        openrc::game::kGameInputAxisMagnitudeV1));
+}
+
+[[nodiscard]] bool gameplay_frame_will_emit_tick(
+    const WindowState& state,
+    const std::uint64_t elapsed_nanoseconds) {
+    if (!state.gameplay) {
+        return false;
+    }
+    const auto snapshot = state.gameplay->snapshot();
+    const auto& fixed_step = state.gameplay->profile().fixed_step;
+    const auto accepted_elapsed = std::min(
+        elapsed_nanoseconds, fixed_step.max_elapsed_nanoseconds);
+    const auto scaled_total = snapshot.interpolation_numerator +
+        accepted_elapsed * fixed_step.ticks_per_second;
+    return scaled_total >= openrc::game::kFixedStepTimeDenominatorV1;
+}
+
+void advance_gameplay_frame(
+    WindowState& state,
+    const std::chrono::steady_clock::time_point now) {
+    if (!state.gameplay || !state.gameplay_camera) {
+        return;
+    }
+    auto elapsed_nanoseconds = UINT64_C(0);
+    if (state.previous_gameplay_frame !=
+        std::chrono::steady_clock::time_point{}) {
+        const auto elapsed = std::chrono::duration_cast<
+            std::chrono::nanoseconds>(now - state.previous_gameplay_frame);
+        if (elapsed.count() > 0) {
+            elapsed_nanoseconds =
+                static_cast<std::uint64_t>(elapsed.count());
+        }
+    }
+    state.previous_gameplay_frame = now;
+
+    const auto will_emit_tick =
+        gameplay_frame_will_emit_tick(state, elapsed_nanoseconds);
+    if (will_emit_tick) {
+        submit_pending_gameplay_input(state);
+    }
+
+    auto next_camera = *state.gameplay_camera;
+    const openrc::game::RuntimeMovementMapperV1 movement_mapper =
+        [&next_camera](const openrc::game::GameInputCommandV1& input,
+                       const double fixed_delta_seconds) {
+            next_camera.fixed_update(
+                {input.axes.look_x, input.axes.look_y, 0},
+                fixed_delta_seconds);
+            const auto movement = next_camera.map_movement(
+                input.axes.move_x, input.axes.move_y);
+            return openrc::game::RuntimeMovementAxesV1{
+                quantize_gameplay_axis(movement.move_x),
+                quantize_gameplay_axis(movement.move_y),
+            };
+        };
+    const auto frame = state.gameplay->advance_frame(
+        elapsed_nanoseconds, movement_mapper);
+    if (will_emit_tick != (frame.fixed_step.step_count != 0U)) {
+        throw std::logic_error(
+            "The platform input boundary disagreed with fixed-step scheduling");
+    }
+    if (will_emit_tick) {
+        state.gameplay_submitted_buttons =
+            make_gameplay_input_sample(
+                state.gameplay_keyboard).held_buttons;
+        state.gameplay_pending_pressed_buttons = 0U;
+        state.gameplay_pending_released_buttons = 0U;
+    }
+    state.gameplay_camera = std::move(next_camera);
+    update_gameplay_presentation(state);
 }
 
 LRESULT CALLBACK window_procedure(
@@ -308,6 +633,10 @@ LRESULT CALLBACK window_procedure(
                 state->renderer->resize(
                     static_cast<std::uint32_t>(LOWORD(l_param)),
                     static_cast<std::uint32_t>(HIWORD(l_param)));
+                resize_gameplay_camera(
+                    *state,
+                    static_cast<std::uint32_t>(LOWORD(l_param)),
+                    static_cast<std::uint32_t>(HIWORD(l_param)));
                 InvalidateRect(window, nullptr, FALSE);
             } catch (const std::exception& error) {
                 remember_window_error(window, *state, error.what());
@@ -317,6 +646,13 @@ LRESULT CALLBACK window_procedure(
     case WM_KEYDOWN:
         if (state != nullptr && state->renderer) {
             try {
+                if (state->gameplay) {
+                    if (update_gameplay_key(*state, w_param, true)) {
+                        return 0;
+                    }
+                    return DefWindowProcW(
+                        window, message, w_param, l_param);
+                }
                 constexpr float kOrbitStep = 0.0872664626F;
                 switch (w_param) {
                 case VK_LEFT:
@@ -355,8 +691,32 @@ LRESULT CALLBACK window_procedure(
             }
         }
         return 0;
+    case WM_KEYUP:
+        if (state != nullptr && state->gameplay) {
+            try {
+                if (update_gameplay_key(*state, w_param, false)) {
+                    return 0;
+                }
+            } catch (const std::exception& error) {
+                remember_window_error(window, *state, error.what());
+                return 0;
+            }
+        }
+        return DefWindowProcW(window, message, w_param, l_param);
+    case WM_KILLFOCUS:
+        if (state != nullptr && state->gameplay) {
+            release_gameplay_keyboard(*state);
+            return 0;
+        }
+        break;
+    case WM_ACTIVATEAPP:
+        if (state != nullptr && state->gameplay && w_param == FALSE) {
+            release_gameplay_keyboard(*state);
+            return 0;
+        }
+        break;
     case WM_MOUSEWHEEL:
-        if (state != nullptr && state->renderer) {
+        if (state != nullptr && state->renderer && !state->gameplay) {
             try {
                 const auto delta = static_cast<float>(
                     GET_WHEEL_DELTA_WPARAM(w_param));
@@ -369,6 +729,7 @@ LRESULT CALLBACK window_procedure(
         return 0;
     case WM_LBUTTONDOWN:
         if (state != nullptr && state->renderer &&
+            !state->gameplay &&
             state->renderer->is_3d_view()) {
             state->previous_pointer = {
                 static_cast<LONG>(GET_X_LPARAM(l_param)),
@@ -555,6 +916,11 @@ constexpr wchar_t kUsageText[] =
     L"  --entry-pair <6,8,10,14,16,20>\n\n"
     L"Developer verification:\n"
     L"  --smoke-test - render one hidden frame and exit\n\n"
+    L"Prepared-game controls:\n"
+    L"  W/A/S/D - move relative to the camera\n"
+    L"  arrow keys - rotate/pitch camera\n"
+    L"  Space - jump\n"
+    L"  R - reset to checkpoint\n\n"
     L"Using --record all independently executes and merges every supported "
     L"record in the selected level.\n\n"
     L"Recovered 3D debug view (entry 16):\n"
@@ -630,6 +996,34 @@ int WINAPI wWinMain(
                 state.renderer =
                     std::make_unique<openrc::runtime::D3d11Renderer>(
                         window, native_content->render_scene);
+                state.gameplay = std::make_unique<
+                    openrc::game::RuntimeGameplaySessionV1>(
+                        std::move(native_content->foundation));
+                RECT client_rectangle{};
+                if (GetClientRect(window, &client_rectangle) == FALSE) {
+                    throw std::runtime_error(
+                        "GetClientRect failed while initializing gameplay");
+                }
+                const auto client_width = static_cast<std::uint32_t>(
+                    std::max<LONG>(
+                        0,
+                        client_rectangle.right - client_rectangle.left));
+                const auto client_height = static_cast<std::uint32_t>(
+                    std::max<LONG>(
+                        0,
+                        client_rectangle.bottom - client_rectangle.top));
+                const auto player = state.gameplay->snapshot().player;
+                state.gameplay_camera.emplace(
+                    make_gameplay_camera_profile(
+                        gameplay_aspect_ratio(
+                            client_width, client_height)),
+                    openrc::game::ThirdPersonCameraStateV1{
+                        canonical_gameplay_yaw(
+                            player.facing_yaw_radians),
+                        22.0 * std::numbers::pi_v<double> / 180.0,
+                        6.0,
+                    });
+                update_gameplay_presentation(state);
             } else {
                 auto &geometry = *recovered_geometry;
                 if (geometry.source) {
@@ -689,6 +1083,13 @@ int WINAPI wWinMain(
         }
 
         if (arguments.smoke_test) {
+            if (state.gameplay) {
+                const auto smoke_frame_time =
+                    std::chrono::steady_clock::now();
+                state.previous_gameplay_frame =
+                    smoke_frame_time - std::chrono::milliseconds(20);
+                advance_gameplay_frame(state, smoke_frame_time);
+            }
             state.renderer->render();
             DestroyWindow(window);
             return 0;
@@ -698,16 +1099,59 @@ int WINAPI wWinMain(
         UpdateWindow(window);
 
         MSG message{};
-        for (;;) {
-            const auto result = GetMessageW(&message, nullptr, 0U, 0U);
-            if (result == -1) {
-                throw std::runtime_error("GetMessageW failed");
+        if (state.gameplay) {
+            state.previous_gameplay_frame =
+                std::chrono::steady_clock::now();
+            bool running = true;
+            while (running) {
+                while (PeekMessageW(
+                           &message, nullptr, 0U, 0U, PM_REMOVE) != FALSE) {
+                    if (message.message == WM_QUIT) {
+                        running = false;
+                        break;
+                    }
+                    TranslateMessage(&message);
+                    DispatchMessageW(&message);
+                }
+                if (!running) {
+                    break;
+                }
+                if (IsIconic(window) != FALSE) {
+                    if (WaitMessage() == FALSE) {
+                        throw std::runtime_error("WaitMessage failed");
+                    }
+                    state.previous_gameplay_frame =
+                        std::chrono::steady_clock::now();
+                    continue;
+                }
+                advance_gameplay_frame(
+                    state, std::chrono::steady_clock::now());
+                if (!state.renderer->render()) {
+                    constexpr DWORD kOccludedWaitMilliseconds = 16U;
+                    const auto wait_result = MsgWaitForMultipleObjectsEx(
+                        0U,
+                        nullptr,
+                        kOccludedWaitMilliseconds,
+                        QS_ALLINPUT,
+                        MWMO_INPUTAVAILABLE);
+                    if (wait_result == WAIT_FAILED) {
+                        throw std::runtime_error(
+                            "Waiting for an occluded runtime window failed");
+                    }
+                }
             }
-            if (result == 0) {
-                break;
+        } else {
+            for (;;) {
+                const auto result = GetMessageW(&message, nullptr, 0U, 0U);
+                if (result == -1) {
+                    throw std::runtime_error("GetMessageW failed");
+                }
+                if (result == 0) {
+                    break;
+                }
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
             }
-            TranslateMessage(&message);
-            DispatchMessageW(&message);
         }
         if (state.fatal_error) {
             throw std::runtime_error(*state.fatal_error);

@@ -1,6 +1,13 @@
 #include "openrc/disc.hpp"
+#include "openrc/disc_toc.hpp"
+#include "openrc/content_api.hpp"
+#include "openrc/hash.hpp"
+#include "openrc/launcher_plan.hpp"
+#include "openrc/native_game_prepare.hpp"
 #include "openrc/paths.hpp"
 #include "openrc/preparation.hpp"
+#include "openrc/prepared_game_v2_fs.hpp"
+#include "openrc/runtime_level_content.hpp"
 #include "openrc/settings.hpp"
 #include "portable_executable.hpp"
 
@@ -15,6 +22,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -50,24 +58,27 @@ enum class PreparationOutcome {
 struct PreparationOperation {
     PreparationOperation(
         const std::uint32_t operation_id,
-        std::filesystem::path source_image_path)
-        : id(operation_id), image_path(std::move(source_image_path)) {}
+        std::filesystem::path source_image_path,
+        const DWORD owner_ui_thread_id)
+        : id(operation_id), image_path(std::move(source_image_path)),
+          ui_thread_id(owner_ui_thread_id) {}
 
     const std::uint32_t id;
     const std::filesystem::path image_path;
+    const DWORD ui_thread_id;
     std::mutex mutex;
-    openrc::PreparationProgress latest_progress;
+    std::wstring latest_progress;
     bool has_progress = false;
     bool progress_message_pending = false;
     bool cancellation_requested = false;
     PreparationOutcome outcome = PreparationOutcome::running;
-    std::optional<openrc::PreparationResult> result;
+    std::optional<openrc::NativeGamePreparationResultV1> result;
     std::string error_message;
 };
 
 struct ReadyGame {
-    std::filesystem::path image_path;
-    openrc::PreparationResult preparation;
+    std::filesystem::path prepared_root;
+    openrc::PreparedContentDigestV1 manifest_sha256{};
 };
 
 HWND g_iso_edit = nullptr;
@@ -166,22 +177,71 @@ void set_report(const std::wstring& text) {
     return output.str();
 }
 
+[[nodiscard]] const wchar_t* native_preparation_phase_name(
+    const openrc::NativeGamePreparationPhaseV1 phase) {
+    using Phase = openrc::NativeGamePreparationPhaseV1;
+    switch (phase) {
+    case Phase::validating_inputs:
+        return L"Validating source files";
+    case Phase::hashing_inputs:
+        return L"Hashing source files";
+    case Phase::checking_existing_publication:
+        return L"Checking the existing native installation";
+    case Phase::loading_level_assets:
+        return L"Loading level assets";
+    case Phase::compiling_level_foundation:
+        return L"Compiling collision and gameplay data";
+    case Phase::recovering_level_scene:
+        return L"Recovering the complete level scene";
+    case Phase::compiling_render_scene:
+        return L"Compiling native rendering data";
+    case Phase::encoding_level_package:
+        return L"Encoding the native level package";
+    case Phase::verifying_inputs:
+        return L"Verifying unchanged source files";
+    case Phase::publishing:
+        return L"Publishing the native installation";
+    case Phase::publishing_staged:
+        return L"Verifying the staged native installation";
+    case Phase::publishing_commit:
+        return L"Activating the native installation";
+    case Phase::reusing_existing_publication:
+        return L"Reusing the verified native installation";
+    }
+    return L"Preparing the native game";
+}
+
+[[nodiscard]] std::wstring format_native_preparation_progress(
+    const openrc::NativeGamePreparationProgressV1& progress) {
+    std::wostringstream output;
+    output << native_preparation_phase_name(progress.phase);
+    if (progress.level_id != openrc::kNativeGamePreparationNoLevelV1) {
+        output << L" - level " << (progress.level_id + 1U) << L"/"
+               << progress.total_levels;
+    } else if (progress.total_levels != 0U && progress.completed_levels != 0U) {
+        output << L" - " << progress.completed_levels << L"/"
+               << progress.total_levels;
+    }
+    return output.str();
+}
+
 void invalidate_inspected_iso() {
     g_inspected_iso.reset();
-    g_ready_game.reset();
     EnableWindow(g_extract_button, FALSE);
-    EnableWindow(g_play_button, FALSE);
+    EnableWindow(g_play_button, g_ready_game ? TRUE : FALSE);
 }
 
 void set_preparation_controls(const HWND window, const bool preparing) {
     EnableWindow(g_iso_edit, preparing ? FALSE : TRUE);
     EnableWindow(GetDlgItem(window, kBrowseButton), preparing ? FALSE : TRUE);
     EnableWindow(GetDlgItem(window, kInspectButton), preparing ? FALSE : TRUE);
-    EnableWindow(g_play_button, FALSE);
+    EnableWindow(
+        g_play_button,
+        !preparing && g_ready_game ? TRUE : FALSE);
 
     SetWindowTextW(
         g_extract_button,
-        preparing ? L"Cancel" : L"Prepare game files");
+        preparing ? L"Cancel" : L"Prepare native game");
     EnableWindow(
         g_extract_button,
         preparing || g_inspected_iso.has_value() ? TRUE : FALSE);
@@ -195,20 +255,20 @@ void set_preparation_controls(const HWND window, const bool preparing) {
     return result;
 }
 
-void publish_preparation_progress(
-    const std::shared_ptr<PreparationOperation>& operation,
-    const openrc::PreparationProgress& progress,
+[[nodiscard]] bool publish_preparation_progress(
+    PreparationOperation& operation,
+    std::wstring progress,
     const DWORD ui_thread_id) {
     bool should_post = false;
     {
-        const std::lock_guard lock(operation->mutex);
-        if (operation->cancellation_requested) {
-            return;
+        const std::lock_guard lock(operation.mutex);
+        if (operation.cancellation_requested) {
+            return false;
         }
-        operation->latest_progress = progress;
-        operation->has_progress = true;
-        if (!operation->progress_message_pending) {
-            operation->progress_message_pending = true;
+        operation.latest_progress = std::move(progress);
+        operation.has_progress = true;
+        if (!operation.progress_message_pending) {
+            operation.progress_message_pending = true;
             should_post = true;
         }
     }
@@ -216,10 +276,28 @@ void publish_preparation_progress(
     if (should_post && PostThreadMessageW(
             ui_thread_id,
             kPreparationProgressMessage,
-            static_cast<WPARAM>(operation->id),
+            static_cast<WPARAM>(operation.id),
             0) == FALSE) {
-        const std::lock_guard lock(operation->mutex);
-        operation->progress_message_pending = false;
+        const std::lock_guard lock(operation.mutex);
+        operation.progress_message_pending = false;
+    }
+    return true;
+}
+
+[[nodiscard]] bool publish_native_preparation_progress(
+    const openrc::NativeGamePreparationProgressV1& progress,
+    void* const context) noexcept {
+    auto* const operation = static_cast<PreparationOperation*>(context);
+    if (operation == nullptr) {
+        return false;
+    }
+    try {
+        return publish_preparation_progress(
+            *operation,
+            format_native_preparation_progress(progress),
+            operation->ui_thread_id);
+    } catch (...) {
+        return false;
     }
 }
 
@@ -228,11 +306,12 @@ void start_preparation(const HWND window) {
         return;
     }
 
-    g_ready_game.reset();
-
+    openrc::ApplicationPaths application_paths;
     std::filesystem::path games_directory;
     try {
-        games_directory = openrc::application_paths().local_data / L"games";
+        application_paths = openrc::application_paths();
+        games_directory =
+            openrc::launcher::legacy_games_root_v1(application_paths);
     } catch (const std::exception& error) {
         set_status(L"Could not determine the game data directory.");
         set_report(to_wide(std::string("Error: ") + error.what()));
@@ -242,33 +321,70 @@ void start_preparation(const HWND window) {
     const auto image_path = *g_inspected_iso;
     auto operation = std::make_shared<PreparationOperation>(
         next_operation_id(),
-        image_path);
+        image_path,
+        g_ui_thread_id);
     g_preparation_operation = operation;
     set_preparation_controls(window, true);
-    set_status(L"Preparing game files...");
-    set_report(L"OpenRC is reading your disc image. The launcher remains responsive.");
+    set_status(L"Preparing the native game...");
+    set_report(
+        L"OpenRC is building a reusable native installation from your disc "
+        L"image. This compiles all 19 planets once; the launcher remains "
+        L"responsive.");
 
     try {
         g_preparation_worker = std::jthread(
-            [operation, image_path, games_directory, ui_thread_id = g_ui_thread_id](
+            [operation, image_path, application_paths, games_directory](
                 const std::stop_token stop_token) {
                 try {
-                    auto result = openrc::prepare_game_files(
+                    const auto extracted = openrc::prepare_game_files(
                         image_path,
                         games_directory,
-                        [operation, stop_token, ui_thread_id](
+                        [operation, stop_token](
                             const openrc::PreparationProgress& progress) {
                             if (stop_token.stop_requested()) {
                                 return false;
                             }
-                            publish_preparation_progress(operation, progress, ui_thread_id);
-                            return !stop_token.stop_requested();
+                            return publish_preparation_progress(
+                                *operation,
+                                format_preparation_progress(progress),
+                                operation->ui_thread_id) &&
+                                !stop_token.stop_requested();
                         });
+
+                    if (stop_token.stop_requested()) {
+                        throw openrc::PreparationCancelled();
+                    }
+
+                    const auto native_root =
+                        openrc::launcher::prepared_game_v2_root_v1(
+                            application_paths, extracted.image_sha256);
+                    std::error_code filesystem_error;
+                    std::filesystem::create_directories(
+                        native_root.parent_path(), filesystem_error);
+                    if (filesystem_error) {
+                        throw std::runtime_error(
+                            "Cannot create the native installation parent: " +
+                            filesystem_error.message());
+                    }
+
+                    auto result = openrc::prepare_native_game_v1(
+                        openrc::NativeGamePreparationRequestV1{
+                            image_path,
+                            extracted.boot_executable_path,
+                            native_root,
+                            openrc::launcher::parse_lowercase_sha256_hex_v1(
+                                extracted.image_sha256)},
+                        openrc::NativeGamePreparationControlV1{
+                            &publish_native_preparation_progress,
+                            operation.get()});
 
                     const std::lock_guard lock(operation->mutex);
                     operation->result = std::move(result);
                     operation->outcome = PreparationOutcome::succeeded;
                 } catch (const openrc::PreparationCancelled&) {
+                    const std::lock_guard lock(operation->mutex);
+                    operation->outcome = PreparationOutcome::cancelled;
+                } catch (const openrc::NativeGamePreparationCancelledV1&) {
                     const std::lock_guard lock(operation->mutex);
                     operation->outcome = PreparationOutcome::cancelled;
                 } catch (const std::exception& error) {
@@ -282,7 +398,7 @@ void start_preparation(const HWND window) {
                 }
 
                 PostThreadMessageW(
-                    ui_thread_id,
+                    operation->ui_thread_id,
                     kPreparationDoneMessage,
                     static_cast<WPARAM>(operation->id),
                     0);
@@ -317,7 +433,7 @@ void display_latest_preparation_progress(const std::uint32_t operation_id) {
         return;
     }
 
-    openrc::PreparationProgress progress;
+    std::wstring progress;
     {
         const std::lock_guard lock(operation->mutex);
         if (!operation->has_progress || !operation->progress_message_pending) {
@@ -327,8 +443,7 @@ void display_latest_preparation_progress(const std::uint32_t operation_id) {
         operation->progress_message_pending = false;
     }
 
-    const auto text = format_preparation_progress(progress);
-    set_status(text.c_str());
+    set_status(progress.c_str());
 }
 
 void finish_preparation(const HWND window, const std::uint32_t operation_id) {
@@ -338,7 +453,7 @@ void finish_preparation(const HWND window, const std::uint32_t operation_id) {
     }
 
     PreparationOutcome outcome = PreparationOutcome::running;
-    std::optional<openrc::PreparationResult> result;
+    std::optional<openrc::NativeGamePreparationResultV1> result;
     std::string error_message;
     {
         const std::lock_guard lock(operation->mutex);
@@ -363,26 +478,47 @@ void finish_preparation(const HWND window, const std::uint32_t operation_id) {
 
     set_preparation_controls(window, false);
     if (outcome == PreparationOutcome::succeeded && result) {
-        g_ready_game = ReadyGame{operation->image_path, *result};
+        g_ready_game = ReadyGame{
+            result->publication.root,
+            result->publication.manifest_sha256};
+        std::string settings_warning;
+        try {
+            openrc::save_launcher_settings(openrc::LauncherSettings{
+                operation->image_path,
+                result->publication.root,
+                openrc::hex_digest(result->publication.manifest_sha256)});
+        } catch (const std::exception& error) {
+            settings_warning =
+                std::string("Could not remember the native installation: ") +
+                error.what();
+        }
         std::wostringstream report;
         report << (result->already_prepared
-                       ? L"Game files were already prepared."
-                       : L"Game files prepared successfully.")
-               << L"\r\n\r\nDestination: " << result->destination.wstring()
-               << L"\r\nManifest:    " << result->manifest_path.wstring()
-               << L"\r\nFiles:       " << result->file_count
-               << L"\r\nImage hash:  " << to_wide(result->image_sha256);
+                       ? L"The verified native installation was reused."
+                       : L"The complete native game was prepared successfully.")
+               << L"\r\n\r\nDestination: "
+               << result->publication.root.wstring()
+               << L"\r\nPlanets:     " << result->publication.level_count
+               << L"\r\nPackages:    " << result->publication.package_bytes
+               << L" bytes\r\nManifest:    "
+               << to_wide(openrc::hex_digest(
+                      result->publication.manifest_sha256));
+        if (!settings_warning.empty()) {
+            report << L"\r\n\r\nWarning: " << to_wide(settings_warning);
+        }
         set_report(report.str());
         set_status(result->already_prepared
-            ? L"Game files are ready."
-            : L"Game files prepared successfully.");
+            ? L"The native game is ready."
+            : L"Native game prepared successfully.");
         EnableWindow(g_play_button, TRUE);
     } else if (outcome == PreparationOutcome::cancelled) {
-        set_status(L"Game-file preparation cancelled.");
+        set_status(L"Native game preparation cancelled.");
         set_report(L"Preparation was cancelled. No partial installation was activated.");
+        EnableWindow(g_play_button, g_ready_game ? TRUE : FALSE);
     } else {
-        set_status(L"Game-file preparation failed.");
+        set_status(L"Native game preparation failed.");
         set_report(to_wide(std::string("Error: ") + error_message));
+        EnableWindow(g_play_button, g_ready_game ? TRUE : FALSE);
     }
 }
 
@@ -398,6 +534,11 @@ void poll_preparation(const HWND window) {
 void save_selected_iso() {
     openrc::LauncherSettings settings;
     settings.iso_path = control_text(g_iso_edit);
+    if (g_ready_game) {
+        settings.prepared_game_root = g_ready_game->prepared_root;
+        settings.prepared_game_manifest_sha256 =
+            openrc::hex_digest(g_ready_game->manifest_sha256);
+    }
     openrc::save_launcher_settings(settings);
 }
 
@@ -455,7 +596,14 @@ void inspect_selected_iso() {
 
     std::string settings_warning;
     try {
-        openrc::save_launcher_settings(openrc::LauncherSettings{image_path});
+        openrc::LauncherSettings settings;
+        settings.iso_path = image_path;
+        if (g_ready_game) {
+            settings.prepared_game_root = g_ready_game->prepared_root;
+            settings.prepared_game_manifest_sha256 =
+                openrc::hex_digest(g_ready_game->manifest_sha256);
+        }
+        openrc::save_launcher_settings(settings);
     } catch (const std::exception& error) {
         settings_warning = std::string("Could not save launcher settings: ") + error.what();
     }
@@ -475,7 +623,9 @@ void inspect_selected_iso() {
         if (report.supported_build) {
             g_inspected_iso = image_path;
             EnableWindow(g_extract_button, TRUE);
-            set_status(L"Supported Ratchet & Clank executable detected. Click Prepare game files.");
+            set_status(
+                L"Supported Ratchet & Clank disc detected. Click Prepare "
+                L"native game.");
         } else {
             set_status(L"Disc parsed, but this build is not supported yet.");
         }
@@ -571,28 +721,58 @@ void inspect_selected_iso() {
 [[nodiscard]] std::wstring make_runtime_command_line(
     const std::filesystem::path& runtime_path,
     const ReadyGame& ready_game) {
-    const std::vector<std::wstring> arguments{
-        runtime_path.wstring(),
-        L"--disc-image",
-        ready_game.image_path.wstring(),
-        L"--boot-executable",
-        ready_game.preparation.boot_executable_path.wstring(),
-        L"--level",
-        L"0",
-        L"--record",
-        L"all",
-        L"--entry-pair",
-        L"16",
-    };
+    const auto plan = openrc::launcher::make_runtime_launch_plan_v1(
+        runtime_path, ready_game.prepared_root, 0U);
+    const auto utf8_arguments = plan.argv_utf8_v1();
 
     std::wstring command_line;
-    for (const auto& argument : arguments) {
+    for (const auto& utf8_argument : utf8_arguments) {
         if (!command_line.empty()) {
             command_line.push_back(L' ');
         }
-        command_line += quote_windows_argument(argument);
+        command_line += quote_windows_argument(to_wide(utf8_argument));
     }
     return command_line;
+}
+
+[[nodiscard]] openrc::PreparedGameV2RootV1 load_ready_native_game(
+    const ReadyGame& ready_game) {
+    const auto prepared = openrc::load_prepared_game_v2_root_v1(
+        ready_game.prepared_root,
+        openrc::make_native_game_prepared_game_limits_v1());
+    if (prepared.manifest_sha256 != ready_game.manifest_sha256) {
+        throw std::runtime_error(
+            "The prepared-game manifest no longer matches the installation "
+            "remembered by the launcher");
+    }
+    if (prepared.manifest.content_api_version !=
+            openrc::kOpenRcContentApiVersionV1 ||
+        prepared.manifest.provenance.game_id != openrc::kNativeGameIdV1 ||
+        prepared.manifest.provenance.build_id != openrc::kNativeGameBuildIdV1 ||
+        prepared.manifest.levels.size() != openrc::kDiscTocLevelCount) {
+        throw std::runtime_error(
+            "The prepared game is not a compatible complete RAC1 "
+            "installation");
+    }
+    for (std::uint32_t level_id = 0U;
+         level_id < openrc::kDiscTocLevelCount; ++level_id) {
+        if (openrc::find_prepared_game_level_v2(
+                prepared.manifest, level_id) == nullptr) {
+            throw std::runtime_error(
+                "The prepared game is missing a canonical planet package");
+        }
+    }
+    const auto resolved =
+        openrc::load_resolved_prepared_game_level_package_v1(
+            prepared,
+            0U,
+            std::span<
+                const openrc::ExplicitLevelPackageOverlayBytesV1>{},
+            openrc::make_native_game_prepared_game_limits_v1());
+    static_cast<void>(openrc::game::load_runtime_level_content_v1(
+        resolved,
+        openrc::game::make_runtime_level_content_limits_v1()));
+    return prepared;
 }
 
 void launch_runtime() {
@@ -603,32 +783,22 @@ void launch_runtime() {
     }
 
     try {
-        std::error_code filesystem_error;
-        if (!std::filesystem::is_regular_file(
-                g_ready_game->image_path,
-                filesystem_error) ||
-            filesystem_error) {
-            set_status(L"The selected disc image is no longer available.");
-            set_report(L"Select and inspect the disc image again before starting OpenRC.");
-            invalidate_inspected_iso();
-            return;
-        }
-
-        filesystem_error.clear();
-        if (!std::filesystem::is_regular_file(
-                g_ready_game->preparation.boot_executable_path,
-                filesystem_error) ||
-            filesystem_error) {
-            set_status(L"The prepared game files are no longer available.");
-            set_report(L"Prepare the game files again before starting OpenRC.");
+        try {
+            static_cast<void>(load_ready_native_game(*g_ready_game));
+        } catch (const std::exception& error) {
+            set_status(L"The native game installation is no longer valid.");
+            set_report(to_wide(
+                std::string("Prepare the game again before starting OpenRC.\n\n") +
+                error.what()));
             g_ready_game.reset();
             EnableWindow(g_play_button, FALSE);
             return;
         }
 
+        std::error_code filesystem_error;
         const auto runtime_path =
-            launcher_executable_path().parent_path() / L"openrc-runtime.exe";
-        filesystem_error.clear();
+            openrc::launcher::sibling_runtime_executable_v1(
+                launcher_executable_path());
         if (!std::filesystem::is_regular_file(runtime_path, filesystem_error) ||
             filesystem_error) {
             set_status(L"OpenRC runtime was not found.");
@@ -689,8 +859,9 @@ void launch_runtime() {
         CloseHandle(process_info.hProcess);
         set_status(L"OpenRC runtime started.");
         set_report(
-            L"The native runtime is loading all supported Veldin records in "
-            L"a separate process. The first window can take a few seconds.");
+            L"The native runtime is loading Veldin from the prepared game "
+            L"package. The original ISO and PS2 executable are not used "
+            L"during play.");
     } catch (const std::exception& error) {
         set_status(L"Could not start OpenRC runtime.");
         set_report(to_wide(std::string("Error: ") + error.what()));
@@ -741,7 +912,7 @@ void create_controls(const HWND window) {
     CreateWindowExW(
         0,
         L"STATIC",
-        L"Native Ratchet & Clank reimplementation - Stage 1",
+        L"Native Ratchet & Clank reimplementation",
         WS_CHILD | WS_VISIBLE,
         24,
         45,
@@ -797,7 +968,7 @@ void create_controls(const HWND window) {
     g_extract_button = CreateWindowExW(
         0,
         L"BUTTON",
-        L"Prepare game files",
+        L"Prepare native game",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON | WS_DISABLED,
         166,
         119,
@@ -872,8 +1043,31 @@ void create_controls(const HWND window) {
             SetWindowTextW(g_iso_edit, settings.iso_path.c_str());
             set_status(L"Previous disc image restored. Click Inspect disc.");
         }
+        if (!settings.prepared_game_root.empty()) {
+            const auto prepared = openrc::load_prepared_game_v2_root_v1(
+                settings.prepared_game_root,
+                openrc::make_native_game_prepared_game_limits_v1());
+            if (openrc::hex_digest(prepared.manifest_sha256) !=
+                settings.prepared_game_manifest_sha256) {
+                throw std::runtime_error(
+                    "The saved native installation identity has changed");
+            }
+            ReadyGame restored{
+                settings.prepared_game_root,
+                prepared.manifest_sha256};
+            static_cast<void>(load_ready_native_game(restored));
+            g_ready_game = std::move(restored);
+            EnableWindow(g_play_button, TRUE);
+            set_status(L"Native game installation restored. Click Play.");
+            set_report(
+                L"Verified native installation:\r\n" +
+                settings.prepared_game_root.wstring() +
+                L"\r\n\r\nThe original ISO is not required to play.");
+        }
     } catch (const std::exception& error) {
-        set_report(to_wide(std::string("Could not load launcher settings: ") + error.what()));
+        set_report(to_wide(
+            std::string("Could not restore launcher state: ") +
+            error.what()));
     }
 }
 

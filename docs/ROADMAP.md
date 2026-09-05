@@ -157,11 +157,12 @@ important for later fidelity, but does not block movement on Veldin.
   reopening the source ISO or boot ELF
 - [ ] load Ratchet's bind pose, skeleton, and animations through a generic
   actor-rig pipeline
-- [ ] connect platform controller input and a reconstructed third-person camera
-  to the graphical runtime
+- [x] connect Win32 keyboard input and a deterministic third-person camera to
+  package-only fixed-step movement in the graphical runtime
 - [ ] package actor, entity, and reconstructed camera data
-- [ ] switch Launcher Prepare/Play from its current ISO/ELF diagnostic path to
-  the PreparedGameV2 compiler/runtime route
+- [x] switch Launcher Prepare/Play to one-time all-level PreparedGameV2
+  compilation and package-only runtime launch, persisting the exact native
+  installation independently of the ISO
 - [ ] reconstruct basic interactions, one weapon, and one enemy type
 - [ ] load and save isolated test state
 - [ ] make package-only gameplay smoke on Veldin and at least one second planet

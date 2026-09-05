@@ -13,8 +13,13 @@
 #include <span>
 
 namespace openrc {
+struct CollisionVectorV1;
 struct RacLevelMobyTextureV1;
 struct RenderSceneV1;
+}
+
+namespace openrc::game {
+struct ThirdPersonCameraViewV1;
 }
 
 namespace openrc::runtime {
@@ -67,7 +72,20 @@ public:
     D3d11Renderer& operator=(D3d11Renderer&&) noexcept;
 
     void resize(std::uint32_t width, std::uint32_t height);
-    void render();
+    // Returns false when no frame could be presented (for example while the
+    // swap chain is occluded), allowing a continuous frontend to wait instead
+    // of busy-spinning.
+    bool render();
+
+    // Package-only gameplay presentation. The camera is supplied explicitly
+    // by the fixed-tick frontend; the renderer owns only projection and a
+    // deliberately synthetic player marker while actor rendering is absent.
+    void set_gameplay_presentation(
+        const openrc::game::ThirdPersonCameraViewV1& camera,
+        const openrc::CollisionVectorV1& feet_position,
+        double facing_yaw_radians,
+        double capsule_radius,
+        double capsule_height);
 
     // Diagnostic source-space controls. Angles are radians and wheel_steps is
     // positive when zooming in. They never modify or rerun the recovered VU

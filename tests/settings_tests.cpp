@@ -83,7 +83,10 @@ void test_local_settings_migration(const std::filesystem::path& directory) {
     expect(
         std::filesystem::is_regular_file(current_path),
         "legacy launcher settings were not copied to local data");
-    expect(read_text(current_path) == legacy_bytes, "migrated launcher settings changed bytes");
+    expect(
+        read_text(current_path) ==
+            "format_version=2\n" + legacy_bytes,
+        "migrated launcher settings were not atomically upgraded to version 2");
     expect(read_text(legacy_path) == legacy_bytes, "migration modified legacy settings");
 
     const auto local_iso = directory / "local.iso";
@@ -95,11 +98,48 @@ void test_local_settings_migration(const std::filesystem::path& directory) {
         "local launcher settings did not take precedence after migration");
 
     const auto saved_iso = directory / "saved.iso";
-    openrc::save_launcher_settings(openrc::LauncherSettings{saved_iso});
+    const auto prepared_root =
+        std::filesystem::absolute(directory / "prepared native game");
+    const std::string manifest_digest(64U, 'a');
+    openrc::save_launcher_settings(openrc::LauncherSettings{
+        saved_iso, prepared_root, manifest_digest});
+    const auto saved = openrc::load_launcher_settings();
     expect(
-        openrc::load_launcher_settings().iso_path == saved_iso,
+        saved.iso_path == saved_iso,
         "saved local launcher selection was not reloaded");
+    expect(
+        saved.prepared_game_root == prepared_root &&
+            saved.prepared_game_manifest_sha256 == manifest_digest,
+        "saved prepared game identity was not reloaded");
+    expect(
+        read_text(current_path).starts_with("format_version=2\n"),
+        "new launcher settings did not declare format version 2");
     expect(read_text(legacy_path) == legacy_bytes, "saving modified legacy settings");
+
+    const auto previous_bytes = read_text(current_path);
+    bool invalid_save_rejected = false;
+    try {
+        openrc::save_launcher_settings(openrc::LauncherSettings{
+            saved_iso, prepared_root, "NOT-A-DIGEST"});
+    } catch (const std::runtime_error&) {
+        invalid_save_rejected = true;
+    }
+    expect(invalid_save_rejected, "invalid prepared identity was saved");
+    expect(
+        read_text(current_path) == previous_bytes,
+        "failed settings save modified the previous file");
+
+    write_text(
+        current_path,
+        "format_version=999\niso_path=" + openrc::path_to_utf8(saved_iso) +
+            "\n");
+    bool newer_format_rejected = false;
+    try {
+        static_cast<void>(openrc::load_launcher_settings());
+    } catch (const std::runtime_error&) {
+        newer_format_rejected = true;
+    }
+    expect(newer_format_rejected, "newer launcher settings were accepted");
 }
 
 } // namespace
