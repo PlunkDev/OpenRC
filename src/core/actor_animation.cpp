@@ -345,14 +345,37 @@ ActorAnimationBankV1 compose_actor_animation_banks_v1(
   validate_limits(limits);
   ActorAnimationBankV1 result;
   std::set<std::string, std::less<>> semantic_keys;
+  std::uint64_t total_frames = 0U;
+  std::uint64_t total_joint_poses = 0U;
+  std::uint64_t total_key_bytes = 0U;
   for (const auto &bank : banks) {
     validate_actor_animation_bank_v1(bank, limits);
     for (const auto &clip : bank.clips) {
       if (!semantic_keys.insert(clip.semantic_key).second) {
         fail("ActorAnimationBankV1 composition repeats a clip semantic key");
       }
-      if (result.clips.size() >= std::numeric_limits<std::uint32_t>::max()) {
-        fail("ActorAnimationBankV1 composition exceeds the clip ID domain");
+      if (result.clips.size() >= limits.max_clips ||
+          result.clips.size() >= std::numeric_limits<std::uint32_t>::max()) {
+        fail("ActorAnimationBankV1 composition exceeds the clip limit");
+      }
+      total_key_bytes = checked_add(
+          total_key_bytes,
+          checked_add(clip.semantic_key.size(), clip.rig_key.size(),
+                      "ActorAnimationBankV1 composition clip-key bytes"),
+          "ActorAnimationBankV1 composition key bytes");
+      total_frames = checked_add(
+          total_frames, clip.frames.size(),
+          "ActorAnimationBankV1 composition frame count");
+      for (const auto &frame : clip.frames) {
+        total_joint_poses = checked_add(
+            total_joint_poses, frame.joint_poses.size(),
+            "ActorAnimationBankV1 composition joint-pose count");
+      }
+      if (total_key_bytes > limits.max_total_semantic_key_bytes ||
+          total_frames > limits.max_total_frames ||
+          total_joint_poses > limits.max_total_joint_poses) {
+        fail("ActorAnimationBankV1 composition exceeds aggregate caller "
+             "limits");
       }
       auto appended = clip;
       appended.id = static_cast<std::uint32_t>(result.clips.size());

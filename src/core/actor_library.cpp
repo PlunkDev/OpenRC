@@ -789,6 +789,7 @@ compose_actor_libraries_v1(const std::span<const ActorLibraryV1> libraries,
   ActorLibraryV1 result;
   std::map<std::string, std::size_t, std::less<>> rig_indices;
   std::map<std::string, bool, std::less<>> model_keys;
+  AggregateCounts counts;
 
   for (const auto &library : libraries) {
     validate_actor_library_v1(library, limits);
@@ -801,9 +802,18 @@ compose_actor_libraries_v1(const std::span<const ActorLibraryV1> libraries,
         }
         continue;
       }
-      if (result.rigs.size() >= std::numeric_limits<std::uint32_t>::max()) {
-        fail("ActorLibraryV1 composition exceeds the top-level rig ID "
-             "domain");
+      if (result.rigs.size() >= limits.max_rigs ||
+          result.rigs.size() >= std::numeric_limits<std::uint32_t>::max()) {
+        fail("ActorLibraryV1 composition exceeds the top-level rig limit");
+      }
+      counts.semantic_key_bytes = checked_add(
+          counts.semantic_key_bytes, rig.semantic_key.size(),
+          "ActorLibraryV1 composition semantic-key bytes");
+      counts.joints = checked_add(counts.joints, rig.rig.joints.size(),
+                                  "ActorLibraryV1 composition joint count");
+      if (counts.semantic_key_bytes > limits.max_total_semantic_key_bytes ||
+          counts.joints > limits.max_total_joints) {
+        fail("ActorLibraryV1 composition exceeds aggregate rig limits");
       }
       auto appended = rig;
       appended.id = static_cast<std::uint32_t>(result.rigs.size());
@@ -815,10 +825,23 @@ compose_actor_libraries_v1(const std::span<const ActorLibraryV1> libraries,
       if (!model_keys.emplace(model.semantic_key, true).second) {
         fail("ActorLibraryV1 composition repeats a model semantic key");
       }
-      if (result.models.size() >= std::numeric_limits<std::uint32_t>::max()) {
-        fail("ActorLibraryV1 composition exceeds the top-level model ID "
-             "domain");
+      if (result.models.size() >= limits.max_models ||
+          result.models.size() >= std::numeric_limits<std::uint32_t>::max()) {
+        fail("ActorLibraryV1 composition exceeds the top-level model limit");
       }
+      counts.semantic_key_bytes = checked_add(
+          counts.semantic_key_bytes,
+          checked_add(model.semantic_key.size(), model.rig_key.size(),
+                      "ActorLibraryV1 composition model-key bytes"),
+          "ActorLibraryV1 composition semantic-key bytes");
+      if (counts.semantic_key_bytes > limits.max_total_semantic_key_bytes) {
+        fail("ActorLibraryV1 composition exceeds aggregate key limits");
+      }
+      const auto rig = rig_indices.find(model.rig_key);
+      if (rig == rig_indices.end()) {
+        fail("ActorLibraryV1 composition found a model without its rig");
+      }
+      validate_model(model, result.rigs[rig->second], limits, counts);
       auto appended = model;
       appended.id = static_cast<std::uint32_t>(result.models.size());
       result.models.push_back(std::move(appended));
