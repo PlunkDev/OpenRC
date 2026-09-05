@@ -395,9 +395,12 @@ RAC1 physical serialization order and exposed as disjoint borrowed ranges.
 Format probing additionally requires the 0x50-byte level-settings block, a
 bounded non-empty moby class list, and a moby instance block whose reserved
 header words are zero and whose static records each declare the proven 0x78
-byte RAC1 layout. Both regional variants on all 19 levels pass, while their
-differences remain isolated to opaque pvar data rather than being assigned an
-unproved timing meaning.
+byte RAC1 layout. The PVar pass proves one dense owner table shared by static
+Mobies, cameras, and sound instances; derives aligned, contiguous opaque data
+ranges; and validates the terminated Moby-link and same-PVar relative-pointer
+fixup streams without assigning class-specific field meanings. Both regional
+variants on all 19 levels pass, while their differences remain isolated to
+opaque PVar data rather than being assigned an unproved timing meaning.
 The raw level index in primary-extent-0 subrange 2 is independently parsed as
 `RacLevelCoreIndexV1` and cross-checked against the encoded/decoded subrange-10
 asset WAD. Its Moby class list must agree with the gameplay bank in exact count
@@ -416,6 +419,12 @@ links local/shared ownership back to gameplay placements. It also slices raw
 GS RAM from primary-extent-0 subrange 3 and decodes every 0x10-byte tfrag and
 Moby, TIE, and shrub texture record against the shared-texture block in
 decompressed subrange 10.
+Ordinary-Moby animation sequences reuse the proven regular pose record, but
+their packed frame addresses are relative to the complete class asset rather
+than the individual sequence. `parse_rac_moby_sequence_v1` normalizes that
+addressing, and `compile_rac_moby_animation_bank_v1` emits neutral clips pinned
+to the exact rig. Unclassified clips retain source-slot keys until executable
+state dispatch proves their gameplay meaning.
 Base pixels remain linear PSMT8 indices; the decoder swaps GS CLUT address bits
 3/4, expands PS2 alpha, and owns both indexed and RGBA output. Each model keeps
 its 16 local material slots, and the static scene builder retains UVs while

@@ -31,8 +31,9 @@ both in progress. The repository currently provides:
   transforms, and optional PAL five-language subtitle tails;
 - a strict `RacGameplayBankV1` parser for both regional gameplay payloads on
   all 19 levels, exposing 36 named block ranges plus validated RAC1 moby-class
-  IDs and 0x78-byte static-instance placements, together with bounded TIE and
-  shrub class lists and their complete instance matrices;
+  IDs and 0x78-byte static-instance placements, dense per-instance PVar
+  ownership and opaque ranges, typed Moby-link/relative-pointer fixups, and
+  bounded TIE/shrub class lists with their complete instance matrices;
 - a strict `RacLevelCoreIndexV1` parser that links every gameplay Moby class in
   exact count/order to its local model range, shared gadget WAD, texture slots,
   and placement count on all 19 levels, and independently links the TIE and
@@ -42,6 +43,9 @@ both in progress. The repository currently provides:
 - a bounded regular Ratchet-frame parser and compiler-side pose decoder for
   signed XYZW rotations, sparse local/terminal scale, sparse translation,
   hierarchy, and inverse bind, verified across all 33,977 PAL frames;
+- a source-layout-aware ordinary-Moby animation path that normalizes
+  class-relative frame addresses and compiles complete source-addressed clip
+  banks against the exact decoded rig without inventing state semantics;
 - a bounded `RacMobyClassV1` parser for all local level models and the 21 shared
   companion-bank models, including packet directories, animation/skeleton
   ranges, and regular high/low/metal packet ownership;

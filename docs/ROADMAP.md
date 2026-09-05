@@ -74,8 +74,12 @@ finish line indefinitely.
 - [x] identify the fixed 37-slot `RacGameplayBankV1` directory, all 36 named
   gameplay blocks, and the RAC1 moby class/instance anchors across both
   regional payloads for all 19 levels
+- [x] recover dense static-Moby/camera/sound PVar ownership, aligned opaque
+  ranges, and both terminated relocation streams across all 38 gameplay banks
 - [x] identify all 21 shared companion-bank payloads as bounded
   `RacMobyClassV1` model cores across their 399 level observations
+- [x] normalize ordinary-Moby class-relative animation frame addresses and
+  compile complete source-addressed neutral animation banks
 - [ ] identify the semantic formats inside the remaining 74 unique WAD
   payloads spanning 31 candidate families
 - [x] inventory bounded EE/R5900 executable regions, control transfers, and

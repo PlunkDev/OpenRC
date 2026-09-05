@@ -597,12 +597,12 @@ deduplicated payload. The production scene-directory probe uses a separate
 4096-record allocation cap; the largest reference directory contains 2,144
 records. Scene-animation probing has independent limits of 256 actor tracks,
 65,536 total frame ranges, and 4,096 subtitle entries.
-The gameplay-bank probe is allocation-constant beyond its fixed ranges and
-bounded class/instance metadata; the Moby-class probe has its own packet and
-input envelopes. Unknown remains an explicit result rather than a guessed
-format. The 74 remaining unique payloads occupy 31 candidate families and
-continue to provide the queue for the next semantic pass. The matching family
-TSV is 10,880 bytes with SHA-256
+The gameplay-bank probe owns only bounded class/instance/PVar metadata and
+fixup lists beyond its borrowed source ranges; the Moby-class probe has its own
+packet and input envelopes. Unknown remains an explicit result rather than a
+guessed format. The 74 remaining unique payloads occupy 31 candidate families
+and continue to provide the queue for the next semantic pass. The matching
+family TSV is 10,880 bytes with SHA-256
 `34afaf05993ed81dff13cdece5a397f42cecdfa9863dd10a7dfc59d974764e74`.
 
 ## RAC1 gameplay instance banks
@@ -629,6 +629,17 @@ word: although external tooling labels it a floating draw distance, all 16,232
 PAL records observed here contain small integer bit patterns from 0 through
 1,023, so OpenRC does not currently invent floating-point units for it.
 
+All 38 gameplay banks also satisfy one PVar contract. Owner indices from
+static Mobies, cameras, and sound instances are unique and dense from zero;
+each table record selects one positive, 16-byte-aligned range, and those ranges
+are contiguous without gaps or overlap. A level contains 258-1,458 entries and
+52,080-364,464 used PVar bytes. The first terminated fixup stream contains
+4-165 aligned Moby-index fields, while the second contains 338-2,012 aligned
+relative pointers whose targets remain inside the same owner PVar. Both
+streams use the exact `{-1,-1}` terminator and have zero tails. These are
+relocation facts only: individual PVar fields stay opaque until their owning
+class behavior is recovered.
+
 For every level, the NTSC and PAL payloads have equal decoded sizes and
 identical first `0xA0` bytes. Every regional byte difference lies only in the
 pvar-data block selected by header slot `0x58`; OpenRC preserves those bytes as
@@ -653,6 +664,13 @@ placements. All 2,972 local model cores and all 399 shared occurrences parse as
 `RacMobyClassV1`, including meshless classes, shared/out-of-order packet
 storage, sequence metadata, optional skeleton/common-translation ranges, and
 owned high-LOD, low-LOD, metal, and shadow ranges.
+
+Regular ordinary-Moby frames use the same joint-pose payload as Ratchet, with
+one critical addressing difference: packed frame offsets are relative to the
+class asset. The dedicated parser normalizes them to sequence-local ranges
+before pose decoding. As a real-data compiler check, Veldin class 749 yields
+8 source-addressed clips, 119 frames, and 53 joint poses per frame from its
+133,632-byte local class asset.
 
 The same index preserves Ratchet's fixed 256 sequence slots without collapsing
 zero entries or aliases. Across all 19 levels, 1,804 unique non-zero sequence
