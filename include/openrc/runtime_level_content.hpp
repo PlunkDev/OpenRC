@@ -2,6 +2,8 @@
 
 #include "openrc/actor_pose.hpp"
 #include "openrc/content_api.hpp"
+#include "openrc/runtime_actor_behavior.hpp"
+#include "openrc/runtime_actor_behavior_scene_resource.hpp"
 #include "openrc/runtime_actor_animation.hpp"
 #include "openrc/runtime_actor_library.hpp"
 #include "openrc/runtime_destructible_scene_resource.hpp"
@@ -13,6 +15,7 @@
 #include <cstdint>
 #include <optional>
 #include <stdexcept>
+#include <vector>
 
 namespace openrc::game {
 
@@ -49,6 +52,7 @@ struct RuntimeLevelContentV1 {
   std::optional<EntitySceneV1> entity_scene;
   std::optional<GameplaySceneV1> gameplay_scene;
   std::optional<DestructibleSceneV1> destructible_scene;
+  std::optional<ActorBehaviorSceneV1> actor_behavior_scene;
 
   [[nodiscard]] bool operator==(const RuntimeLevelContentV1 &) const = default;
 };
@@ -61,6 +65,7 @@ struct RuntimeLevelContentLimitsV1 {
   EntitySceneIoLimitsV1 entity_scene;
   GameplaySceneIoLimitsV1 gameplay_scene;
   DestructibleSceneIoLimitsV1 destructible_scene;
+  ActorBehaviorSceneIoLimitsV1 actor_behavior_scene;
 };
 
 class RuntimeLevelContentError final : public std::runtime_error {
@@ -179,6 +184,38 @@ make_runtime_level_content_limits_v1() {
               1'000'000.0F,
           },
       },
+      ActorBehaviorSceneIoLimitsV1{
+          UINT64_C(256) * 1024U * 1024U,
+          ActorBehaviorSceneLimitsV1{
+              65'536U,
+              4096U,
+              1'000'000U,
+              65'536U,
+              4'000'000U,
+              4096U,
+              1'000'000U,
+              4096U,
+              1'000'000U,
+              65'536U,
+              4096U,
+              1'000'000U,
+              65'536U,
+              65'536U,
+              16'000'000U,
+              4096U,
+              1'000'000U,
+              4096U,
+              1'000'000U,
+              4096U,
+              UINT64_C(128) * 1024U * 1024U,
+              UINT32_MAX,
+              UINT32_MAX,
+              65'536U,
+              1000U,
+              4096U,
+              1'000'000.0F,
+          },
+      },
   };
 }
 
@@ -192,12 +229,31 @@ make_runtime_level_content_limits_v1() {
 // and may not target an entity which is also a gameplay collectible. A render
 // binding remains optional for intentionally invisible semantic entities;
 // EntityGameplayRuntimeV1 validates uniform scale and the composed world-space
-// hit sphere before transactional materialization. The content API policy is
-// explicit and shared by all resource loaders. ActorAnimationBankV1 is also
-// optional for old packages, but every clip must bind an exact rig key, rig
-// content digest, and joint count from ActorLibraryV1.
+// hit sphere before transactional materialization. ActorBehaviorSceneV1 is
+// optional for old packages, but when present requires the complete actor,
+// animation, and entity feature set. Each behavior instance must bind a
+// non-player actor and transform, while its program pins the exact rig and
+// imported clips. The content API policy is explicit and shared by all
+// resource loaders. ActorAnimationBankV1 is also optional for old packages,
+// but every clip must bind an exact rig key, rig content digest, and joint
+// count from ActorLibraryV1.
 [[nodiscard]] RuntimeLevelContentV1
 load_runtime_level_content_v1(const ResolvedLevelPackageV1 &package,
                               RuntimeLevelContentLimitsV1 limits);
+
+// Bridges the authored entity enabled bit into behavior-runtime presentation
+// state in canonical behavior-instance order. An absent behavior scene returns
+// an empty vector; a disconnected scene fails instead of defaulting every
+// actor visible. Scheduling remains a separate recovered policy.
+[[nodiscard]] std::vector<ActorBehaviorInitialPresentationEnabledV1>
+resolve_actor_behavior_initial_presentation_v1(
+    const RuntimeLevelContentV1 &content);
+
+// Value-only relationship index for initial state, callback field writes, and
+// snapshot restoration. Includes every authored definition, including entities
+// without a behavior, and records its mounted transform/actor/behavior bits.
+[[nodiscard]] std::vector<ActorBehaviorEntityCapabilitiesV1>
+resolve_actor_behavior_entity_capabilities_v1(
+    const RuntimeLevelContentV1 &content);
 
 } // namespace openrc::game

@@ -19,6 +19,8 @@ option(
 set(OPENRC_PUBLIC_EXECUTABLE_TARGETS)
 
 add_library(openrc_core STATIC
+    src/core/actor_behavior_scene.cpp
+    src/core/actor_behavior_scene_io.cpp
     src/core/actor_animation.cpp
     src/core/actor_animation_io.cpp
     src/core/actor_animation_player.cpp
@@ -51,6 +53,7 @@ add_library(openrc_core STATIC
     src/core/iso9660.cpp
     src/core/launcher_plan.cpp
     src/core/level_actor_animation_compile.cpp
+    src/core/level_actor_behavior_scene_compile.cpp
     src/core/level_actor_library_compile.cpp
     src/core/level_destructible_scene_compile.cpp
     src/core/level_entity_scene_compile.cpp
@@ -96,6 +99,8 @@ add_library(openrc_core STATIC
     src/core/render_scene_io.cpp
     src/core/runtime_level_content.cpp
     src/core/runtime_level_foundation.cpp
+    src/core/runtime_actor_behavior.cpp
+    src/core/runtime_actor_behavior_scene_resource.cpp
     src/core/runtime_gameplay.cpp
     src/core/runtime_gameplay_scene.cpp
     src/core/runtime_gameplay_scene_resource.cpp
@@ -473,6 +478,38 @@ if(OPENRC_BUILD_TESTS)
     add_executable(openrc-game-world-tests tests/game_world_tests.cpp)
     target_link_libraries(openrc-game-world-tests PRIVATE openrc_core)
     target_compile_features(openrc-game-world-tests PRIVATE cxx_std_20)
+
+    set(OPENRC_ACTOR_BEHAVIOR_TEST_TARGETS
+        openrc-actor-behavior-scene-tests
+        openrc-level-actor-behavior-scene-compile-tests
+        openrc-runtime-actor-behavior-scene-resource-tests
+        openrc-runtime-actor-behavior-tests
+    )
+    add_executable(
+        openrc-actor-behavior-scene-tests
+        tests/actor_behavior_scene_tests.cpp
+    )
+    add_executable(
+        openrc-level-actor-behavior-scene-compile-tests
+        tests/level_actor_behavior_scene_compile_tests.cpp
+    )
+    add_executable(
+        openrc-runtime-actor-behavior-scene-resource-tests
+        tests/runtime_actor_behavior_scene_resource_tests.cpp
+    )
+    add_executable(
+        openrc-runtime-actor-behavior-tests
+        tests/runtime_actor_behavior_tests.cpp
+    )
+    foreach(target IN LISTS OPENRC_ACTOR_BEHAVIOR_TEST_TARGETS)
+        target_link_libraries(${target} PRIVATE openrc_core)
+        target_compile_features(${target} PRIVATE cxx_std_20)
+        if(MSVC)
+            target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8)
+        else()
+            target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+        endif()
+    endforeach()
 
     set(OPENRC_DESTRUCTIBLE_TEST_TARGETS
         openrc-player-combat-tests
@@ -1889,6 +1926,16 @@ if(OPENRC_BUILD_TESTS)
     add_test(NAME game-input COMMAND openrc-game-input-tests)
     add_test(NAME fixed-step COMMAND openrc-fixed-step-tests)
     add_test(NAME game-world COMMAND openrc-game-world-tests)
+    add_test(NAME actor-behavior-scene COMMAND openrc-actor-behavior-scene-tests)
+    add_test(
+        NAME level-actor-behavior-scene-compile
+        COMMAND openrc-level-actor-behavior-scene-compile-tests
+    )
+    add_test(
+        NAME runtime-actor-behavior-scene-resource
+        COMMAND openrc-runtime-actor-behavior-scene-resource-tests
+    )
+    add_test(NAME runtime-actor-behavior COMMAND openrc-runtime-actor-behavior-tests)
     add_test(NAME player-combat COMMAND openrc-player-combat-tests)
     add_test(NAME destructible-scene COMMAND openrc-destructible-scene-tests)
     add_test(

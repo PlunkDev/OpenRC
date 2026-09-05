@@ -126,6 +126,10 @@ both in progress. The repository currently provides:
 - a versioned `DestructibleSceneV1` resource with authored-entity references,
   bounded local hit spheres, health, accepted damage channels, and ordered
   semantic item drops, likewise independent of RAC/PS2 formats;
+- a versioned `ActorBehaviorSceneV1` foundation with exact model, rig, and
+  animation-content contracts, typed per-instance state, explicit entity
+  relationships, initial channel bindings, scoped RNG, canonical binary I/O,
+  package attachment, and transactional native execution;
 - reusable bind-pose palette construction, CPU linear-blend skinning, and
   static actor-to-RenderScene baking with general affine joint transforms and
   inverse-transpose normal handling, plus a position-only path that preserves
@@ -633,6 +637,7 @@ Machine-specific data, cache, extracted files, and logs live below:
 - [EntitySceneV1 resource](docs/ENTITY_SCENE_V1.md)
 - [GameplaySceneV1 resource](docs/GAMEPLAY_SCENE_V1.md)
 - [DestructibleSceneV1 resource](docs/DESTRUCTIBLE_SCENE_V1.md)
+- [ActorBehaviorSceneV1 resource](docs/ACTOR_BEHAVIOR_SCENE_V1.md)
 - [RAC Ratchet sequence and pose recovery V1](docs/RAC_RATCHET_POSE_V1.md)
 - [PreparedGameV2 and LevelPackageV1](docs/PREPARED_GAME_V2.md)
 - [Reference build](docs/REFERENCE_BUILD.md)

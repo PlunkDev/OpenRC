@@ -39,6 +39,7 @@ openrc_core
 ├── neutral EntitySceneV1 definitions and typed transform/render/actor/player bindings
 ├── neutral GameplaySceneV1 overlap collectibles and semantic inventory grants
 ├── neutral DestructibleSceneV1 health, hit volumes, damage channels, and item drops
+├── neutral ActorBehaviorSceneV1 exact programs, typed instance state, RNG, and canonical I/O
 ├── bounded bind-pose palette construction and CPU linear-blend actor skinning
 ├── finite singular-palette position skinning for unlit animation consumers
 ├── fixed-cadence actor clip playback and deterministic locomotion selection
@@ -52,6 +53,7 @@ openrc_core
 ├── deterministic character controller, checkpoints, respawn, and player simulation
 ├── deterministic primary-combat timing plus damage/destruction/drop processing
 ├── deterministic entity materialization, interaction events, and persistent item totals
+├── exact actor-behavior package mount plus transactional state/RNG/command execution
 ├── source-independent resolved-package foundation loader and player construction
 ├── bounded RacMobyClassV1 headers, packet ownership, and fixed asset ranges
 ├── regular Moby VIF/vertex-cache/strip/packet-local triangle recovery
@@ -173,6 +175,16 @@ presentation and gameplay through semantic keys and authored IDs, and never
 sees a RAC class ID, sequence slot, WAD offset, PS2 packet, source ISO, or boot
 ELF. Source-backed recovery remains available only through compiler and
 diagnostic libraries/tools.
+
+The reusable `ActorBehaviorSceneV1` resource, attachment pass, strict optional
+loader, cross-resource mount validation, and transactional execution substrate
+are implemented independently of that published profile. Programs pin exact
+model, rig, and animation-clip content while instances own their initial state,
+channel bindings, typed fields, and scoped random state. The native compiler
+deliberately remains at eight resources until the first source-backed Veldin
+behavior is actually emitted and executed. The graphical runtime still uses
+the temporary `/initial/` pose classification; consuming behavior journals in
+that renderer is part of the source-behavior integration.
 
 The Launcher drives that shared all-level compiler, remembers the exact
 content-addressed installation, validates its compiler ID, profile version,

@@ -1,12 +1,16 @@
 #include "openrc/actor_animation.hpp"
 
+#include "openrc/hash.hpp"
+
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -219,6 +223,83 @@ valid_wrap_mode(const ActorAnimationWrapModeV1 mode) noexcept {
          mode == ActorAnimationWrapModeV1::loop;
 }
 
+class DigestWriter final {
+public:
+  void append_bytes(const std::span<const std::byte> bytes) {
+    hash_.update(bytes);
+  }
+
+  void append_u32(const std::uint32_t value) {
+    const std::array bytes{
+        static_cast<std::byte>(value & UINT32_C(0xff)),
+        static_cast<std::byte>((value >> 8U) & UINT32_C(0xff)),
+        static_cast<std::byte>((value >> 16U) & UINT32_C(0xff)),
+        static_cast<std::byte>((value >> 24U) & UINT32_C(0xff)),
+    };
+    append_bytes(bytes);
+  }
+
+  void append_f32(const float value) {
+    append_u32(std::bit_cast<std::uint32_t>(value));
+  }
+
+  void append_string(const std::string_view value) {
+    if (value.size() > std::numeric_limits<std::uint32_t>::max()) {
+      fail("ActorAnimationClipV1 digest string exceeds the format width");
+    }
+    append_u32(static_cast<std::uint32_t>(value.size()));
+    append_bytes(std::as_bytes(std::span(value.data(), value.size())));
+  }
+
+  [[nodiscard]] PreparedContentDigestV1 finish() { return hash_.finish(); }
+
+private:
+  Sha256 hash_;
+};
+
+void validate_clip_for_content_digest(const ActorAnimationClipV1 &clip) {
+  validate_key(clip.semantic_key, UINT32_MAX, "clip semantic key");
+  validate_key(clip.rig_key, UINT32_MAX, "rig key");
+  if (is_zero_prepared_digest_v1(clip.rig_content_sha256)) {
+    fail("ActorAnimationClipV1 has a zero rig content digest");
+  }
+  if (clip.source_updates_per_second == 0U) {
+    fail("ActorAnimationClipV1 has a zero source cadence");
+  }
+  if (!valid_wrap_mode(clip.wrap_mode)) {
+    fail("ActorAnimationClipV1 has an unknown wrap mode");
+  }
+  if (clip.frames.empty() ||
+      clip.frames.size() > std::numeric_limits<std::uint32_t>::max()) {
+    fail("ActorAnimationClipV1 has an invalid frame count");
+  }
+
+  const auto joint_count = clip.frames.front().joint_poses.size();
+  if (joint_count == 0U ||
+      joint_count > std::numeric_limits<std::uint32_t>::max()) {
+    fail("ActorAnimationClipV1 has an invalid joint count");
+  }
+  ActorAnimationLimitsV1 intrinsic_limits;
+  intrinsic_limits.max_absolute_component =
+      std::numeric_limits<float>::max();
+  intrinsic_limits.minimum_quaternion_length =
+      std::numeric_limits<double>::min();
+  for (const auto &frame : clip.frames) {
+    validate_component(frame.phase_rate,
+                       intrinsic_limits.max_absolute_component,
+                       "frame phase rate");
+    if (frame.phase_rate < 0.0F) {
+      fail("ActorAnimationClipV1 has a negative frame phase rate");
+    }
+    if (frame.joint_poses.size() != joint_count) {
+      fail("ActorAnimationClipV1 frames have inconsistent joint counts");
+    }
+    for (const auto &pose : frame.joint_poses) {
+      validate_pose(pose, intrinsic_limits);
+    }
+  }
+}
+
 } // namespace
 
 void validate_actor_animation_bank_v1(const ActorAnimationBankV1 &bank,
@@ -337,6 +418,41 @@ canonicalize_actor_animation_bank_v1(ActorAnimationBankV1 bank,
   }
   validate_actor_animation_bank_v1(bank, limits);
   return bank;
+}
+
+PreparedContentDigestV1
+actor_animation_clip_content_sha256_v1(const ActorAnimationClipV1 &clip) {
+  validate_clip_for_content_digest(clip);
+  DigestWriter writer;
+  writer.append_string("openrc.actor-animation-clip.v1");
+  writer.append_u32(kActorAnimationBankSchemaVersionV1);
+  writer.append_string(clip.rig_key);
+  writer.append_bytes(clip.rig_content_sha256);
+  writer.append_u32(clip.source_updates_per_second);
+  writer.append_u32(static_cast<std::uint32_t>(clip.wrap_mode));
+  writer.append_u32(static_cast<std::uint32_t>(clip.frames.size()));
+  writer.append_u32(
+      static_cast<std::uint32_t>(clip.frames.front().joint_poses.size()));
+  for (const auto &frame : clip.frames) {
+    writer.append_f32(frame.phase_rate);
+    writer.append_u32(
+        static_cast<std::uint32_t>(frame.joint_poses.size()));
+    for (const auto &pose : frame.joint_poses) {
+      for (const float value : pose.normalized_rotation_xyzw) {
+        writer.append_f32(value);
+      }
+      for (const float value : pose.translation) {
+        writer.append_f32(value);
+      }
+      for (const float value : pose.local_scale) {
+        writer.append_f32(value);
+      }
+      for (const float value : pose.terminal_scale) {
+        writer.append_f32(value);
+      }
+    }
+  }
+  return writer.finish();
 }
 
 ActorAnimationBankV1 compose_actor_animation_banks_v1(

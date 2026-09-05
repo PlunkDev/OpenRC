@@ -1,6 +1,7 @@
 #include "openrc/runtime_level_content.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -9,6 +10,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -117,6 +119,38 @@ constexpr openrc::DestructibleSceneIoLimitsV1 kDestructibleSceneLimits{
         1000.0F,
     },
 };
+constexpr openrc::ActorBehaviorSceneIoLimitsV1 kActorBehaviorSceneLimits{
+    1U << 20U,
+    {
+        8U,
+        16U,
+        64U,
+        8U,
+        128U,
+        16U,
+        64U,
+        8U,
+        32U,
+        8U,
+        8U,
+        32U,
+        16U,
+        32U,
+        256U,
+        8U,
+        64U,
+        8U,
+        64U,
+        128U,
+        4096U,
+        16U,
+        16U,
+        32U,
+        120U,
+        8U,
+        1000.0F,
+    },
+};
 constexpr openrc::game::RuntimeLevelContentLimitsV1 kRuntimeLimits{
     {
         kContentApiVersion,
@@ -129,6 +163,7 @@ constexpr openrc::game::RuntimeLevelContentLimitsV1 kRuntimeLimits{
     kEntitySceneLimits,
     kGameplaySceneLimits,
     kDestructibleSceneLimits,
+    kActorBehaviorSceneLimits,
 };
 
 void expect(const bool condition, const std::string &message) {
@@ -272,6 +307,20 @@ actor_vertex(const float x, const float y, const float u, const float v) {
   return result;
 }
 
+[[nodiscard]] openrc::ActorLibraryV1 make_behavior_actor_library() {
+  auto result = make_actor_library();
+  auto rig = result.rigs.front();
+  rig.id = 1U;
+  rig.semantic_key = "actors/npc/rig";
+  auto model = result.models.front();
+  model.id = 1U;
+  model.semantic_key = "actors/npc/high";
+  model.rig_key = rig.semantic_key;
+  result.rigs.push_back(std::move(rig));
+  result.models.push_back(std::move(model));
+  return result;
+}
+
 [[nodiscard]] openrc::ActorAnimationBankV1 make_actor_animation_bank(
     const openrc::ActorLibraryV1 &library = make_actor_library()) {
   openrc::ActorAnimationClipV1 clip;
@@ -285,6 +334,22 @@ actor_vertex(const float x, const float y, const float u, const float v) {
   clip.frames = {{0.125F, {openrc::ActorJointPoseV1{}}}};
 
   openrc::ActorAnimationBankV1 result;
+  result.clips.push_back(std::move(clip));
+  return result;
+}
+
+[[nodiscard]] openrc::ActorAnimationBankV1 make_behavior_animation_bank(
+    const openrc::ActorLibraryV1 &library) {
+  auto result = make_actor_animation_bank(library);
+  openrc::ActorAnimationClipV1 clip;
+  clip.id = 1U;
+  clip.semantic_key = "actors/npc/idle";
+  clip.rig_key = library.rigs[1U].semantic_key;
+  clip.rig_content_sha256 =
+      openrc::actor_rig_content_sha256_v1(library.rigs[1U].rig);
+  clip.source_updates_per_second = 50U;
+  clip.wrap_mode = openrc::ActorAnimationWrapModeV1::loop;
+  clip.frames = {{0.125F, {openrc::ActorJointPoseV1{}}}};
   result.clips.push_back(std::move(clip));
   return result;
 }
@@ -315,6 +380,67 @@ actor_vertex(const float x, const float y, const float u, const float v) {
   result.actor_bindings = {actor};
   result.player_bindings = {{player.authored_id, 0U}};
   return result;
+}
+
+[[nodiscard]] openrc::EntitySceneV1 make_behavior_entity_scene() {
+  auto result = make_entity_scene();
+  result.render_bindings.clear();
+  openrc::EntityActorBindingV1 actor;
+  actor.authored_id = 40U;
+  actor.model_key = "actors/npc/high";
+  actor.model_to_entity = identity_actor_transform();
+  result.actor_bindings.push_back(std::move(actor));
+  return result;
+}
+
+[[nodiscard]] openrc::ActorBehaviorSceneV1 make_behavior_scene(
+    const openrc::ActorLibraryV1 &library) {
+  openrc::ActorBehaviorProgramV1 program;
+  program.id = 0U;
+  program.semantic_key = "behaviors/npc/test";
+  program.implementation_key = "openrc.behavior/test";
+  program.required_rig_key = library.rigs[1U].semantic_key;
+  program.required_rig_sha256 =
+      openrc::actor_rig_content_sha256_v1(library.rigs[1U].rig);
+  program.required_model_key = library.models[1U].semantic_key;
+  program.required_model_sha256 = openrc::actor_model_content_sha256_v1(
+      library.models[1U], program.required_rig_sha256);
+  program.implementation_abi_version = 1U;
+  program.state_count = 2U;
+  program.source_updates_per_second = 50U;
+  program.animation_channel_count = 1U;
+  program.fields = {
+      {0U, "behavior/health", openrc::ActorBehaviorValueTypeV1::unsigned_integer,
+       1U, 0U},
+      {1U, "behavior/target", openrc::ActorBehaviorValueTypeV1::entity_reference,
+       1U, 0U},
+  };
+  openrc::ActorBehaviorAnimationImportV1 idle;
+  idle.id = 0U;
+  idle.binding_key = "animation/idle";
+  idle.clip_key = "actors/npc/idle";
+  const auto bank = make_behavior_animation_bank(library);
+  idle.required_clip_sha256 =
+      openrc::actor_animation_clip_content_sha256_v1(bank.clips[1U]);
+  idle.required_frame_count =
+      static_cast<std::uint32_t>(bank.clips[1U].frames.size());
+  program.animation_imports = {std::move(idle)};
+
+  openrc::ActorBehaviorEntityReferenceV1 target;
+  target.authored_id = 5U;
+  openrc::ActorBehaviorInstanceV1 instance;
+  instance.authored_id = 40U;
+  instance.program_id = 0U;
+  instance.initial_state_id = 0U;
+  instance.initial_values = {std::uint32_t{10U}, target};
+  instance.initial_animations = {{0U, 0U, 0U, 0U}};
+
+  openrc::ActorBehaviorSceneV1 result;
+  result.level_id = kLevelId;
+  result.programs.push_back(std::move(program));
+  result.instances.push_back(std::move(instance));
+  return openrc::canonicalize_actor_behavior_scene_v1(
+      std::move(result), kActorBehaviorSceneLimits.scene);
 }
 
 [[nodiscard]] openrc::GameplaySceneV1 make_gameplay_scene() {
@@ -442,6 +568,17 @@ void add_destructible_scene_resource(
       openrc::encode_destructible_scene_v1(scene, kDestructibleSceneLimits)));
 }
 
+void add_actor_behavior_scene_resource(
+    openrc::ResolvedLevelPackageV1 &package,
+    const openrc::ActorBehaviorSceneV1 &scene) {
+  package.resources.push_back(make_resource(
+      openrc::kActorBehaviorSceneResourceIdV1,
+      openrc::kActorBehaviorSceneResourceTypeIdV1,
+      openrc::kActorBehaviorSceneResourceSchemaVersionV1,
+      openrc::encode_actor_behavior_scene_v1(
+          scene, kActorBehaviorSceneLimits)));
+}
+
 [[nodiscard]] openrc::ResolvedLevelPackageV1
 make_package_with_actor_entities() {
   auto result = make_package();
@@ -468,6 +605,17 @@ make_package_with_actor_entities_and_gameplay() {
 make_package_with_actor_entities_and_destructible() {
   auto result = make_package_with_actor_entities();
   add_destructible_scene_resource(result, make_destructible_scene());
+  return result;
+}
+
+[[nodiscard]] openrc::ResolvedLevelPackageV1
+make_package_with_actor_behavior() {
+  auto result = make_package();
+  const auto library = make_behavior_actor_library();
+  add_actor_library_resource(result, library, kActorLibraryLimits);
+  add_actor_animation_resource(result, make_behavior_animation_bank(library));
+  add_entity_scene_resource(result, make_behavior_entity_scene());
+  add_actor_behavior_scene_resource(result, make_behavior_scene(library));
   return result;
 }
 
@@ -611,6 +759,300 @@ void test_mounts_destructible_scene_with_entity_contract() {
                      make_destructible_scene(),
                      kDestructibleSceneLimits.scene),
          "combined runtime loader changed the mounted destructible scene");
+}
+
+void test_mounts_actor_behavior_with_complete_dependencies() {
+  const auto library = make_behavior_actor_library();
+  const auto expected = make_behavior_scene(library);
+  const auto content = openrc::game::load_runtime_level_content_v1(
+      make_package_with_actor_behavior(), kRuntimeLimits);
+  const auto initial_presentation =
+      openrc::game::resolve_actor_behavior_initial_presentation_v1(content);
+  const auto capabilities =
+      openrc::game::resolve_actor_behavior_entity_capabilities_v1(content);
+  expect(content.actor_library.has_value() &&
+             content.actor_animation_bank.has_value() &&
+             content.entity_scene.has_value() &&
+             content.actor_behavior_scene.has_value() &&
+             *content.actor_behavior_scene == expected &&
+             initial_presentation ==
+                 std::vector<openrc::game::
+                                 ActorBehaviorInitialPresentationEnabledV1>{
+                     {40U, true}},
+         "combined runtime loader changed or disconnected actor behavior");
+  expect(capabilities ==
+             std::vector<openrc::game::ActorBehaviorEntityCapabilitiesV1>{
+                 {5U, openrc::kActorBehaviorEntityReferenceRequiresActorV1},
+                 {40U,
+                  openrc::kActorBehaviorEntityReferenceRequiresTransformV1 |
+                      openrc::kActorBehaviorEntityReferenceRequiresActorV1 |
+                      openrc::kActorBehaviorEntityReferenceRequiresBehaviorV1}},
+         "mounted behavior capabilities lost a referenced non-behavior entity "
+         "or its exact components");
+
+  openrc::game::ActorBehaviorRuntimeRegistryV1 registry;
+  const auto &program = expected.programs[0U];
+  registry.register_implementation({
+      {program.implementation_key, program.implementation_abi_version,
+       program.state_layout_sha256},
+      [](openrc::game::ActorBehaviorInvocationV1 &invocation) {
+        invocation.set_field(
+            1U, 0U,
+            openrc::ActorBehaviorEntityReferenceV1{invocation.authored_id()});
+        invocation.emit_set_animation(0U, 0U, 0U, 0U);
+      },
+  });
+  openrc::game::ActorBehaviorRuntimeV1 runtime(
+      *content.actor_behavior_scene, registry,
+      {kActorBehaviorSceneLimits.scene, 16U}, 60U, 0U,
+      initial_presentation, capabilities);
+  constexpr std::array<std::uint32_t, 1U> schedule{40U};
+  expect(runtime.fixed_tick(0U, schedule).journal.empty(),
+         "mounted PAL behavior ran before its first source update");
+  const auto tick = runtime.fixed_tick(1U, schedule);
+  expect(tick.journal.size() == 1U &&
+             tick.journal[0U].authored_id == 40U &&
+             std::get<openrc::game::ActorBehaviorSetAnimationCommandV1>(
+                 tick.journal[0U].payload)
+                     .clip_key == "actors/npc/idle" &&
+             std::get<openrc::ActorBehaviorEntityReferenceV1>(
+                 runtime.snapshot().instances[0U].field_values[1U])
+                     .authored_id == 40U,
+         "mounted behavior could not execute with its package animation and "
+         "entity contracts");
+
+  auto disabled_package = make_package_with_actor_behavior();
+  auto disabled_entities = make_behavior_entity_scene();
+  disabled_entities.definitions[0U].flags = 0U;
+  auto &entity_resource =
+      find_resource(disabled_package, openrc::kEntitySceneResourceIdV1);
+  entity_resource.payload =
+      openrc::encode_entity_scene_v1(disabled_entities, kEntitySceneLimits);
+  entity_resource.payload_sha256 =
+      openrc::prepared_content_sha256_v1(entity_resource.payload);
+  const auto disabled_content = openrc::game::load_runtime_level_content_v1(
+      disabled_package, kRuntimeLimits);
+  const auto disabled_presentation =
+      openrc::game::resolve_actor_behavior_initial_presentation_v1(
+          disabled_content);
+  expect(disabled_presentation ==
+             std::vector<openrc::game::
+                             ActorBehaviorInitialPresentationEnabledV1>{
+                 {40U, false}},
+         "behavior presentation ignored the entity initially-enabled flag");
+  expect(openrc::game::resolve_actor_behavior_entity_capabilities_v1(
+             disabled_content) == capabilities,
+         "presentation visibility changed entity relationship capabilities");
+
+  auto disconnected = content;
+  disconnected.entity_scene.reset();
+  expect_runtime_error(
+      [&] {
+        static_cast<void>(
+            openrc::game::resolve_actor_behavior_entity_capabilities_v1(
+                disconnected));
+      },
+      "disconnected",
+      "behavior capability bridge accepted a missing entity scene");
+}
+
+void test_rejects_actor_behavior_without_complete_dependencies() {
+  auto package = make_package();
+  openrc::ActorBehaviorSceneV1 empty;
+  empty.level_id = kLevelId;
+  add_actor_behavior_scene_resource(package, empty);
+  expect_runtime_error(
+      [&] {
+        static_cast<void>(openrc::game::load_runtime_level_content_v1(
+            package, kRuntimeLimits));
+      },
+      "without its complete actor, animation, and entity feature set",
+      "combined loader accepted actor behavior without its dependencies");
+}
+
+void test_rejects_invalid_actor_behavior_relationships() {
+  const auto replace_behavior = [](openrc::ResolvedLevelPackageV1 &package,
+                                   const openrc::ActorBehaviorSceneV1 &scene) {
+    auto &resource =
+        find_resource(package, openrc::kActorBehaviorSceneResourceIdV1);
+    resource.payload = openrc::encode_actor_behavior_scene_v1(
+        scene, kActorBehaviorSceneLimits);
+    resource.payload_sha256 =
+        openrc::prepared_content_sha256_v1(resource.payload);
+  };
+
+  const auto library = make_behavior_actor_library();
+
+  auto dangling = make_package_with_actor_behavior();
+  auto dangling_scene = make_behavior_scene(library);
+  auto *reference = std::get_if<openrc::ActorBehaviorEntityReferenceV1>(
+      &dangling_scene.instances[0U].initial_values[1U]);
+  expect(reference != nullptr, "behavior target fixture has the wrong type");
+  reference->authored_id = 999U;
+  replace_behavior(dangling, dangling_scene);
+  expect_runtime_error(
+      [&] {
+        static_cast<void>(openrc::game::load_runtime_level_content_v1(
+            dangling, kRuntimeLimits));
+      },
+      "dangling entity reference",
+      "combined loader accepted a dangling behavior entity reference");
+
+  auto missing_clip = make_package_with_actor_behavior();
+  auto missing_clip_scene = make_behavior_scene(library);
+  missing_clip_scene.programs[0U].animation_imports[0U].clip_key =
+      "actors/npc/missing";
+  missing_clip_scene.programs[0U].state_layout_sha256 = {};
+  replace_behavior(missing_clip, missing_clip_scene);
+  expect_runtime_error(
+      [&] {
+        static_cast<void>(openrc::game::load_runtime_level_content_v1(
+            missing_clip, kRuntimeLimits));
+      },
+      "missing animation clip",
+      "combined loader accepted a missing behavior animation import");
+
+  auto wrong_rig = make_package_with_actor_behavior();
+  auto wrong_rig_scene = make_behavior_scene(library);
+  wrong_rig_scene.programs[0U].required_rig_sha256[0U] ^=
+      std::byte{0x01U};
+  wrong_rig_scene.programs[0U].state_layout_sha256 = {};
+  replace_behavior(wrong_rig, wrong_rig_scene);
+  expect_runtime_error(
+      [&] {
+        static_cast<void>(openrc::game::load_runtime_level_content_v1(
+            wrong_rig, kRuntimeLimits));
+      },
+      "stale actor rig digest",
+      "combined loader accepted a stale behavior rig digest");
+
+  auto wrong_model = make_package_with_actor_behavior();
+  auto wrong_model_scene = make_behavior_scene(library);
+  wrong_model_scene.programs[0U].required_model_sha256[0U] ^=
+      std::byte{0x01U};
+  wrong_model_scene.programs[0U].state_layout_sha256 = {};
+  replace_behavior(wrong_model, wrong_model_scene);
+  expect_runtime_error(
+      [&] {
+        static_cast<void>(openrc::game::load_runtime_level_content_v1(
+            wrong_model, kRuntimeLimits));
+      },
+      "stale or incompatible actor model",
+      "combined loader accepted a stale behavior model digest");
+
+  auto wrong_clip = make_package_with_actor_behavior();
+  auto wrong_clip_scene = make_behavior_scene(library);
+  wrong_clip_scene.programs[0U]
+      .animation_imports[0U]
+      .required_clip_sha256[0U] ^= std::byte{0x01U};
+  wrong_clip_scene.programs[0U].state_layout_sha256 = {};
+  replace_behavior(wrong_clip, wrong_clip_scene);
+  expect_runtime_error(
+      [&] {
+        static_cast<void>(openrc::game::load_runtime_level_content_v1(
+            wrong_clip, kRuntimeLimits));
+      },
+      "stale clip content",
+      "combined loader accepted a stale behavior animation digest");
+
+  auto wrong_frame_count = make_package_with_actor_behavior();
+  auto wrong_frame_count_scene = make_behavior_scene(library);
+  ++wrong_frame_count_scene.programs[0U]
+        .animation_imports[0U]
+        .required_frame_count;
+  wrong_frame_count_scene.programs[0U].state_layout_sha256 = {};
+  replace_behavior(wrong_frame_count, wrong_frame_count_scene);
+  expect_runtime_error(
+      [&] {
+        static_cast<void>(openrc::game::load_runtime_level_content_v1(
+            wrong_frame_count, kRuntimeLimits));
+      },
+      "required frame count",
+      "combined loader accepted a stale behavior animation frame count");
+
+  auto missing_required_transform = make_package_with_actor_behavior();
+  auto missing_required_transform_scene = make_behavior_scene(library);
+  missing_required_transform_scene.programs[0U].fields[1U].flags =
+      openrc::kActorBehaviorEntityReferenceRequiresTransformV1;
+  missing_required_transform_scene.programs[0U].state_layout_sha256 = {};
+  replace_behavior(missing_required_transform,
+                   missing_required_transform_scene);
+  expect_runtime_error(
+      [&] {
+        static_cast<void>(openrc::game::load_runtime_level_content_v1(
+            missing_required_transform, kRuntimeLimits));
+      },
+      "requires a world transform",
+      "combined loader ignored an entity-reference transform contract");
+
+  auto missing_required_behavior = make_package_with_actor_behavior();
+  auto missing_required_behavior_scene = make_behavior_scene(library);
+  missing_required_behavior_scene.programs[0U].fields[1U].flags =
+      openrc::kActorBehaviorEntityReferenceRequiresBehaviorV1;
+  missing_required_behavior_scene.programs[0U].state_layout_sha256 = {};
+  replace_behavior(missing_required_behavior, missing_required_behavior_scene);
+  expect_runtime_error(
+      [&] {
+        static_cast<void>(openrc::game::load_runtime_level_content_v1(
+            missing_required_behavior, kRuntimeLimits));
+      },
+      "requires another behavior instance",
+      "combined loader ignored an entity-reference behavior contract");
+
+  auto player = make_package_with_actor_behavior();
+  auto player_scene = make_behavior_scene(library);
+  player_scene.instances[0U].authored_id = 5U;
+  player_scene.programs[0U].required_rig_key = library.rigs[0U].semantic_key;
+  player_scene.programs[0U].required_rig_sha256 =
+      openrc::actor_rig_content_sha256_v1(library.rigs[0U].rig);
+  player_scene.programs[0U].required_model_key =
+      library.models[0U].semantic_key;
+  player_scene.programs[0U].required_model_sha256 =
+      openrc::actor_model_content_sha256_v1(
+          library.models[0U],
+          player_scene.programs[0U].required_rig_sha256);
+  player_scene.programs[0U].animation_imports[0U].clip_key =
+      "actors/player/idle";
+  player_scene.programs[0U].animation_imports[0U].required_clip_sha256 =
+      openrc::actor_animation_clip_content_sha256_v1(
+          make_behavior_animation_bank(library).clips[0U]);
+  player_scene.programs[0U].state_layout_sha256 = {};
+  replace_behavior(player, player_scene);
+  expect_runtime_error(
+      [&] {
+        static_cast<void>(openrc::game::load_runtime_level_content_v1(
+            player, kRuntimeLimits));
+      },
+      "local player entity",
+      "combined loader accepted a player-controlled behavior instance");
+
+  auto model_mismatch = make_package_with_actor_behavior();
+  auto entity_scene = make_behavior_entity_scene();
+  entity_scene.actor_bindings[1U].model_key = "actors/player/high";
+  auto &entity_resource =
+      find_resource(model_mismatch, openrc::kEntitySceneResourceIdV1);
+  entity_resource.payload =
+      openrc::encode_entity_scene_v1(entity_scene, kEntitySceneLimits);
+  entity_resource.payload_sha256 =
+      openrc::prepared_content_sha256_v1(entity_resource.payload);
+  expect_runtime_error(
+      [&] {
+        static_cast<void>(openrc::game::load_runtime_level_content_v1(
+            model_mismatch, kRuntimeLimits));
+      },
+      "model disagrees with its exact program model",
+      "combined loader accepted a behavior actor with the wrong rig");
+
+  auto conflict = make_package_with_actor_behavior();
+  add_destructible_scene_resource(conflict, make_destructible_scene());
+  expect_runtime_error(
+      [&] {
+        static_cast<void>(openrc::game::load_runtime_level_content_v1(
+            conflict, kRuntimeLimits));
+      },
+      "automatic destructible runtime",
+      "combined loader accepted behavior and automatic destruction for one "
+      "entity");
 }
 
 void test_rejects_gameplay_without_entity_scene() {
@@ -1116,6 +1558,9 @@ int main() {
     test_rejects_actor_animation_rig_contract_mismatches();
     test_mounts_gameplay_scene_with_entity_contract();
     test_mounts_destructible_scene_with_entity_contract();
+    test_mounts_actor_behavior_with_complete_dependencies();
+    test_rejects_actor_behavior_without_complete_dependencies();
+    test_rejects_invalid_actor_behavior_relationships();
     test_rejects_gameplay_without_entity_scene();
     test_rejects_gameplay_without_definition_or_transform();
     test_rejects_wrong_or_invalid_gameplay_scene();

@@ -101,6 +101,14 @@ void validate_actor_animation_bank_v1(const ActorAnimationBankV1 &bank,
 canonicalize_actor_animation_bank_v1(ActorAnimationBankV1 bank,
                                      ActorAnimationLimitsV1 limits);
 
+// Hashes the complete canonical clip contract and animation data: rig key and
+// digest, source cadence, wrap mode, frame/joint shape, phase rates, and every
+// canonical joint-pose float. The bank-local ID and semantic key are excluded
+// because they are addressing identities rather than clip content. A clip
+// which is not intrinsically canonical fails closed.
+[[nodiscard]] PreparedContentDigestV1
+actor_animation_clip_content_sha256_v1(const ActorAnimationClipV1 &clip);
+
 // Combines independently compiled neutral animation banks into one package
 // resource. Clip IDs are reassigned densely in input order; semantic keys
 // remain the stable identity and therefore may not repeat. Each input and the

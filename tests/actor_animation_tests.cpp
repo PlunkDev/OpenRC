@@ -250,6 +250,51 @@ void test_identity_round_trip_and_determinism() {
          "Canonical empty ActorAnimationBankV1 did not round-trip");
 }
 
+void test_clip_content_digest_identity_and_sensitivity() {
+  const auto bank =
+      openrc::canonicalize_actor_animation_bank_v1(make_bank(false),
+                                                    kLimits.bank);
+  const auto &clip = bank.clips[0U];
+  const auto expected = openrc::actor_animation_clip_content_sha256_v1(clip);
+  expect(expected == openrc::actor_animation_clip_content_sha256_v1(clip) &&
+             !openrc::is_zero_prepared_digest_v1(expected),
+         "canonical animation clip digest is not deterministic");
+
+  auto renamed = clip;
+  renamed.id = UINT32_MAX;
+  renamed.semantic_key = "actors/identity/ignored";
+  expect(openrc::actor_animation_clip_content_sha256_v1(renamed) == expected,
+         "animation clip local ID or semantic identity changed its content "
+         "digest");
+
+  auto changed_frame = clip;
+  changed_frame.frames[0U].joint_poses[0U].translation[0U] += 0.25F;
+  expect(openrc::actor_animation_clip_content_sha256_v1(changed_frame) !=
+             expected,
+         "animation clip digest omitted canonical pose data");
+
+  auto changed_cadence = clip;
+  ++changed_cadence.source_updates_per_second;
+  expect(openrc::actor_animation_clip_content_sha256_v1(changed_cadence) !=
+             expected,
+         "animation clip digest omitted source cadence");
+
+  auto changed_wrap = clip;
+  changed_wrap.wrap_mode = openrc::ActorAnimationWrapModeV1::loop;
+  expect(openrc::actor_animation_clip_content_sha256_v1(changed_wrap) !=
+             expected,
+         "animation clip digest omitted wrap mode");
+
+  auto noncanonical = clip;
+  noncanonical.frames[0U].joint_poses[0U].translation[0U] = -0.0F;
+  expect_animation_error(
+      [&] {
+        static_cast<void>(
+            openrc::actor_animation_clip_content_sha256_v1(noncanonical));
+      },
+      "animation clip digest accepted non-canonical float data");
+}
+
 void test_bounded_envelope_offsets_and_reserved_rejection() {
   expect_corrupt_decode([](auto &bytes) { bytes[0U] = std::byte{'X'}; },
                         "decoder accepted corrupt animation magic");
@@ -592,6 +637,7 @@ void test_explicit_limits() {
 int main() {
   try {
     test_identity_round_trip_and_determinism();
+    test_clip_content_digest_identity_and_sensitivity();
     test_bounded_envelope_offsets_and_reserved_rejection();
     test_malformed_encoded_values_are_rejected();
     test_encoder_output_with_non_idempotent_float_normalization_decodes();

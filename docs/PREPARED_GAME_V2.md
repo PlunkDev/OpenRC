@@ -184,6 +184,13 @@ are optional compatibility extensions for older or independently authored
 packages. An animation bank requires an actor library and every clip must match
 an exact semantic rig key, canonical rig-content digest, and joint count;
 gameplay and destructible scenes each require entity scene whenever present.
+`world/actor-behaviors` is another optional compatibility extension. When
+present, it requires entity, actor-library, and animation resources and pins
+the exact model, rig, and imported clip content for every program. Its
+instances require complete actor relationships, valid initial frames, and any
+field-declared entity capabilities; they cannot also use the automatic
+destructible owner. The resource foundation is available, but it is not yet
+part of the exact eight-resource native-game publication profile.
 The combined loader also cross-validates the level ID, every semantic
 entity-to-model-to-rig relationship, and every collectible or destructible
 reference to an entity definition with an authored transform before gameplay
@@ -202,8 +209,9 @@ remain local to a canonical resource table. This lets later planets and mod
 overlays reuse or replace actor, entity, and gameplay data without embedding
 source-format dispatch in the native runtime. See
 [ActorLibraryV1](ACTOR_LIBRARY_V1.md), [EntitySceneV1](ENTITY_SCENE_V1.md),
-[GameplaySceneV1](GAMEPLAY_SCENE_V1.md), and
-[DestructibleSceneV1](DESTRUCTIBLE_SCENE_V1.md) for those public contracts.
+[GameplaySceneV1](GAMEPLAY_SCENE_V1.md),
+[DestructibleSceneV1](DESTRUCTIBLE_SCENE_V1.md), and
+[ActorBehaviorSceneV1](ACTOR_BEHAVIOR_SCENE_V1.md) for those public contracts.
 
 ### Current player-animation adapter policy
 
