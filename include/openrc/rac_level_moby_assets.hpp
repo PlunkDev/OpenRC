@@ -9,6 +9,7 @@
 #include "openrc/rac_tie_class.hpp"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <stdexcept>
@@ -62,6 +63,11 @@ struct RacLevelMobyAssetLimitsV1 {
 
 struct RacLevelMobyAssetsV1 {
   std::uint32_t level_id = 0U;
+  // Complete decoded logical sources retained for the deterministic native
+  // package compiler. They contain no host paths and are bounded by the same
+  // source limits used for the parsed views below.
+  std::vector<std::byte> collision_source_bytes;
+  std::vector<std::byte> gameplay_source_bytes;
   RacLevelCollisionV1 collision;
   RacGameplayBankV1 gameplay;
   // Tfrag and Moby tables share the same RAC1 0x10-byte TextureEntry format,

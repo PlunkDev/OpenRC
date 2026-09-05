@@ -2,12 +2,21 @@
 
 This roadmap describes technical milestones rather than release dates.
 
+The playable-runtime path is dependency-driven: unfinished broad Stage 1
+inventory work is not automatically a gate for Stage 3. Only formats and code
+paths required by the next verified gameplay subsystem become blockers. This
+keeps the list honest without allowing discovery work to move the playable
+finish line indefinitely.
+
 ## Stage 0 — Foundation
 
 - [x] C++20 and CMake project structure
 - [x] ISO 9660 and `SYSTEM.CNF` inspection
 - [x] PAL and NTSC-U/C build recognition
 - [x] native Windows launcher shell
+- [x] statically link public LLVM-MinGW executables and reject wrong-architecture
+  or compiler-runtime DLL families after linking, during portable publication,
+  and before the Launcher starts the adjacent runtime
 - [x] `PlunkDev/OpenRC` configuration and local-data directories
 - [x] synthetic disc-parser tests
 - [x] validate the inspector against the PAL v2.00 retail image
@@ -76,6 +85,12 @@ This roadmap describes technical milestones rather than release dates.
 - [ ] inventory EE-to-IOP SIF/RPC and imported-module service boundaries
 - [ ] inventory EE/VU-to-GIF/GS PATH, DMA, and MMIO boundaries
 
+For the first playable slice, the remaining Stage 1 work is narrowed to the
+EE/VU and payload families directly used by Ratchet's skeleton/animations,
+spawn/checkpoints, camera, one weapon, one enemy, and their scripted events.
+Broad audio, IOP, call-graph, and unrelated unknown-payload coverage remains
+important for later fidelity, but does not block movement on Veldin.
+
 ## Stage 2 — Native level viewer
 
 - [x] bind a prepared ELF back to the selected ISO before native execution
@@ -107,7 +122,10 @@ This roadmap describes technical milestones rather than release dates.
   matrices across all 19 levels
 - [x] render all 1,114 Veldin TIE placements as a separately textured scene
   region alongside terrain and static Moby geometry
-- [ ] parse and classify terrain, collision, metal/bangle geometry, skeletal
+- [x] parse the authoritative RAC1 world/hero collision tree, preserve exact
+  packed geometry and surface bytes, and validate the same parser on all 19
+  PAL v2.00 levels
+- [ ] parse and classify remaining terrain, metal/bangle geometry, skeletal
   bind poses, and animation transforms
 - [ ] decode and render the remaining shrub, animated-Moby, and specialized
   Veldin asset families as one complete textured scene in the native window
@@ -115,11 +133,33 @@ This roadmap describes technical milestones rather than release dates.
 
 ## Stage 3 — First playable vertical slice
 
-- load Ratchet and his animations
-- implement controller input and camera behavior
-- reconstruct movement, collision, and basic interactions
-- implement one weapon and one enemy type
-- load and save isolated test state
+- [x] define versioned `PreparedGameV2` and `LevelPackageV1` containers with
+  source provenance, integrity checks, and deterministic mod overlays
+- [x] add a planet-agnostic `GameSession`, `LevelRequest`, entity world,
+  quantized replay input, and exact fixed-step scheduler
+- [x] compile authoritative RAC1 world/hero collision into a neutral exact-Q6
+  `CollisionWorldV1` with canonical binary I/O, a rebuilt uniform-grid index,
+  and bounded native movement/raycast queries
+- [x] compile the authored player spawn and absolute death plane into neutral
+  `LevelBootstrapV1`, then assemble both mandatory resources into a canonical
+  planet-agnostic `LevelPackageV1` with source/generated provenance
+- [x] add a hardened PreparedGameV2 filesystem reader and transactional
+  all-level publisher for explicit packages, including rollback and strict
+  rejection of path traversal, reparse points, stale hashes, and implicit mods
+- [x] load a resolved collision/bootstrap package without an ISO and construct
+  deterministic movement, jump, checkpoint, and fall-reset simulation from it
+- [x] expose CLI package-only and published-root headless movement smoke paths
+- [ ] load Ratchet's bind pose, skeleton, and animations through a generic
+  actor-rig pipeline
+- [ ] connect platform controller input and a reconstructed third-person camera
+  to the graphical runtime
+- [ ] package render-scene, actor, entity, and camera data, then switch Launcher
+  Prepare/Play and the graphical runtime from their current ISO/ELF diagnostic
+  path to PreparedGameV2
+- [ ] reconstruct basic interactions, one weapon, and one enemy type
+- [ ] load and save isolated test state
+- [ ] make package-only gameplay smoke on Veldin and at least one second planet
+  a checked regression using the same published-package code path
 
 ## Stage 4 — Game-complete runtime
 
@@ -135,3 +175,20 @@ This roadmap describes technical milestones rather than release dates.
 - controller remapping and accessibility options
 - portable saves and launcher updates
 - modding interfaces built on documented, original OpenRC formats
+
+## OpenGOAL-like usability contract
+
+Before the first public build is called usable, OpenRC must provide this flow:
+
+1. The player selects a legally owned, supported disc image in the Launcher.
+2. A deterministic asset compiler verifies it once and writes versioned,
+   content-addressed native packages for every supported level.
+3. **Play** starts the native runtime from those packages with no ISO path,
+   ELF path, record number, or other developer flag.
+4. Updates can rebuild incompatible packages safely without losing saves or
+   user settings under the `PlunkDev/OpenRC` data directories.
+5. Mods are explicit ordered overlays on documented OpenRC resource schemas;
+   original game data is never redistributed or modified in place.
+6. Portable builds contain no dynamic compiler-runtime DLL dependency, and a
+   redistribution license, clean setup guide, diagnostics, and recovery path
+   are present before inviting ordinary players.

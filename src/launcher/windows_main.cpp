@@ -2,6 +2,7 @@
 #include "openrc/paths.hpp"
 #include "openrc/preparation.hpp"
 #include "openrc/settings.hpp"
+#include "portable_executable.hpp"
 
 #include <windows.h>
 #include <commdlg.h>
@@ -633,6 +634,20 @@ void launch_runtime() {
             set_status(L"OpenRC runtime was not found.");
             set_report(
                 L"Expected runtime executable:\r\n" + runtime_path.wstring());
+            return;
+        }
+
+        const auto executable_check =
+            openrc::launcher::check_runtime_executable(runtime_path);
+        if (!executable_check.accepted) {
+            set_status(L"OpenRC runtime is not a compatible portable build.");
+            set_report(
+                L"The adjacent runtime was rejected before Windows tried to "
+                L"start it:\r\n\r\n" +
+                to_wide(executable_check.detail) +
+                L"\r\n\r\nBuild and start the verified package with:\r\n"
+                L"scripts\\build-portable.ps1\r\n"
+                L"build-portable\\openrc-launcher.exe");
             return;
         }
 

@@ -12,7 +12,8 @@ modern platform features.
 
 ## Current status
 
-Stage 1 is in progress. The repository currently provides:
+Stage 1 inventory and the reusable foundation for the first playable slice are
+both in progress. The repository currently provides:
 
 - a C++20 core library;
 - a bounded ISO 9660 reader, `SYSTEM.CNF` parser, and exact boot-file lookup;
@@ -84,6 +85,25 @@ Stage 1 is in progress. The repository currently provides:
   terminal WadV1 records shared by every reference level;
 - streamed SHA-256 inventory and extraction into an immutable prepared-game
   directory with a deterministic manifest;
+- versioned binary `PreparedGameV2` and `LevelPackageV1` containers with
+  canonical serialization, SHA-256 integrity, source provenance, bounded
+  readers, and explicitly ordered replace/remove mod overlays;
+- an authoritative RAC1 collision parser covering the sparse world grid,
+  packed triangle/quad geometry, raw surface IDs, and hero-only barriers,
+  validated with one implementation across all 19 reference levels;
+- deterministic compilation of that source data into an exact-Q6
+  `CollisionWorldV1`, canonical binary collision payload, rebuilt uniform-grid
+  index, and bounded native collision queries;
+- a neutral `LevelBootstrapV1` carrying the authored player spawn and absolute
+  death plane, plus a planet-agnostic foundation compiler that packages
+  bootstrap and collision resources with complete source/generated provenance;
+- a hardened PreparedGameV2 filesystem reader and transactional publisher for
+  explicit caller-supplied level packages, with no implicit mod discovery;
+- a planet-agnostic game session/entity world, quantized replay-input boundary,
+  and integer fixed-step scheduler for exact 50/60 Hz simulation;
+- a deterministic character controller and player simulation with movement,
+  gravity, jumping, ground/wall handling, checkpoints, and fall reset, together
+  with a source-independent loader for resolved foundation packages;
 - ELF32/MIPS span/path parsing with program/section inventory, a typed DVP
   overlay table mapped from LMA/VMA records to the real code bytes, and bounded
   IOP/IRX module, relocation, and import metadata;
@@ -122,12 +142,18 @@ Stage 1 is in progress. The repository currently provides:
 - a native Windows launcher with disc inspection, asynchronous Prepare,
   progress, cancellation, and a Play action that starts the verified adjacent
   runtime with the prepared game files;
+- CLI-only compilation/publication of all 19 collision/bootstrap foundation
+  packages and deterministic movement smoke paths that can consume either one
+  `.orlvl` file or a published PreparedGameV2 root without reopening the ISO;
 - application directories following the `PlunkDev/OpenRC` convention;
 - synthetic ISO, ELF, SHA-256, disc, WAD, bundle, 2FIP, boundary-table,
   MapArtV1, PS2 save-bundle, PS ADPCM, VAGp, SBlk/audio/WAV, decoded-WAD
   inventory/probes, RAC gameplay/level-core and tfrag/Moby/TIE/shrub texture
   tables, Moby and TIE class/packet/LOD geometry, static scene transforms and
-  material-slot mapping,
+  material-slot mapping, neutral collision compilation/I/O and queries,
+  level-bootstrap/foundation compilation, PreparedGameV2 filesystem
+  loading/publication, deterministic character/player simulation, runtime
+  foundation loading, portable-PE validation,
   scene-animation/subtitle, EE/R5900 boundaries, scene-block, scene-block
   VIF/VU execution and phase grouping, DVP VU microprogram decoding/execution,
   companion-WAD-index, and preparation tests that contain no copyrighted game
@@ -145,6 +171,13 @@ left mouse button or use the arrow keys to orbit, use the mouse wheel or `+/-`
 to zoom, press `R` to reset, and press `Tab` to compare the decoded GS 2D
 output. This camera belongs only to the diagnostic viewer; it is not presented
 as Ratchet & Clank's original gameplay camera.
+
+The graphical runtime and Launcher do **not** consume PreparedGameV2 level
+packages yet. Their current Play path remains the ISO/ELF-backed diagnostic
+viewer described above. Foundation-package compilation, publication, loading,
+and player simulation are currently exercised through `openrc-cli` and core
+tests; the render scene, actor, entity, and camera resources still need to join
+that package boundary before the Launcher can switch over.
 
 ## Build on Windows
 
@@ -175,9 +208,16 @@ LLVM-MinGW tools, run:
 `build-portable` is atomically replaced with a clean runnable package containing
 only the matching CLI, launcher, and runtime. The packaging step verifies that
 all three files are AMD64, have unchanged hashes, and do not dynamically import
-the C++ or unwind runtimes. Do not copy `libc++.dll` or `libunwind.dll` into that
-directory. Intermediate build directories may contain stale diagnostic
-executables and are not the distribution folder.
+the `libc++*`, `libunwind*`, `libgcc*`, `libstdc++*`, or `libwinpthread*`
+compiler-runtime families. Do not copy those DLLs into that directory.
+Intermediate build directories may contain stale diagnostic executables and are
+not the distribution folder. Public MinGW executables are always checked after
+linking; test/developer executables receive the same check when the static-build
+policy is enabled. The Launcher also rejects an adjacent runtime with the wrong
+architecture or a dynamic compiler-runtime dependency before asking Windows to
+start it. Always launch the player-facing build from `build-portable`;
+`build-werror` and other build directories are development workspaces rather
+than runnable packages.
 
 Inspect a disc from the command line:
 
@@ -209,6 +249,8 @@ build/Debug/openrc-cli.exe sblk-wav local/ratchet-and-clank.iso 0 0 sample-22050
 build/Debug/openrc-cli.exe scene-blocks local/ratchet-and-clank.iso 0
 build/Debug/openrc-cli.exe scene-block-vu-run local/ratchet-and-clank.iso path/to/prepared/files/SCES_509.16 0 0 16 scene-block.tga
 build/Debug/openrc-cli.exe level-core local/ratchet-and-clank.iso 0
+build/Debug/openrc-cli.exe level-collision local/ratchet-and-clank.iso 0
+build/Debug/openrc-cli.exe level-player-smoke local/ratchet-and-clank.iso 0
 build/Debug/openrc-cli.exe level-moby-scene local/ratchet-and-clank.iso 0
 build/Debug/openrc-cli.exe level-tfrag-texture local/ratchet-and-clank.iso 0 40 veldin-tfrag-040.tga
 build/Debug/openrc-cli.exe level-moby-texture local/ratchet-and-clank.iso 0 0 veldin-moby-000.tga
@@ -222,6 +264,24 @@ build/Debug/openrc-cli.exe dvp-vu path/to/prepared/files/SCES_509.16 2,6,8,10,14
 build/Debug/openrc-cli.exe dvp-vu-run path/to/prepared/files/SCES_509.16 2 11,12,13,14,15,16,17,18 0
 build/Debug/openrc-runtime.exe --disc-image local/ratchet-and-clank.iso --boot-executable path/to/prepared/files/SCES_509.16 --level 0 --record all --entry-pair 16
 ```
+
+The new native foundation path can be exercised separately from the graphical
+viewer. Output roots must be absolute, and the single-package command creates a
+new file rather than overwriting one:
+
+```powershell
+build/Debug/openrc-cli.exe level-foundation-package local/ratchet-and-clank.iso 0 local/veldin.orlvl
+build/Debug/openrc-cli.exe level-package-smoke local/veldin.orlvl
+$nativeRoot = Join-Path (Get-Location) "local/native-foundations"
+build/Debug/openrc-cli.exe prepare-native-foundations local/ratchet-and-clank.iso $nativeRoot
+build/Debug/openrc-cli.exe prepared-level-smoke $nativeRoot 0
+```
+
+`level-foundation-package` and `prepare-native-foundations` are compiler tools
+and therefore read the supported ISO. `level-package-smoke` and
+`prepared-level-smoke` read only the resulting neutral package data. These
+headless smoke commands do not open the D3D11 viewer and are not an interactive
+game mode.
 
 The `wad-bundle` LBA and sector count above identify a container in the exact
 PAL v2.00 reference image; they are not assumed for other revisions.

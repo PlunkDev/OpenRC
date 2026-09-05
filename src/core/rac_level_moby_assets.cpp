@@ -305,7 +305,7 @@ RacLevelMobyAssetsV1 load_rac_level_moby_assets_v1(
       gameplay_ref.occupied_sectors == 0U) {
     fail("The RAC1 level's primary gameplay WadV1 is absent");
   }
-  const auto decoded_gameplay = decode_wad(
+  auto decoded_gameplay = decode_wad(
       image_path, gameplay_ref.lba, gameplay_ref.occupied_sectors,
       limits.max_decoded_wad_bytes);
   auto gameplay = parse_rac_gameplay_bank_v1(
@@ -340,6 +340,9 @@ RacLevelMobyAssetsV1 load_rac_level_moby_assets_v1(
 
   RacLevelMobyAssetsV1 result;
   result.level_id = level_id;
+  result.collision_source_bytes.assign(collision_bytes.begin(),
+                                       collision_bytes.end());
+  result.gameplay_source_bytes = std::move(decoded_gameplay.bytes);
   result.collision = std::move(collision);
   result.tfrag_textures = std::move(tfrag_textures);
   result.textures = std::move(textures);

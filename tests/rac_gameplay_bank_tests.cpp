@@ -74,6 +74,33 @@ void write_matrix(std::vector<std::byte>& bytes,
         }
     }
 
+    write_le32(bytes, kLevelSettingsOffset + 0x00U, 16U);
+    write_le32(bytes, kLevelSettingsOffset + 0x04U, 32U);
+    write_le32(bytes, kLevelSettingsOffset + 0x08U, 48U);
+    write_le32(bytes, kLevelSettingsOffset + 0x0cU, 64U);
+    write_le32(bytes, kLevelSettingsOffset + 0x10U, 80U);
+    write_le32(bytes, kLevelSettingsOffset + 0x14U, 96U);
+    constexpr std::array<std::pair<std::uint32_t, float>, 9U>
+        kLevelSettingFloats{{
+            {0x18U, 20.0F},
+            {0x1cU, 120.0F},
+            {0x20U, 0.25F},
+            {0x24U, 0.75F},
+            {0x28U, 27.0F},
+            {0x2cU, 132.0F},
+            {0x30U, 115.5F},
+            {0x34U, 31.25F},
+            {0x38U, 0.625F},
+        }};
+    for (const auto [offset, value] : kLevelSettingFloats) {
+        write_le32(bytes,
+                   kLevelSettingsOffset + offset,
+                   std::bit_cast<std::uint32_t>(value));
+    }
+    write_le32(bytes, kLevelSettingsOffset + 0x3cU, 7U);
+    write_le32(bytes, kLevelSettingsOffset + 0x40U, 9U);
+    write_le32(bytes, kLevelSettingsOffset + 0x44U, 11U);
+
     write_le32(bytes, kMobyClassesOffset, 2U);
     write_le32(bytes, kMobyClassesOffset + 4U, 0x123U);
     write_le32(bytes, kMobyClassesOffset + 8U, 0x456U);
@@ -174,6 +201,27 @@ void test_valid_bank() {
                result.shrub_instance_count == 1U &&
                result.shrub_instances.size() == 1U,
            "RAC gameplay semantic metadata is wrong");
+    const auto& settings = result.level_settings;
+    expect(settings.record_range ==
+                   openrc::RacGameplayRangeV1{kLevelSettingsOffset, 0x50U} &&
+               settings.background_colour ==
+                   std::array<std::int32_t, 3U>{16, 32, 48} &&
+               settings.fog_colour ==
+                   std::array<std::int32_t, 3U>{64, 80, 96} &&
+               settings.fog_near_distance == 20.0F &&
+               settings.fog_far_distance == 120.0F &&
+               settings.fog_near_intensity == 0.25F &&
+               settings.fog_far_intensity == 0.75F &&
+               settings.death_height == 27.0F &&
+               settings.ship_position ==
+                   std::array<float, 3U>{132.0F, 115.5F, 31.25F} &&
+               settings.ship_rotation_z == 0.625F &&
+               settings.ship_path == 7 &&
+               settings.ship_camera_cuboid_start == 9 &&
+               settings.ship_camera_cuboid_end == 11 &&
+               settings.raw_words[10U] ==
+                   std::bit_cast<std::uint32_t>(27.0F),
+           "RAC gameplay level settings are wrong");
     const auto& moby = result.static_mobies.front();
     expect(moby.record_range == openrc::RacGameplayRangeV1{0x1e0U, 0x78U} &&
                moby.class_id == 0x123U && moby.scale == 1.5F &&
@@ -292,6 +340,18 @@ void test_structural_rejections() {
         "noncanonical physical block order was accepted");
     expect_rejected([](auto& bytes) { write_le32(bytes, 0x88U, 0U); },
                     "a missing gameplay block was accepted");
+    for (const auto offset :
+         std::array<std::uint32_t, 9U>{
+             0x18U, 0x1cU, 0x20U, 0x24U, 0x28U,
+             0x2cU, 0x30U, 0x34U, 0x38U}) {
+        expect_rejected(
+            [offset](auto& bytes) {
+                write_le32(bytes,
+                           kLevelSettingsOffset + offset,
+                           0x7fc00000U);
+            },
+            "a non-finite RAC1 level-setting float was accepted");
+    }
     expect_rejected(
         [](auto& bytes) { write_le32(bytes, kMobyClassesOffset, 0xffffffffU); },
         "a negative moby-class count was accepted");

@@ -9,19 +9,33 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $toolsRoot = Join-Path $projectRoot 'local\tools'
 $buildRoot = Join-Path $projectRoot 'build-portable-cmake'
 $packageRoot = Join-Path $projectRoot 'build-portable'
+$verifyScript = Join-Path $projectRoot 'cmake\VerifyPortableExecutable.cmake'
 
-$compiler = Get-ChildItem -Path $toolsRoot -Recurse -File -Filter 'x86_64-w64-mingw32-clang++.exe' |
-    Select-Object -First 1 -ExpandProperty FullName
-$make = Get-ChildItem -Path $toolsRoot -Recurse -File -Filter 'mingw32-make.exe' |
-    Select-Object -First 1 -ExpandProperty FullName
-$cmake = Get-ChildItem -Path $toolsRoot -Recurse -File -Filter 'cmake.exe' |
+$compilerCandidates = @(Get-ChildItem -Path $toolsRoot -Recurse -File `
+    -Filter 'x86_64-w64-mingw32-clang++.exe' | Sort-Object FullName)
+$cmakeCandidates = @(Get-ChildItem -Path $toolsRoot -Recurse -File -Filter 'cmake.exe' |
     Where-Object { $_.FullName -match 'cmake-[^\\]+-windows-x86_64' } |
-    Select-Object -First 1 -ExpandProperty FullName
-$readObject = Get-ChildItem -Path $toolsRoot -Recurse -File -Filter 'llvm-readobj.exe' |
-    Select-Object -First 1 -ExpandProperty FullName
+    Sort-Object FullName)
 
-if (-not $compiler -or -not $make -or -not $cmake -or -not $readObject) {
-    throw 'Portable llvm-mingw, llvm-readobj, and CMake were not found below local\tools.'
+if ($compilerCandidates.Count -ne 1) {
+    throw ('Expected exactly one bundled x64 LLVM-MinGW toolchain, found ' +
+        $compilerCandidates.Count + ' below local\tools.')
+}
+if ($cmakeCandidates.Count -ne 1) {
+    throw ('Expected exactly one bundled x64 CMake, found ' +
+        $cmakeCandidates.Count + ' below local\tools.')
+}
+
+$compiler = $compilerCandidates[0].FullName
+$toolchainBin = Split-Path -Parent $compiler
+$make = Join-Path $toolchainBin 'mingw32-make.exe'
+$readObject = Join-Path $toolchainBin 'llvm-readobj.exe'
+$cmake = $cmakeCandidates[0].FullName
+
+if (-not (Test-Path -LiteralPath $make -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $readObject -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $verifyScript -PathType Leaf)) {
+    throw 'The selected portable toolchain or PE verification script is incomplete.'
 }
 
 function Assert-ProjectChildPath {
@@ -49,21 +63,19 @@ function Assert-PortableExecutable {
         [string]$Path
     )
 
-    $metadataLines = & $readObject --file-headers --coff-imports $Path 2>&1
+    $metadataLines = & $cmake `
+        ('-DOPENRC_EXECUTABLE=' + $Path) `
+        ('-DOPENRC_PE_INSPECTOR=' + $readObject) `
+        '-DOPENRC_PE_INSPECTOR_MODE=llvm-readobj' `
+        '-DOPENRC_EXPECTED_PE_MACHINE=amd64' `
+        -P $verifyScript 2>&1
     if ($LASTEXITCODE -ne 0) {
-        throw ('llvm-readobj failed for portable executable: ' + $Path)
-    }
-    $metadata = $metadataLines -join [System.Environment]::NewLine
-    if ($metadata -notmatch '(?m)^Format:\s+COFF-x86-64\s*$' -or
-        $metadata -notmatch '(?m)^\s*Machine:\s+IMAGE_FILE_MACHINE_AMD64\s+\(0x8664\)\s*$') {
-        throw ('Portable executable is not AMD64/COFF-x86-64: ' + $Path)
-    }
-    if ($metadata -match '(?im)^\s*Name:\s*(?:libc\+\+|libunwind)\.dll\s*$') {
-        throw ('Portable executable has a forbidden dynamic C++/unwind import: ' + $Path)
+        throw ('Portable executable verification failed: ' + $Path +
+            [System.Environment]::NewLine + ($metadataLines -join [System.Environment]::NewLine))
     }
 }
 
-& $cmake -S $projectRoot -B $buildRoot -G 'MinGW Makefiles' `
+& $cmake --fresh -S $projectRoot -B $buildRoot -G 'MinGW Makefiles' `
     ('-DCMAKE_CXX_COMPILER=' + $compiler) `
     ('-DCMAKE_MAKE_PROGRAM=' + $make) `
     ('-DCMAKE_BUILD_TYPE=' + $Configuration) `
@@ -105,6 +117,7 @@ try {
         if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
             throw ('Portable build output is missing: ' + $source)
         }
+        Assert-PortableExecutable -Path $source
 
         $destination = Join-Path $stagingRoot $executable
         Copy-Item -LiteralPath $source -Destination $destination
@@ -154,3 +167,5 @@ try {
 }
 
 Write-Host ('OpenRC portable package completed: ' + $packageRoot)
+Write-Host ('Start the verified launcher: ' +
+    (Join-Path $packageRoot 'openrc-launcher.exe'))

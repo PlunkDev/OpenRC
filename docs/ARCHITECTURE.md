@@ -26,6 +26,15 @@ openrc_core
 ├── strict RacGameplayBankV1 directory plus RAC1 Moby/TIE/shrub placements
 ├── RacLevelCoreIndexV1 ownership/linking for Moby/TIE/shrub model cores
 ├── bounded per-level tfrag/Moby/TIE/shrub texture and model asset loading
+├── strict RAC1 world/hero collision parsing with exact packed provenance
+├── versioned PreparedGameV2/LevelPackageV1 resource and mod-overlay containers
+├── exact-Q6 CollisionWorldV1 compilation, canonical I/O, rebuilt grid, and bounded queries
+├── neutral LevelBootstrapV1 spawn/death-plane compilation and binary I/O
+├── planet-agnostic collision/bootstrap LevelPackageV1 foundation compilation
+├── hardened PreparedGameV2 filesystem loading and transactional publication
+├── deterministic fixed-step/input replay boundary and planet-agnostic world/session
+├── deterministic character controller, checkpoints, respawn, and player simulation
+├── source-independent resolved-package foundation loader and player construction
 ├── bounded RacMobyClassV1 headers, packet ownership, and fixed asset ranges
 ├── regular Moby VIF/vertex-cache/strip/packet-local triangle recovery
 ├── regular high/low LOD assembly with cross-packet cache/material state
@@ -58,6 +67,9 @@ openrc_core
 openrc-cli
 ├── disc inspection and inventory
 ├── TOC, WAD/bundle/companion/corpus/family/gameplay/level-core diagnostics
+├── authoritative per-level collision/tree/surface diagnostics
+├── single-level foundation package compilation and package-only movement smoke
+├── all-level PreparedGameV2 foundation publication and published-root smoke
 ├── static high-LOD Moby and TIE placement/bounds diagnostics
 ├── scene-animation and subtitle diagnostics
 ├── scene-block/VIF/VU/GS, 2FIP, MapArt, PS2D, VAGp, and SBlk diagnostics
@@ -71,10 +83,11 @@ openrc-launcher
 ├── disc inspection
 ├── asynchronous Prepare/Cancel and progress
 ├── data-directory access
-└── verified adjacent-runtime process launch
+├── verified adjacent-runtime process launch
+└── adjacent PE architecture and forbidden compiler-runtime import guard
 
 openrc-runtime
-├── named ISO/ELF/level/record/entry process contract
+├── current diagnostic named ISO/ELF/level/record/entry process contract
 ├── exact ISO-to-prepared-ELF SHA-256 binding before scene access
 ├── emitted GS-triangle conversion with raster-context coordinates
 ├── recovered-level 3D tfrag material batches with bounded debug orbit controls
@@ -85,23 +98,53 @@ openrc-runtime
 └── native D3D11 submission, auto-fit resize, and WARP fallback
 ```
 
+## Portable executable boundary
+
+Public LLVM-MinGW executables are linked with the compiler support runtime
+statically. A post-link PE audit checks the expected architecture and rejects
+the `libc++*`, `libunwind*`, `libgcc*`, `libstdc++*`, and `libwinpthread*`
+runtime families. The static developer-build policy applies the same audit to
+every test/developer executable. The portable publisher repeats the public-file
+audit before and after copying each executable and compares its SHA-256, while
+the Launcher independently validates the adjacent runtime before process
+creation. This boundary applies to executable distribution; intermediate
+developer build directories can still contain stale helpers and are not a
+runnable package.
+
 ## Planned components
 
 ```text
+compiler/
+├── neutral RenderScene/GameplayScene/ActorRig and remaining resource schemas
+├── deterministic render/entity/actor compilation for every supported level
+├── compatibility-aware package rebuild and cache migration
+└── Launcher orchestration of the implemented PreparedGameV2 publisher
+
 tools/
-├── remaining audio, texture, terrain/collision, and TOC-table decoders
+├── remaining audio, texture, terrain, and TOC-table decoders
 ├── MIPS/R5900 analysis pipeline
 ├── symbol and type database
 └── asset converters
 
 runtime/
-├── platform and input
+├── platform input feeding quantized fixed-tick commands
+├── graphical PreparedGameV2 mounting and explicit overlay selection
+├── level manager integration, gameplay entities, and third-person camera
 ├── renderer
 ├── audio
 ├── game memory model
 ├── reconstructed game logic
 └── save system
 ```
+
+The package-based end-user boundary is designed not to own an ISO parser. Raw
+disc, ELF, VIF, VU, GIF, and GS formats terminate at the compiler boundary;
+the implemented foundation loader consumes only versioned neutral OpenRC
+resources in normal world units. The current graphical `openrc-runtime` and
+Launcher Play path have not crossed that boundary yet: they still load the
+reference ISO and prepared ELF for the diagnostic viewer. Only the CLI
+foundation smoke paths currently run from a standalone `.orlvl` package or a
+published PreparedGameV2 root without the ISO.
 
 ## Native-code strategy decision
 
@@ -270,9 +313,19 @@ meaning to the remaining opaque regions. The PS2D parser likewise retains
 unknown header words and tagged payload keys rather than treating guesses as
 format contracts.
 
-Prepared files are written into a unique staging directory, hashed while they
-are streamed, described by a deterministic manifest, and published with a
-no-replace directory rename. Existing preparations are rehashed before reuse.
+The original extracted-file preparation is written into a unique staging
+directory, hashed while it is streamed, described by a deterministic manifest,
+and published with a no-replace directory rename. Existing preparations are
+rehashed before reuse.
+
+The separate PreparedGameV2 publisher accepts an explicit absolute root,
+canonical manifest, and caller-owned level-package byte spans. It validates
+every package identity, size, digest, relative path, and nested resource before
+writing. A verified sibling staging tree is promoted with same-parent renames;
+replacement retains and restores the previous destination on cancellation or
+failure. It neither opens an ISO nor discovers overlay files. The current CLI
+compiler supplies all 19 collision/bootstrap packages to this publisher, but
+the Launcher does not invoke that flow yet.
 
 ## Configuration and generated data
 

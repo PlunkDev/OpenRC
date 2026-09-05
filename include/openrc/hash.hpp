@@ -27,6 +27,8 @@ private:
 };
 
 [[nodiscard]] std::string hex_digest(std::span<const std::byte> digest);
+[[nodiscard]] std::array<std::byte, 32>
+sha256_file_digest(const std::filesystem::path& path);
 [[nodiscard]] std::string sha256_file(const std::filesystem::path& path);
 
 } // namespace openrc

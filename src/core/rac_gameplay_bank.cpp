@@ -305,6 +305,62 @@ void validate_semantic_anchors(const std::span<const std::byte> bytes,
         read_le32(bytes, settings_offset + 0x4cU) != 0U) {
         fail("RacGameplayBankV1 has non-zero level-settings padding");
     }
+
+    auto& settings = result.level_settings;
+    settings.record_range =
+        RacGameplayRangeV1{level_settings.range.offset, kRacLevelSettingsBytes};
+    for (std::size_t index = 0U; index < settings.raw_words.size(); ++index) {
+        settings.raw_words[index] =
+            read_le32(bytes, settings_offset + index * sizeof(std::uint32_t));
+    }
+    for (std::size_t channel = 0U; channel < 3U; ++channel) {
+        settings.background_colour[channel] =
+            read_le_i32(bytes, settings_offset + channel * 4U);
+        settings.fog_colour[channel] =
+            read_le_i32(bytes, settings_offset + 0x0cU + channel * 4U);
+    }
+
+    settings.fog_near_distance_bits = read_le32(bytes, settings_offset + 0x18U);
+    settings.fog_near_distance = read_le_float(bytes, settings_offset + 0x18U);
+    settings.fog_far_distance_bits = read_le32(bytes, settings_offset + 0x1cU);
+    settings.fog_far_distance = read_le_float(bytes, settings_offset + 0x1cU);
+    settings.fog_near_intensity_bits =
+        read_le32(bytes, settings_offset + 0x20U);
+    settings.fog_near_intensity = read_le_float(bytes, settings_offset + 0x20U);
+    settings.fog_far_intensity_bits =
+        read_le32(bytes, settings_offset + 0x24U);
+    settings.fog_far_intensity = read_le_float(bytes, settings_offset + 0x24U);
+    settings.death_height_bits = read_le32(bytes, settings_offset + 0x28U);
+    settings.death_height = read_le_float(bytes, settings_offset + 0x28U);
+    for (std::size_t axis = 0U; axis < 3U; ++axis) {
+        const auto offset = settings_offset + 0x2cU + axis * 4U;
+        settings.ship_position_bits[axis] = read_le32(bytes, offset);
+        settings.ship_position[axis] = read_le_float(bytes, offset);
+    }
+    settings.ship_rotation_z_bits = read_le32(bytes, settings_offset + 0x38U);
+    settings.ship_rotation_z = read_le_float(bytes, settings_offset + 0x38U);
+    settings.ship_path = read_le_i32(bytes, settings_offset + 0x3cU);
+    settings.ship_camera_cuboid_start =
+        read_le_i32(bytes, settings_offset + 0x40U);
+    settings.ship_camera_cuboid_end =
+        read_le_i32(bytes, settings_offset + 0x44U);
+
+    const std::array decoded_floats{
+        settings.fog_near_distance,
+        settings.fog_far_distance,
+        settings.fog_near_intensity,
+        settings.fog_far_intensity,
+        settings.death_height,
+        settings.ship_position[0U],
+        settings.ship_position[1U],
+        settings.ship_position[2U],
+        settings.ship_rotation_z};
+    if (std::ranges::any_of(decoded_floats,
+                            [](const float value) {
+                                return !std::isfinite(value);
+                            })) {
+        fail("RacGameplayBankV1 has non-finite level settings");
+    }
     validate_zero_tail(
         bytes, level_settings, kRacLevelSettingsBytes, "level settings");
 

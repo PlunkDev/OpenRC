@@ -12,12 +12,17 @@ option(OPENRC_BUILD_LAUNCHER "Build the graphical launcher" ON)
 option(OPENRC_BUILD_RUNTIME "Build the native Windows runtime" ON)
 option(
     OPENRC_STATIC_MINGW_RUNTIME
-    "Statically link the MinGW C++ and unwind runtimes into executables"
+    "Also statically link MinGW compiler runtimes into test executables"
     ON
 )
 
+set(OPENRC_PUBLIC_EXECUTABLE_TARGETS)
+
 add_library(openrc_core STATIC
     src/core/boundary_table.cpp
+    src/core/character_controller.cpp
+    src/core/collision_world.cpp
+    src/core/collision_world_io.cpp
     src/core/companion_wad_index.cpp
     src/core/disc.cpp
     src/core/disc_toc.cpp
@@ -31,16 +36,23 @@ add_library(openrc_core STATIC
     src/core/gif_gs.cpp
     src/core/hash.cpp
     src/core/iso9660.cpp
+    src/core/level_bootstrap.cpp
     src/core/localized_subtitle_bank.cpp
     src/core/map_art.cpp
     src/core/pcm_wav.cpp
     src/core/paths.cpp
+    src/core/player_simulation.cpp
     src/core/prepared_game_v2.cpp
+    src/core/prepared_game_v2_fs.cpp
+    src/core/prepared_game_v2_publish.cpp
     src/core/preparation.cpp
     src/core/ps_adpcm.cpp
     src/core/ps2_save_bundle.cpp
     src/core/rac_gameplay_bank.cpp
+    src/core/rac_level_bootstrap_compile.cpp
     src/core/rac_level_collision.cpp
+    src/core/rac_level_collision_compile.cpp
+    src/core/rac_level_foundation_compile.cpp
     src/core/rac_level_core.cpp
     src/core/rac_level_moby_assets.cpp
     src/core/rac_level_moby_texture.cpp
@@ -48,6 +60,7 @@ add_library(openrc_core STATIC
     src/core/rac_moby_model_geometry.cpp
     src/core/rac_moby_packet_geometry.cpp
     src/core/rac_tie_class.cpp
+    src/core/runtime_level_foundation.cpp
     src/core/scene_animation_bank.cpp
     src/core/scene_block_directory.cpp
     src/core/scene_block_geometry.cpp
@@ -95,6 +108,7 @@ add_executable(openrc-cli
     src/runtime/moby_scene_geometry.cpp
     src/runtime/tie_scene_geometry.cpp
 )
+list(APPEND OPENRC_PUBLIC_EXECUTABLE_TARGETS openrc-cli)
 target_include_directories(openrc-cli
     PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/src/runtime"
@@ -116,6 +130,7 @@ if(OPENRC_BUILD_LAUNCHER)
     if(WIN32)
         add_executable(openrc-launcher WIN32
             src/launcher/windows_main.cpp
+            src/launcher/portable_executable.cpp
             src/launcher/openrc-launcher.manifest
         )
         target_compile_definitions(openrc-launcher PRIVATE UNICODE _UNICODE NOMINMAX)
@@ -127,6 +142,8 @@ if(OPENRC_BUILD_LAUNCHER)
         add_executable(openrc-launcher src/launcher/stub_main.cpp)
         target_link_libraries(openrc-launcher PRIVATE openrc_core)
     endif()
+
+    list(APPEND OPENRC_PUBLIC_EXECUTABLE_TARGETS openrc-launcher)
 
     target_compile_features(openrc-launcher PRIVATE cxx_std_20)
     if(MSVC)
@@ -145,6 +162,7 @@ if(OPENRC_BUILD_RUNTIME AND WIN32)
         src/runtime/tie_scene_geometry.cpp
         src/runtime/openrc-runtime.manifest
     )
+    list(APPEND OPENRC_PUBLIC_EXECUTABLE_TARGETS openrc-runtime)
     target_compile_definitions(openrc-runtime PRIVATE
         UNICODE
         _UNICODE
@@ -172,6 +190,41 @@ endif()
 
 if(OPENRC_BUILD_TESTS)
     include(CTest)
+    if(WIN32)
+        add_executable(
+            openrc-portable-executable-tests
+            tests/portable_executable_tests.cpp
+            src/launcher/portable_executable.cpp
+        )
+        target_include_directories(
+            openrc-portable-executable-tests
+            PRIVATE
+                "${CMAKE_CURRENT_SOURCE_DIR}/src/launcher"
+        )
+        target_compile_features(
+            openrc-portable-executable-tests
+            PRIVATE
+            cxx_std_20
+        )
+        if(MSVC)
+            target_compile_options(
+                openrc-portable-executable-tests
+                PRIVATE
+                /W4 /permissive- /utf-8
+            )
+        else()
+            target_compile_options(
+                openrc-portable-executable-tests
+                PRIVATE
+                -Wall -Wextra -Wpedantic
+            )
+        endif()
+        add_test(
+            NAME portable-executable
+            COMMAND openrc-portable-executable-tests
+        )
+    endif()
+
     add_executable(
         openrc-localized-subtitle-bank-tests
         tests/localized_subtitle_bank_tests.cpp
@@ -235,6 +288,34 @@ if(OPENRC_BUILD_TESTS)
         cxx_std_20
     )
 
+    add_executable(
+        openrc-collision-world-tests
+        tests/collision_world_tests.cpp
+    )
+    target_link_libraries(openrc-collision-world-tests PRIVATE openrc_core)
+    target_compile_features(openrc-collision-world-tests PRIVATE cxx_std_20)
+
+    add_executable(
+        openrc-collision-world-io-tests
+        tests/collision_world_io_tests.cpp
+    )
+    target_link_libraries(openrc-collision-world-io-tests PRIVATE openrc_core)
+    target_compile_features(openrc-collision-world-io-tests PRIVATE cxx_std_20)
+
+    add_executable(
+        openrc-character-controller-tests
+        tests/character_controller_tests.cpp
+    )
+    target_link_libraries(openrc-character-controller-tests PRIVATE openrc_core)
+    target_compile_features(openrc-character-controller-tests PRIVATE cxx_std_20)
+
+    add_executable(
+        openrc-player-simulation-tests
+        tests/player_simulation_tests.cpp
+    )
+    target_link_libraries(openrc-player-simulation-tests PRIVATE openrc_core)
+    target_compile_features(openrc-player-simulation-tests PRIVATE cxx_std_20)
+
     add_executable(openrc-game-input-tests tests/game_input_tests.cpp)
     target_link_libraries(openrc-game-input-tests PRIVATE openrc_core)
     target_compile_features(openrc-game-input-tests PRIVATE cxx_std_20)
@@ -253,6 +334,65 @@ if(OPENRC_BUILD_TESTS)
     )
     target_link_libraries(openrc-prepared-game-v2-tests PRIVATE openrc_core)
     target_compile_features(openrc-prepared-game-v2-tests PRIVATE cxx_std_20)
+
+    add_executable(
+        openrc-prepared-game-v2-fs-tests
+        tests/prepared_game_v2_fs_tests.cpp
+    )
+    target_link_libraries(openrc-prepared-game-v2-fs-tests PRIVATE openrc_core)
+    target_compile_features(openrc-prepared-game-v2-fs-tests PRIVATE cxx_std_20)
+
+    add_executable(
+        openrc-prepared-game-v2-publish-tests
+        tests/prepared_game_v2_publish_tests.cpp
+    )
+    target_link_libraries(
+        openrc-prepared-game-v2-publish-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-prepared-game-v2-publish-tests
+        PRIVATE
+        cxx_std_20
+    )
+
+    add_executable(
+        openrc-level-bootstrap-tests
+        tests/level_bootstrap_tests.cpp
+    )
+    target_link_libraries(openrc-level-bootstrap-tests PRIVATE openrc_core)
+    target_compile_features(openrc-level-bootstrap-tests PRIVATE cxx_std_20)
+
+    add_executable(
+        openrc-rac-level-foundation-compile-tests
+        tests/rac_level_foundation_compile_tests.cpp
+    )
+    target_link_libraries(
+        openrc-rac-level-foundation-compile-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-rac-level-foundation-compile-tests
+        PRIVATE
+        cxx_std_20
+    )
+
+    add_executable(
+        openrc-runtime-level-foundation-tests
+        tests/runtime_level_foundation_tests.cpp
+    )
+    target_link_libraries(
+        openrc-runtime-level-foundation-tests
+        PRIVATE
+        openrc_core
+    )
+    target_compile_features(
+        openrc-runtime-level-foundation-tests
+        PRIVATE
+        cxx_std_20
+    )
 
     add_executable(
         openrc-rac-level-moby-texture-tests
@@ -535,10 +675,19 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-localized-subtitle-bank-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-gameplay-bank-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-level-collision-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-collision-world-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-collision-world-io-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-character-controller-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-player-simulation-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-game-input-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-fixed-step-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-game-world-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-prepared-game-v2-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-prepared-game-v2-fs-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-prepared-game-v2-publish-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-level-bootstrap-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-rac-level-foundation-compile-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-runtime-level-foundation-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-level-core-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-level-moby-texture-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-moby-class-tests PRIVATE /W4 /permissive- /utf-8)
@@ -576,10 +725,19 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-localized-subtitle-bank-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-gameplay-bank-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-level-collision-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-collision-world-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-collision-world-io-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-character-controller-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-player-simulation-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-game-input-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-fixed-step-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-game-world-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-prepared-game-v2-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-prepared-game-v2-fs-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-prepared-game-v2-publish-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-level-bootstrap-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-rac-level-foundation-compile-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-runtime-level-foundation-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-level-core-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-level-moby-texture-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-moby-class-tests PRIVATE -Wall -Wextra -Wpedantic)
@@ -618,10 +776,19 @@ if(OPENRC_BUILD_TESTS)
     add_test(NAME localized-subtitle-bank COMMAND openrc-localized-subtitle-bank-tests)
     add_test(NAME rac-gameplay-bank COMMAND openrc-rac-gameplay-bank-tests)
     add_test(NAME rac-level-collision COMMAND openrc-rac-level-collision-tests)
+    add_test(NAME collision-world COMMAND openrc-collision-world-tests)
+    add_test(NAME collision-world-io COMMAND openrc-collision-world-io-tests)
+    add_test(NAME character-controller COMMAND openrc-character-controller-tests)
+    add_test(NAME player-simulation COMMAND openrc-player-simulation-tests)
     add_test(NAME game-input COMMAND openrc-game-input-tests)
     add_test(NAME fixed-step COMMAND openrc-fixed-step-tests)
     add_test(NAME game-world COMMAND openrc-game-world-tests)
     add_test(NAME prepared-game-v2 COMMAND openrc-prepared-game-v2-tests)
+    add_test(NAME prepared-game-v2-fs COMMAND openrc-prepared-game-v2-fs-tests)
+    add_test(NAME prepared-game-v2-publish COMMAND openrc-prepared-game-v2-publish-tests)
+    add_test(NAME level-bootstrap COMMAND openrc-level-bootstrap-tests)
+    add_test(NAME rac-level-foundation-compile COMMAND openrc-rac-level-foundation-compile-tests)
+    add_test(NAME runtime-level-foundation COMMAND openrc-runtime-level-foundation-tests)
     add_test(NAME rac-level-core COMMAND openrc-rac-level-core-tests)
     add_test(NAME rac-level-moby-texture COMMAND openrc-rac-level-moby-texture-tests)
     add_test(NAME rac-moby-class COMMAND openrc-rac-moby-class-tests)
@@ -817,20 +984,71 @@ if(OPENRC_BUILD_TESTS)
     add_test(NAME settings-migration COMMAND openrc-settings-tests)
 endif()
 
-# LLVM-MinGW otherwise leaves every executable dependent on libc++.dll and
-# libunwind.dll from the compiler directory. Keeping the runtime static makes
-# local builds and the launcher directly runnable without modifying PATH or
-# distributing architecture-specific compiler DLLs beside each executable.
-if(MINGW AND OPENRC_STATIC_MINGW_RUNTIME)
+# LLVM-MinGW otherwise leaves executables dependent on libc++.dll and
+# libunwind.dll from the compiler directory. Public executables are always
+# static and audited after every link. OPENRC_STATIC_MINGW_RUNTIME extends the
+# same static and post-link audit policy to test/developer executables.
+if(MINGW)
+    get_filename_component(
+        openrc_compiler_directory
+        "${CMAKE_CXX_COMPILER}"
+        DIRECTORY
+    )
+    find_program(
+        OPENRC_LLVM_READOBJ_EXECUTABLE
+        NAMES llvm-readobj llvm-readobj.exe
+        HINTS "${openrc_compiler_directory}"
+        NO_DEFAULT_PATH
+    )
+    if(OPENRC_LLVM_READOBJ_EXECUTABLE)
+        set(openrc_pe_inspector "${OPENRC_LLVM_READOBJ_EXECUTABLE}")
+        set(openrc_pe_inspector_mode "llvm-readobj")
+    elseif(CMAKE_OBJDUMP)
+        set(openrc_pe_inspector "${CMAKE_OBJDUMP}")
+        set(openrc_pe_inspector_mode "objdump")
+    else()
+        message(FATAL_ERROR
+            "A PE inspector is required to verify OpenRC executables")
+    endif()
+
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(openrc_expected_pe_machine "amd64")
+    elseif(CMAKE_SIZEOF_VOID_P EQUAL 4)
+        set(openrc_expected_pe_machine "i386")
+    else()
+        message(FATAL_ERROR "Unsupported MinGW pointer size")
+    endif()
+
     get_property(
         openrc_directory_targets
         DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         PROPERTY BUILDSYSTEM_TARGETS
     )
+    set(openrc_audited_executable_targets)
     foreach(openrc_target IN LISTS openrc_directory_targets)
         get_target_property(openrc_target_type "${openrc_target}" TYPE)
         if(openrc_target_type STREQUAL "EXECUTABLE")
-            target_link_options("${openrc_target}" PRIVATE -static)
+            if(OPENRC_STATIC_MINGW_RUNTIME OR
+               openrc_target IN_LIST OPENRC_PUBLIC_EXECUTABLE_TARGETS)
+                target_link_options("${openrc_target}" PRIVATE -static)
+                list(APPEND openrc_audited_executable_targets "${openrc_target}")
+            endif()
         endif()
+    endforeach()
+
+    list(REMOVE_DUPLICATES openrc_audited_executable_targets)
+    foreach(openrc_target IN LISTS openrc_audited_executable_targets)
+        add_custom_command(
+            TARGET "${openrc_target}"
+            POST_BUILD
+            COMMAND "${CMAKE_COMMAND}"
+                "-DOPENRC_EXECUTABLE=$<TARGET_FILE:${openrc_target}>"
+                "-DOPENRC_PE_INSPECTOR=${openrc_pe_inspector}"
+                "-DOPENRC_PE_INSPECTOR_MODE=${openrc_pe_inspector_mode}"
+                "-DOPENRC_EXPECTED_PE_MACHINE=${openrc_expected_pe_machine}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifyPortableExecutable.cmake"
+            COMMENT "Verifying portable imports for ${openrc_target}"
+            VERBATIM
+        )
     endforeach()
 endif()

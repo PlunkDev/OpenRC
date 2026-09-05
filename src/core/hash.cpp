@@ -178,7 +178,8 @@ std::string hex_digest(const std::span<const std::byte> digest) {
     return output.str();
 }
 
-std::string sha256_file(const std::filesystem::path& path) {
+std::array<std::byte, 32>
+sha256_file_digest(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
     if (!input) {
         throw std::runtime_error("Cannot open file for SHA-256: " + path.string());
@@ -199,7 +200,11 @@ std::string sha256_file(const std::filesystem::path& path) {
     if (!input.eof()) {
         throw std::runtime_error("Failed while reading file for SHA-256: " + path.string());
     }
-    return hex_digest(hash.finish());
+    return hash.finish();
+}
+
+std::string sha256_file(const std::filesystem::path& path) {
+    return hex_digest(sha256_file_digest(path));
 }
 
 } // namespace openrc

@@ -14,13 +14,20 @@
 #include "openrc/localized_subtitle_bank.hpp"
 #include "openrc/map_art.hpp"
 #include "openrc/paths.hpp"
+#include "openrc/player_simulation.hpp"
+#include "openrc/prepared_game_v2_fs.hpp"
+#include "openrc/prepared_game_v2_publish.hpp"
 #include "openrc/preparation.hpp"
 #include "openrc/ps2_save_bundle.hpp"
 #include "openrc/rac_gameplay_bank.hpp"
+#include "openrc/rac_level_bootstrap_compile.hpp"
+#include "openrc/rac_level_collision_compile.hpp"
+#include "openrc/rac_level_foundation_compile.hpp"
 #include "openrc/rac_level_core.hpp"
 #include "openrc/rac_moby_class.hpp"
 #include "openrc/rac_moby_model_geometry.hpp"
 #include "openrc/rac_moby_packet_geometry.hpp"
+#include "openrc/runtime_level_foundation.hpp"
 #include "openrc/scene_animation_bank.hpp"
 #include "openrc/scene_block_directory.hpp"
 #include "openrc/scene_block_task_execute.hpp"
@@ -114,6 +121,15 @@ constexpr std::uint64_t kMaximumCliSBlkSamples =
     kMaximumCliSBlkFrames * openrc::kPsAdpcmSamplesPerFrame;
 constexpr std::uint64_t kMaximumCliSBlkWavBytes = 64U * 1024U * 1024U;
 constexpr std::uint64_t kMaximumCliElfBytes = 64U * 1024U * 1024U;
+constexpr std::uint64_t kMaximumCliCollisionPayloadBytes =
+    32U * 1024U * 1024U;
+constexpr std::uint64_t kMaximumCliLevelFoundationPackageBytes =
+    64U * 1024U * 1024U;
+constexpr std::uint64_t kMaximumCliPreparedFoundationBytes =
+    512U * 1024U * 1024U;
+constexpr std::uint32_t kNativeContentApiVersionV1 = 1U;
+constexpr std::string_view kSupportedRacBuildIdV1 =
+    "SCES-50916-PAL-v2.00";
 constexpr std::size_t kMaximumCliDvpVuListItems = 128U;
 constexpr std::size_t kMapArtFirstGlobalSlot = 259;
 constexpr std::size_t kPs2SaveBundleGlobalSlot = 1;
@@ -190,6 +206,187 @@ make_cli_moby_asset_limits() {
         1'000'000U};
 }
 
+[[nodiscard]] constexpr openrc::RacLevelCollisionCompileLimitsV1
+make_cli_collision_compile_limits() {
+    return openrc::RacLevelCollisionCompileLimitsV1{
+        1'000'000U,
+        16'000'000U,
+        16'000'000U,
+        65'536U,
+        4'000'000U,
+        4'000'000U,
+        openrc::CollisionWorldBuildLimitsV1{
+            1'000'000U,
+            2'000'000U,
+            1'000'000U,
+            16'000'000U,
+            openrc::kCollisionDefaultGridCellSizeQ6V1}};
+}
+
+[[nodiscard]] openrc::CollisionWorldIoLimitsV1
+make_cli_collision_payload_limits() {
+    return openrc::CollisionWorldIoLimitsV1{
+        kMaximumCliCollisionPayloadBytes,
+        make_cli_collision_compile_limits().world};
+}
+
+[[nodiscard]] constexpr openrc::LevelBootstrapV1Limits
+make_cli_bootstrap_payload_limits() {
+    return openrc::LevelBootstrapV1Limits{64U * 1024U, 1024U};
+}
+
+[[nodiscard]] constexpr openrc::LevelPackageV1Limits
+make_cli_level_foundation_package_limits() {
+    return openrc::LevelPackageV1Limits{
+        kMaximumCliLevelFoundationPackageBytes,
+        16U,
+        8U,
+        64U,
+        1024U,
+        kMaximumCliCollisionPayloadBytes,
+        kMaximumCliLevelFoundationPackageBytes -
+            openrc::kLevelPackageHeaderBytesV1,
+        64U};
+}
+
+[[nodiscard]] constexpr openrc::PreparedGameV2FilesystemLimitsV1
+make_cli_prepared_foundation_limits() {
+    return openrc::PreparedGameV2FilesystemLimitsV1{
+        openrc::PreparedGameV2Limits{
+            1024U * 1024U,
+            static_cast<std::uint32_t>(openrc::kDiscTocLevelCount),
+            128U,
+            1024U,
+            kMaximumCliPreparedFoundationBytes,
+            64U * 1024U * 1024U},
+        make_cli_level_foundation_package_limits(),
+        kMaximumCliPreparedFoundationBytes};
+}
+
+[[nodiscard]] openrc::RacLevelFoundationCompileLimitsV1
+make_cli_level_foundation_compile_limits() {
+    const auto source_limits = make_cli_moby_asset_limits();
+    return openrc::RacLevelFoundationCompileLimitsV1{
+        source_limits.collision,
+        source_limits.gameplay,
+        make_cli_collision_compile_limits(),
+        make_cli_collision_payload_limits(),
+        make_cli_bootstrap_payload_limits(),
+        make_cli_level_foundation_package_limits()};
+}
+
+[[nodiscard]] std::string level_source_locator(
+    const std::uint32_t level_id,
+    const std::string_view suffix) {
+    std::ostringstream stream;
+    stream << "rac1/level/" << std::setfill('0') << std::setw(3) << level_id
+           << '/' << suffix;
+    return stream.str();
+}
+
+[[nodiscard]] std::string level_package_path(
+    const std::uint32_t level_id) {
+    std::ostringstream stream;
+    stream << "levels/" << std::setfill('0') << std::setw(3) << level_id
+           << ".orlvl";
+    return stream.str();
+}
+
+[[nodiscard]] openrc::LevelPackageV1 compile_cli_level_foundation(
+    const openrc::RacLevelMobyAssetsV1& assets) {
+    const openrc::RacLevelFoundationCompileRequestV1 request{
+        assets.level_id,
+        kNativeContentApiVersionV1,
+        std::string(kSupportedRacBuildIdV1),
+        {level_source_locator(assets.level_id, "core/collision"),
+         assets.collision_source_bytes},
+        {level_source_locator(assets.level_id, "gameplay"),
+         assets.gameplay_source_bytes}};
+    return openrc::compile_rac_level_foundation_package_v1(
+        request, make_cli_level_foundation_compile_limits());
+}
+
+[[nodiscard]] openrc::game::PlayerSimulationProfileV1
+make_cli_player_simulation_profile(double death_height_world);
+
+struct CliPlayerSmokeReportV1 {
+    openrc::LevelSpawnPointV1 spawn;
+    openrc::game::PlayerSimulationSnapshotV1 snapshot;
+    std::uint64_t collision_count = 0U;
+    std::uint64_t landed_count = 0U;
+    std::uint64_t wall_hit_count = 0U;
+};
+
+[[nodiscard]] CliPlayerSmokeReportV1 run_cli_player_smoke(
+    const openrc::game::RuntimeLevelFoundationV1& foundation) {
+    const auto* const spawn = openrc::find_level_spawn_point_v1(
+        foundation.bootstrap, foundation.bootstrap.default_spawn_id);
+    if (spawn == nullptr) {
+        throw std::runtime_error(
+            "The runtime level foundation has no default spawn");
+    }
+
+    const auto player_profile = make_cli_player_simulation_profile(
+        foundation.bootstrap.death_height_world);
+    auto player = openrc::game::make_runtime_level_player_simulation_v1(
+        foundation, player_profile.character,
+        player_profile.fixed_ticks_per_second);
+    const auto forward_x = static_cast<std::int16_t>(std::lround(
+        std::cos(spawn->facing_yaw_radians) *
+        openrc::game::kGameInputAxisMagnitudeV1));
+    const auto forward_y = static_cast<std::int16_t>(std::lround(
+        std::sin(spawn->facing_yaw_radians) *
+        openrc::game::kGameInputAxisMagnitudeV1));
+
+    CliPlayerSmokeReportV1 result;
+    result.spawn = *spawn;
+    for (std::uint64_t tick = 0U; tick < 360U; ++tick) {
+        openrc::game::GameInputCommandV1 input;
+        input.tick_index = tick;
+        if (tick >= 120U && tick < 240U) {
+            input.axes.move_x = forward_x;
+            input.axes.move_y = forward_y;
+        }
+        if (tick == 180U) {
+            input.pressed_buttons = openrc::game::game_button_mask_v1(
+                openrc::game::GameButtonV1::jump);
+        }
+        const auto step = player.fixed_update(
+            foundation.collision_world, input);
+        result.collision_count += step.character.collision_count;
+        result.landed_count += step.character.landed ? 1U : 0U;
+        result.wall_hit_count += step.character.hit_wall ? 1U : 0U;
+    }
+    result.snapshot = player.snapshot();
+    return result;
+}
+
+[[nodiscard]] openrc::game::PlayerSimulationProfileV1
+make_cli_player_simulation_profile(const double death_height_world) {
+    openrc::game::CharacterControllerProfileV1 character;
+    character.capsule_radius = 0.35;
+    character.capsule_height = 1.65;
+    character.skin_width = 0.02;
+    character.ground_probe_distance = 0.30;
+    character.step_height = 0.55;
+    character.maximum_slope_degrees = 50.0;
+    character.maximum_ground_speed = 6.0;
+    character.ground_acceleration = 30.0;
+    character.ground_deceleration = 40.0;
+    character.air_acceleration = 10.0;
+    character.gravity = 18.0;
+    character.jump_speed = 7.0;
+    character.maximum_fall_speed = 40.0;
+    character.maximum_substep_distance = 0.05;
+    character.maximum_motion_substeps = 256U;
+    character.maximum_slide_iterations = 4U;
+    character.maximum_depenetration_iterations = 64U;
+    character.collision_layers = openrc::kCollisionAllLayersMaskV1;
+    character.query_limits = openrc::CollisionQueryLimitsV1{4096U, 8192U};
+    return openrc::game::PlayerSimulationProfileV1{
+        character, 60U, death_height_world};
+}
+
 void print_usage() {
     std::cout
         << "OpenRC command-line tools " << OPENRC_VERSION << "\n\n"
@@ -224,6 +421,15 @@ void print_usage() {
         << "                                                    Execute and optionally export an auto-fit wireframe\n"
         << "  openrc-cli level-core <disc.iso> <level-id>      Link RAC1 model classes, assets, and placements\n"
         << "  openrc-cli level-collision <disc.iso> <level-id> Inspect authoritative level collision\n"
+        << "  openrc-cli level-player-smoke <disc.iso> <level-id>\n"
+        << "                                                    Run deterministic native movement on real collision\n"
+        << "  openrc-cli level-foundation-package <disc.iso> <level-id> <output.orlvl>\n"
+        << "                                                    Compile collision and spawn data into a native level package\n"
+        << "  openrc-cli level-package-smoke <input.orlvl>     Run native movement without the ISO\n"
+        << "  openrc-cli prepare-native-foundations <disc.iso> <absolute-root>\n"
+        << "                                                    Compile and publish all native collision/spawn packages\n"
+        << "  openrc-cli prepared-level-smoke <absolute-root> <level-id>\n"
+        << "                                                    Run a published native level without the ISO\n"
         << "  openrc-cli level-moby-scene <disc.iso> <level-id>\n"
         << "                                                    Build static high-LOD Moby scene geometry\n"
         << "  openrc-cli level-tfrag-texture <disc.iso> <level-id> <texture> [output.tga]\n"
@@ -2069,6 +2275,14 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 << "Unique index:          " << *requested_unique << '\n'
                 << "Decoded bytes:         " << captured.bytes.size() << '\n'
                 << "Present blocks:        " << gameplay.blocks.size() << '\n'
+                << "Death height:          "
+                << gameplay.level_settings.death_height << '\n'
+                << "Ship position:         "
+                << gameplay.level_settings.ship_position[0U] << ", "
+                << gameplay.level_settings.ship_position[1U] << ", "
+                << gameplay.level_settings.ship_position[2U] << '\n'
+                << "Ship rotation Z:       "
+                << gameplay.level_settings.ship_rotation_z << '\n'
                 << "Moby classes:          " << gameplay.moby_class_count
                 << '\n'
                 << "Static moby instances: " << gameplay.static_moby_count
@@ -4180,6 +4394,367 @@ int run(const std::vector<std::filesystem::path>& arguments) {
         }
     }
 
+    if (command == "level-foundation-package") {
+        if (arguments.size() != 4U) {
+            std::cerr
+                << "error: level-foundation-package expects an ISO path, "
+                   "a level ID, and a new output path\n";
+            return kUsageError;
+        }
+        const auto level_value = parse_decimal_argument(arguments[2]);
+        if (!level_value || *level_value >= openrc::kDiscTocLevelCount) {
+            std::cerr << "error: level ID must be a decimal number from 0 to "
+                      << (openrc::kDiscTocLevelCount - 1U) << '\n';
+            return kUsageError;
+        }
+        const auto level_id = static_cast<std::uint32_t>(*level_value);
+
+        try {
+            const auto assets = openrc::load_rac_level_moby_assets_v1(
+                arguments[1], level_id, make_cli_moby_asset_limits());
+            const auto package = compile_cli_level_foundation(assets);
+            const auto package_bytes = openrc::encode_level_package_v1(
+                package, make_cli_level_foundation_package_limits());
+            const auto package_sha256 =
+                openrc::prepared_content_sha256_v1(package_bytes);
+            write_new_binary_file(arguments[3], package_bytes);
+
+            std::cout
+                << "OpenRC native level foundation package\n"
+                << "Image:                  "
+                << openrc::path_to_utf8(arguments[1]) << '\n'
+                << "Level ID:               " << level_id << '\n'
+                << "Build/content API:      " << package.build_id << '/'
+                << package.content_api_version << '\n'
+                << "Resources:              " << package.resources.size()
+                << '\n'
+                << "Package bytes:          " << package_bytes.size() << '\n'
+                << "Package SHA-256:        "
+                << openrc::hex_digest(package_sha256) << '\n'
+                << "Output:                 "
+                << openrc::path_to_utf8(arguments[3]) << '\n';
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << "error: " << error.what() << '\n';
+            return kOperationError;
+        }
+    }
+
+    if (command == "prepare-native-foundations") {
+        if (arguments.size() != 3U) {
+            std::cerr
+                << "error: prepare-native-foundations expects an ISO path "
+                   "and an absolute output root\n";
+            return kUsageError;
+        }
+        if (!arguments[2].is_absolute()) {
+            std::cerr
+                << "error: the native prepared-game root must be absolute\n";
+            return kUsageError;
+        }
+
+        try {
+            const auto disc = openrc::inspect_disc(arguments[1]);
+            if (disc.game != openrc::GameId::ratchet_and_clank_2002 ||
+                !disc.supported_build) {
+                throw std::runtime_error(
+                    "The disc is not the supported RAC1 PAL v2.00 build");
+            }
+            if (disc.image_size > std::numeric_limits<std::uint64_t>::max()) {
+                throw std::runtime_error(
+                    "The source image size exceeds the prepared provenance "
+                    "format");
+            }
+
+            std::cout
+                << "Hashing the source image before native compilation...\n";
+            const auto source_digest_before =
+                openrc::sha256_file_digest(arguments[1]);
+
+            openrc::PreparedGameV2 manifest;
+            manifest.content_api_version = kNativeContentApiVersionV1;
+            manifest.provenance.game_id = "openrc-rac-2002";
+            manifest.provenance.build_id = kSupportedRacBuildIdV1;
+            manifest.provenance.compiler_id = "openrc-asset-compiler";
+            manifest.provenance.compiler_version = OPENRC_VERSION;
+            manifest.provenance.source_image_bytes =
+                static_cast<std::uint64_t>(disc.image_size);
+            manifest.provenance.source_image_sha256 = source_digest_before;
+
+            std::vector<std::vector<std::byte>> package_storage;
+            package_storage.reserve(openrc::kDiscTocLevelCount);
+            manifest.levels.reserve(openrc::kDiscTocLevelCount);
+            for (std::uint32_t level_id = 0U;
+                 level_id < openrc::kDiscTocLevelCount; ++level_id) {
+                const auto assets = openrc::load_rac_level_moby_assets_v1(
+                    arguments[1], level_id, make_cli_moby_asset_limits());
+                const auto package = compile_cli_level_foundation(assets);
+                auto package_bytes = openrc::encode_level_package_v1(
+                    package, make_cli_level_foundation_package_limits());
+                manifest.levels.push_back(
+                    openrc::PreparedGameLevelReferenceV2{
+                        level_id,
+                        level_package_path(level_id),
+                        package_bytes.size(),
+                        openrc::prepared_content_sha256_v1(package_bytes)});
+                package_storage.push_back(std::move(package_bytes));
+                std::cout << "Compiled native level " << (level_id + 1U)
+                          << '/' << openrc::kDiscTocLevelCount << "\r"
+                          << std::flush;
+            }
+            std::cout << '\n';
+
+            const auto final_image_size =
+                std::filesystem::file_size(arguments[1]);
+            std::cout
+                << "Hashing the source image after native compilation...\n";
+            const auto source_digest_after =
+                openrc::sha256_file_digest(arguments[1]);
+            if (final_image_size != disc.image_size ||
+                source_digest_after != source_digest_before) {
+                throw std::runtime_error(
+                    "The source image changed during native compilation");
+            }
+
+            std::vector<openrc::PreparedGameV2LevelPackageBytesV1>
+                package_inputs;
+            package_inputs.reserve(package_storage.size());
+            for (std::size_t index = 0U; index < package_storage.size();
+                 ++index) {
+                package_inputs.push_back(
+                    openrc::PreparedGameV2LevelPackageBytesV1{
+                        static_cast<std::uint32_t>(index),
+                        package_storage[index]});
+            }
+            const auto published = openrc::publish_prepared_game_v2_v1(
+                arguments[2], manifest, package_inputs,
+                make_cli_prepared_foundation_limits());
+            std::cout
+                << "OpenRC native foundation set published\n"
+                << "Root:                   "
+                << openrc::path_to_utf8(published.root) << '\n'
+                << "Levels:                 " << published.level_count << '\n'
+                << "Level package bytes:    " << published.package_bytes
+                << '\n'
+                << "Manifest SHA-256:       "
+                << openrc::hex_digest(published.manifest_sha256) << '\n'
+                << "Source image SHA-256:   "
+                << openrc::hex_digest(source_digest_before) << '\n';
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << "error: " << error.what() << '\n';
+            return kOperationError;
+        }
+    }
+
+    if (command == "prepared-level-smoke") {
+        if (arguments.size() != 3U) {
+            std::cerr
+                << "error: prepared-level-smoke expects an absolute prepared "
+                   "root and a level ID\n";
+            return kUsageError;
+        }
+        const auto level_value = parse_decimal_argument(arguments[2]);
+        if (!level_value || *level_value >= openrc::kDiscTocLevelCount) {
+            std::cerr << "error: level ID must be a decimal number from 0 to "
+                      << (openrc::kDiscTocLevelCount - 1U) << '\n';
+            return kUsageError;
+        }
+        const auto level_id = static_cast<std::uint32_t>(*level_value);
+
+        try {
+            const auto limits = make_cli_prepared_foundation_limits();
+            const auto prepared = openrc::load_prepared_game_v2_root_v1(
+                arguments[1], limits);
+            const auto package =
+                openrc::load_prepared_game_level_package_v1(
+                    prepared, level_id, limits);
+            const auto resolved = openrc::resolve_level_package_v1(
+                package, std::span<const openrc::LevelPackageV1>{},
+                limits.level_package);
+            const auto foundation =
+                openrc::game::load_runtime_level_foundation_v1(
+                    resolved,
+                    openrc::game::RuntimeLevelFoundationLimitsV1{
+                        kNativeContentApiVersionV1,
+                        make_cli_collision_payload_limits(),
+                        make_cli_bootstrap_payload_limits()});
+            const auto smoke = run_cli_player_smoke(foundation);
+
+            std::cout
+                << "OpenRC published-package player simulation smoke\n"
+                << "Prepared root:          "
+                << openrc::path_to_utf8(prepared.root) << '\n'
+                << "Manifest SHA-256:       "
+                << openrc::hex_digest(prepared.manifest_sha256) << '\n'
+                << "Level ID:               " << foundation.level_id << '\n'
+                << "Build/content API:      " << foundation.build_id << '/'
+                << foundation.content_api_version << '\n'
+                << "Collision triangles:    "
+                << foundation.collision_world.mesh.triangles.size() << '\n'
+                << "Spawn:                  "
+                << smoke.spawn.feet_position.x << ", "
+                << smoke.spawn.feet_position.y << ", "
+                << smoke.spawn.feet_position.z << '\n'
+                << "Final feet position:    "
+                << smoke.snapshot.character.feet_position.x << ", "
+                << smoke.snapshot.character.feet_position.y << ", "
+                << smoke.snapshot.character.feet_position.z << '\n'
+                << "Grounded/resets:        "
+                << (smoke.snapshot.character.grounded ? "yes" : "no") << '/'
+                << smoke.snapshot.reset_count << '\n'
+                << "Replay state hash:      "
+                << openrc::game::hash_player_simulation_snapshot_v1(
+                       smoke.snapshot)
+                << '\n';
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << "error: " << error.what() << '\n';
+            return kOperationError;
+        }
+    }
+
+    if (command == "level-package-smoke") {
+        if (arguments.size() != 2U) {
+            std::cerr
+                << "error: level-package-smoke expects one .orlvl path\n";
+            return kUsageError;
+        }
+
+        try {
+            const auto package_limits =
+                make_cli_level_foundation_package_limits();
+            const auto package_bytes = read_bounded_binary_file(
+                arguments[1], package_limits.max_input_bytes);
+            const auto package = openrc::parse_level_package_v1(
+                package_bytes, package_limits);
+            const auto resolved = openrc::resolve_level_package_v1(
+                package, std::span<const openrc::LevelPackageV1>{},
+                package_limits);
+            const auto foundation =
+                openrc::game::load_runtime_level_foundation_v1(
+                    resolved,
+                    openrc::game::RuntimeLevelFoundationLimitsV1{
+                        kNativeContentApiVersionV1,
+                        make_cli_collision_payload_limits(),
+                        make_cli_bootstrap_payload_limits()});
+            const auto smoke = run_cli_player_smoke(foundation);
+
+            std::cout
+                << "OpenRC native package-only player simulation smoke\n"
+                << "Package:                "
+                << openrc::path_to_utf8(arguments[1]) << '\n'
+                << "Level ID:               " << foundation.level_id << '\n'
+                << "Build/content API:      " << foundation.build_id << '/'
+                << foundation.content_api_version << '\n'
+                << "Package bytes:          " << package_bytes.size() << '\n'
+                << "Collision vertices:     "
+                << foundation.collision_world.mesh.vertices.size() << '\n'
+                << "Collision triangles:    "
+                << foundation.collision_world.mesh.triangles.size() << '\n'
+                << "Spawn:                  "
+                << smoke.spawn.feet_position.x << ", "
+                << smoke.spawn.feet_position.y << ", "
+                << smoke.spawn.feet_position.z << '\n'
+                << "Death height:           "
+                << foundation.bootstrap.death_height_world << '\n'
+                << "Final feet position:    "
+                << smoke.snapshot.character.feet_position.x << ", "
+                << smoke.snapshot.character.feet_position.y << ", "
+                << smoke.snapshot.character.feet_position.z << '\n'
+                << "Grounded:               "
+                << (smoke.snapshot.character.grounded ? "yes" : "no")
+                << '\n'
+                << "Landings/wall ticks:    " << smoke.landed_count << '/'
+                << smoke.wall_hit_count << '\n'
+                << "Contacts/resets:        " << smoke.collision_count << '/'
+                << smoke.snapshot.reset_count << '\n'
+                << "Replay state hash:      "
+                << openrc::game::hash_player_simulation_snapshot_v1(
+                       smoke.snapshot)
+                << '\n';
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << "error: " << error.what() << '\n';
+            return kOperationError;
+        }
+    }
+
+    if (command == "level-player-smoke") {
+        if (arguments.size() != 3U) {
+            std::cerr
+                << "error: level-player-smoke expects an ISO path and a level ID\n";
+            return kUsageError;
+        }
+        const auto level_value = parse_decimal_argument(arguments[2]);
+        if (!level_value || *level_value >= openrc::kDiscTocLevelCount) {
+            std::cerr << "error: level ID must be a decimal number from 0 to "
+                      << (openrc::kDiscTocLevelCount - 1U) << '\n';
+            return kUsageError;
+        }
+        const auto level_id = static_cast<std::uint32_t>(*level_value);
+
+        try {
+            const auto assets = openrc::load_rac_level_moby_assets_v1(
+                arguments[1], level_id, make_cli_moby_asset_limits());
+            const auto package = compile_cli_level_foundation(assets);
+            const auto package_limits =
+                make_cli_level_foundation_package_limits();
+            const auto package_bytes =
+                openrc::encode_level_package_v1(package, package_limits);
+            const auto resolved = openrc::resolve_level_package_v1(
+                package, std::span<const openrc::LevelPackageV1>{},
+                package_limits);
+            const auto foundation =
+                openrc::game::load_runtime_level_foundation_v1(
+                    resolved,
+                    openrc::game::RuntimeLevelFoundationLimitsV1{
+                        kNativeContentApiVersionV1,
+                        make_cli_collision_payload_limits(),
+                        make_cli_bootstrap_payload_limits()});
+            const auto& collision = foundation.collision_world;
+            const auto& bootstrap = foundation.bootstrap;
+            const auto smoke = run_cli_player_smoke(foundation);
+            std::cout
+                << "OpenRC native player simulation smoke\n"
+                << "Image:                  "
+                << openrc::path_to_utf8(arguments[1]) << '\n'
+                << "Level ID:               " << level_id << '\n'
+                << "Native package bytes:   " << package_bytes.size() << '\n'
+                << "Collision vertices:     "
+                << collision.mesh.vertices.size() << '\n'
+                << "Collision triangles:    "
+                << collision.mesh.triangles.size() << '\n'
+                << "Collision grid cells:   "
+                << collision.grid.cells.size() << '\n'
+                << "Spawn:                  "
+                << smoke.spawn.feet_position.x << ", "
+                << smoke.spawn.feet_position.y << ", "
+                << smoke.spawn.feet_position.z << '\n'
+                << "Death height:           "
+                << bootstrap.death_height_world << '\n'
+                << "Final feet position:    "
+                << smoke.snapshot.character.feet_position.x << ", "
+                << smoke.snapshot.character.feet_position.y << ", "
+                << smoke.snapshot.character.feet_position.z << '\n'
+                << "Grounded:               "
+                << (smoke.snapshot.character.grounded ? "yes" : "no")
+                << '\n'
+                << "Landings/wall ticks:    " << smoke.landed_count << '/'
+                << smoke.wall_hit_count << '\n'
+                << "Contacts/resets:        " << smoke.collision_count << '/'
+                << smoke.snapshot.reset_count << '\n'
+                << "Replay state hash:      "
+                << openrc::game::hash_player_simulation_snapshot_v1(
+                       smoke.snapshot)
+                << '\n';
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << "error: " << error.what() << '\n';
+            return kOperationError;
+        }
+    }
+
     if (command == "level-moby-scene") {
         if (arguments.size() != 3U) {
             std::cerr
@@ -4422,6 +4997,15 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 decoded_gameplay.bytes,
                 openrc::RacGameplayBankLimitsV1{
                     kMaximumCliDecodedWadBytes});
+            const auto bootstrap =
+                openrc::compile_rac_level_bootstrap_v1(gameplay, level_id);
+            const auto* const default_spawn =
+                openrc::find_level_spawn_point_v1(
+                    bootstrap, bootstrap.default_spawn_id);
+            if (default_spawn == nullptr) {
+                throw std::runtime_error(
+                    "The compiled level bootstrap has no default spawn");
+            }
             if (gameplay.moby_class_ids.size() != core.moby_classes.size()) {
                 throw std::runtime_error(
                     "Gameplay and level-core Moby class counts disagree");
@@ -4645,6 +5229,19 @@ int run(const std::vector<std::filesystem::path>& arguments) {
                 << "External/zero models:  " << external_models << '\n'
                 << "Moby textures:         "
                 << core.header.moby_textures.count << '\n'
+                << "Death height:          "
+                << gameplay.level_settings.death_height << '\n'
+                << "Ship position:         "
+                << gameplay.level_settings.ship_position[0U] << ", "
+                << gameplay.level_settings.ship_position[1U] << ", "
+                << gameplay.level_settings.ship_position[2U] << '\n'
+                << "Ship rotation Z:       "
+                << gameplay.level_settings.ship_rotation_z << '\n'
+                << "Player spawn:          "
+                << default_spawn->feet_position.x << ", "
+                << default_spawn->feet_position.y << ", "
+                << default_spawn->feet_position.z << " @ "
+                << default_spawn->facing_yaw_radians << " rad\n"
                 << "Static placements:     " << gameplay.static_mobies.size()
                 << '\n'
                 << "Classes placed:        " << used_classes << '\n'

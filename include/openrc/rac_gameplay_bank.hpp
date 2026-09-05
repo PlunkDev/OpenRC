@@ -83,6 +83,33 @@ struct RacGameplayBlockV1 {
     RacGameplayRangeV1 range;
 };
 
+// The fixed 0x50-byte RAC1 level-settings record. Every source word remains
+// available so package compilers can reproduce or audit the original data,
+// while fields needed by the native runtime are decoded explicitly.
+struct RacGameplayLevelSettingsV1 {
+    RacGameplayRangeV1 record_range;
+    std::array<std::uint32_t, 0x50U / sizeof(std::uint32_t)> raw_words{};
+    std::array<std::int32_t, 3U> background_colour{};
+    std::array<std::int32_t, 3U> fog_colour{};
+    std::uint32_t fog_near_distance_bits = 0U;
+    float fog_near_distance = 0.0F;
+    std::uint32_t fog_far_distance_bits = 0U;
+    float fog_far_distance = 0.0F;
+    std::uint32_t fog_near_intensity_bits = 0U;
+    float fog_near_intensity = 0.0F;
+    std::uint32_t fog_far_intensity_bits = 0U;
+    float fog_far_intensity = 0.0F;
+    std::uint32_t death_height_bits = 0U;
+    float death_height = 0.0F;
+    std::array<std::uint32_t, 3U> ship_position_bits{};
+    std::array<float, 3U> ship_position{};
+    std::uint32_t ship_rotation_z_bits = 0U;
+    float ship_rotation_z = 0.0F;
+    std::int32_t ship_path = 0;
+    std::int32_t ship_camera_cuboid_start = 0;
+    std::int32_t ship_camera_cuboid_end = 0;
+};
+
 struct RacGameplayMobyInstanceV1 {
     RacGameplayRangeV1 record_range;
     std::uint32_t class_id = 0U;
@@ -134,6 +161,8 @@ struct RacGameplayBankV1 {
     std::array<std::uint32_t, kRacGameplayDirectorySlotCountV1> block_offsets{};
     // All 36 blocks are returned in their physical serialization order.
     std::vector<RacGameplayBlockV1> blocks;
+
+    RacGameplayLevelSettingsV1 level_settings;
 
     std::uint32_t moby_class_count = 0U;
     std::vector<std::uint32_t> moby_class_ids;
