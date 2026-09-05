@@ -33,8 +33,10 @@ struct RacRatchetSequenceLimitsV1 {
 };
 
 struct RacRatchetSequenceFrameV1 {
-  // Exact table word is retained separately from the sequence-relative offset
-  // and its derived source location. V1 rejects any non-zero upper bits.
+  // Exact table word is retained separately from the normalized
+  // sequence-relative offset and its derived source location. Ratchet tables
+  // encode a sequence-relative value; ordinary Moby class tables encode a
+  // class-asset-relative value. V1 rejects any non-zero upper bits.
   std::uint32_t packed_offset_word = 0U;
   std::uint32_t relative_offset = 0U;
   std::uint64_t source_offset = 0U;
@@ -105,5 +107,15 @@ public:
 parse_rac_ratchet_sequence_v1(std::span<const std::byte> source,
                               RacRatchetSequenceRangeV1 sequence_range,
                               RacRatchetSequenceLimitsV1 limits);
+
+// Parses the same regular RAC1 animation payload when it is embedded in an
+// ordinary Moby class asset. Unlike Ratchet's level-core table, each packed
+// frame offset is relative to the beginning of source (the class asset), not
+// to sequence_range. Returned frame ranges are normalized back to the
+// sequence-local domain, so pose decoding remains source-layout independent.
+[[nodiscard]] RacRatchetSequenceV1
+parse_rac_moby_sequence_v1(std::span<const std::byte> source,
+                           RacRatchetSequenceRangeV1 sequence_range,
+                           RacRatchetSequenceLimitsV1 limits);
 
 } // namespace openrc

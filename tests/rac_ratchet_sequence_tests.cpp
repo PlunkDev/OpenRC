@@ -212,6 +212,39 @@ void test_regular_sequence_and_owned_bytes() {
          "non-zero trailing payload bytes were not preserved");
 }
 
+void test_moby_class_relative_frame_offsets() {
+  auto bytes = make_regular_source();
+  const auto base = static_cast<std::size_t>(kRegularSequenceOffset);
+  write_le32(bytes, base + 0x1cU, kRegularSequenceOffset + 0x50U);
+  write_le32(bytes, base + 0x20U, kRegularSequenceOffset + 0x80U);
+
+  const auto result = openrc::parse_rac_moby_sequence_v1(
+      bytes, {kRegularSequenceOffset, kRegularSequenceBytes}, kLimits);
+  expect(result.frames.size() == 2U &&
+             result.frames[0U].packed_offset_word == 0x90U &&
+             result.frames[0U].relative_offset == 0x50U &&
+             result.frames[0U].source_offset == 0x90U &&
+             result.frames[1U].packed_offset_word == 0xc0U &&
+             result.frames[1U].relative_offset == 0x80U &&
+             result.frames[1U].source_offset == 0xc0U &&
+             result.frames[0U].range ==
+                 openrc::RacRatchetSequenceRangeV1{0x50U, 0x20U} &&
+             result.frames[1U].range ==
+                 openrc::RacRatchetSequenceRangeV1{0x80U, 0x30U},
+         "Moby class-relative frame offsets were not normalized to the "
+         "sequence domain");
+
+  write_le32(bytes, base + 0x1cU, kRegularSequenceOffset - 0x10U);
+  try {
+    (void)openrc::parse_rac_moby_sequence_v1(
+        bytes, {kRegularSequenceOffset, kRegularSequenceBytes}, kLimits);
+  } catch (const openrc::RacRatchetSequenceError &) {
+    return;
+  }
+  throw std::runtime_error(
+      "a Moby frame offset before its bounded sequence was accepted");
+}
+
 void test_envelope_and_limit_rejections() {
   const auto bytes = make_regular_source();
   for (const auto limits : {
@@ -511,6 +544,7 @@ int main(const int argc, char **argv) {
                                "[--scan-disc|--scan-disc-all disc.iso]");
     }
     test_regular_sequence_and_owned_bytes();
+    test_moby_class_relative_frame_offsets();
     test_envelope_and_limit_rejections();
     test_packed_offset_and_frame_rejections();
     std::cout << "RAC Ratchet sequence tests passed\n";

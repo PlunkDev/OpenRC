@@ -95,12 +95,16 @@ struct RawFrameOffset {
   std::uint64_t source_offset = 0U;
 };
 
-} // namespace
+enum class FrameOffsetBasis {
+  sequence,
+  source,
+};
 
-RacRatchetSequenceV1
-parse_rac_ratchet_sequence_v1(const std::span<const std::byte> source,
-                              const RacRatchetSequenceRangeV1 sequence_range,
-                              const RacRatchetSequenceLimitsV1 limits) {
+[[nodiscard]] RacRatchetSequenceV1 parse_regular_sequence(
+    const std::span<const std::byte> source,
+    const RacRatchetSequenceRangeV1 sequence_range,
+    const RacRatchetSequenceLimitsV1 limits,
+    const FrameOffsetBasis frame_offset_basis) {
   if (limits.max_input_bytes == 0U || limits.max_sequence_bytes == 0U ||
       limits.max_frames == 0U || limits.max_trigger_words == 0U) {
     fail("RacRatchetSequenceV1 caller limits must be non-zero");
@@ -169,12 +173,25 @@ parse_rac_ratchet_sequence_v1(const std::span<const std::byte> source,
       fail("RacRatchetSequenceV1 has unsupported opaque frame-offset bits");
     }
 
-    const auto relative_offset = packed & kRacRatchetSequenceOffsetBitsMaskV1;
-    if (relative_offset >= sequence_range.size) {
+    const auto encoded_offset =
+        packed & kRacRatchetSequenceOffsetBitsMaskV1;
+    const auto source_offset =
+        frame_offset_basis == FrameOffsetBasis::sequence
+            ? checked_add(sequence_range.offset, encoded_offset,
+                          "a frame source offset")
+            : static_cast<std::uint64_t>(encoded_offset);
+    const auto sequence_end =
+        checked_add(sequence_range.offset, sequence_range.size,
+                    "the bounded sequence end");
+    if (source_offset < sequence_range.offset || source_offset >= sequence_end) {
       fail("A RacRatchetSequenceV1 frame offset leaves the bounded sequence");
     }
-    const auto source_offset = checked_add(
-        sequence_range.offset, relative_offset, "a frame source offset");
+    const auto relative_offset_u64 = source_offset - sequence_range.offset;
+    if (relative_offset_u64 > std::numeric_limits<std::uint32_t>::max()) {
+      fail("A RacRatchetSequenceV1 normalized frame offset exceeds uint32_t");
+    }
+    const auto relative_offset =
+        static_cast<std::uint32_t>(relative_offset_u64);
     if (relative_offset < directory_end ||
         (relative_offset & (kRegularFrameAlignment - 1U)) != 0U) {
       fail("RacRatchetSequenceV1 has an invalid frame offset");
@@ -308,6 +325,24 @@ parse_rac_ratchet_sequence_v1(const std::span<const std::byte> source,
       sequence_begin, static_cast<std::size_t>(sequence_range.size));
   result.encoded_bytes.assign(bounded.begin(), bounded.end());
   return result;
+}
+
+} // namespace
+
+RacRatchetSequenceV1
+parse_rac_ratchet_sequence_v1(const std::span<const std::byte> source,
+                              const RacRatchetSequenceRangeV1 sequence_range,
+                              const RacRatchetSequenceLimitsV1 limits) {
+  return parse_regular_sequence(source, sequence_range, limits,
+                                FrameOffsetBasis::sequence);
+}
+
+RacRatchetSequenceV1
+parse_rac_moby_sequence_v1(const std::span<const std::byte> source,
+                           const RacRatchetSequenceRangeV1 sequence_range,
+                           const RacRatchetSequenceLimitsV1 limits) {
+  return parse_regular_sequence(source, sequence_range, limits,
+                                FrameOffsetBasis::source);
 }
 
 } // namespace openrc
