@@ -63,6 +63,8 @@ add_library(openrc_core STATIC
     src/core/localized_subtitle_bank.cpp
     src/core/map_art.cpp
     src/core/pcm_wav.cpp
+    src/core/placement_admission.cpp
+    src/core/placement_admission_io.cpp
     src/core/paths.cpp
     src/core/player_combat.cpp
     src/core/player_simulation.cpp
@@ -74,6 +76,7 @@ add_library(openrc_core STATIC
     src/core/ps2_save_bundle.cpp
     src/core/rac_gameplay_bank.cpp
     src/core/rac_moby_admission.cpp
+    src/core/rac_moby_admission_compile.cpp
     src/core/rac_initial_progress_template.cpp
     src/core/rac_initial_progress_compile.cpp
     src/core/rac_actor_library_compile.cpp
@@ -498,6 +501,9 @@ if(OPENRC_BUILD_TESTS)
         openrc-rac-initial-progress-compile-tests
         openrc-session-state-tests
         openrc-session-state-io-tests
+        openrc-placement-admission-tests
+        openrc-placement-admission-io-tests
+        openrc-rac-moby-admission-compile-tests
     )
     add_executable(
         openrc-actor-behavior-scene-tests
@@ -537,6 +543,9 @@ if(OPENRC_BUILD_TESTS)
     )
     add_executable(openrc-session-state-tests tests/session_state_tests.cpp)
     add_executable(openrc-session-state-io-tests tests/session_state_io_tests.cpp)
+    add_executable(openrc-placement-admission-tests tests/placement_admission_tests.cpp)
+    add_executable(openrc-placement-admission-io-tests tests/placement_admission_io_tests.cpp)
+    add_executable(openrc-rac-moby-admission-compile-tests tests/rac_moby_admission_compile_tests.cpp)
     foreach(target IN LISTS OPENRC_ACTOR_BEHAVIOR_TEST_TARGETS)
         target_link_libraries(${target} PRIVATE openrc_core)
         target_compile_features(${target} PRIVATE cxx_std_20)
@@ -1979,6 +1988,9 @@ if(OPENRC_BUILD_TESTS)
     add_test(NAME rac-initial-progress-compile COMMAND openrc-rac-initial-progress-compile-tests)
     add_test(NAME session-state COMMAND openrc-session-state-tests)
     add_test(NAME session-state-io COMMAND openrc-session-state-io-tests)
+    add_test(NAME placement-admission COMMAND openrc-placement-admission-tests)
+    add_test(NAME placement-admission-io COMMAND openrc-placement-admission-io-tests)
+    add_test(NAME rac-moby-admission-compile COMMAND openrc-rac-moby-admission-compile-tests)
     add_test(NAME player-combat COMMAND openrc-player-combat-tests)
     add_test(NAME destructible-scene COMMAND openrc-destructible-scene-tests)
     add_test(

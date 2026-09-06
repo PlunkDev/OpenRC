@@ -1,6 +1,7 @@
 #pragma once
 
 #include "openrc/game_input.hpp"
+#include "openrc/placement_admission.hpp"
 #include "openrc/session_state.hpp"
 
 #include <array>
@@ -88,6 +89,12 @@ public:
   void
   apply_persistent_state_writes(std::span<const SessionStateWriteV1> writes,
                                 std::uint64_t expected_revision);
+  // One source-compiled neutral decision on current state; does not spawn an
+  // entity or replace the required accepted-construction phase.
+  [[nodiscard]] PlacementAdmissionResultV1
+  apply_placement_admission(const PlacementAdmissionPlanV1 &plan,
+                            std::uint64_t expected_revision,
+                            PlacementAdmissionLimitsV1 limits);
   [[nodiscard]] std::uint64_t deterministic_seed() const noexcept;
   [[nodiscard]] std::uint64_t next_tick_index() const noexcept;
   [[nodiscard]] std::uint64_t level_instance_sequence() const noexcept;

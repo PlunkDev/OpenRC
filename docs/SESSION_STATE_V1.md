@@ -97,7 +97,7 @@ probe repeats the complete field comparison and lifecycle roundtrip against
 the actual template. Neither test executes original constructors or proves
 the live first-admission state.
 
-The Release portable build passes all 117 tests and PE import audits. The
+The Release portable build passes all 120 tests and PE import audits. The
 published CLI also passes package-only level smoke checks for levels 0 and 1
 with the unchanged eight-resource profile. Those checks guard existing
 package behavior; they do not claim that the native frontend uses the new
@@ -105,9 +105,12 @@ initial-state artifact yet.
 
 ## Remaining integration boundary
 
-Source admission still needs a neutral level-load policy, the complete
-authored placement catalog, and explicit ordered state operations. The
-source copies persistent selectors to a separate cache on one loader path
+The neutral [single-placement admission step](PLACEMENT_ADMISSION_V1.md) now
+executes directly on `GameSessionV1` storage, including earlier writes that
+survive an ordinary rejection and aliases read later in the same step.
+The complete authored placement catalog and ordered construction are not yet
+connected to it. The source copies persistent selectors to a separate cache
+on one loader path
 but skips that copy on another; a level replacement must not automatically
 invent a cache refresh. Accepted construction must remain interleaved with
 later admission steps wherever the source requires it.

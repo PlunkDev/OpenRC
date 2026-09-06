@@ -222,6 +222,21 @@ std::uint64_t GameSessionV1::deterministic_seed() const noexcept {
   return deterministic_seed_;
 }
 
+PlacementAdmissionResultV1 GameSessionV1::apply_placement_admission(
+    const PlacementAdmissionPlanV1 &plan, const std::uint64_t expected_revision,
+    const PlacementAdmissionLimitsV1 limits) {
+  if (!persistent_state_) {
+    throw GameWorldError("Placement admission requires prepared session state");
+  }
+  try {
+    return execute_placement_admission_v1(plan, *persistent_state_,
+                                          expected_revision, limits);
+  } catch (const PlacementAdmissionError &error) {
+    throw GameWorldError("Cannot apply placement admission: " +
+                         std::string(error.what()));
+  }
+}
+
 std::uint64_t GameSessionV1::next_tick_index() const noexcept {
   return next_tick_index_;
 }

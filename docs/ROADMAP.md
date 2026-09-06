@@ -261,9 +261,11 @@ template decoder are also implemented; their exact scope is documented in
 [the admission contract](RAC_MOBY_ADMISSION_V1.md). A neutral
 [session-state owner](SESSION_STATE_V1.md), bounded initial-artifact I/O, and
 template-to-state compiler bridge preserve shared byte views and mutable
-progress through level replacement and schema-bound snapshots. They do not
-yet publish a native progression resource or integrate
-session-state-dependent materialization, execute original initialization
+progress through level replacement and schema-bound snapshots. A compiled
+[neutral admission step](PLACEMENT_ADMISSION_V1.md) now runs on that owned
+state, with canonical plan I/O and source/native differential tests. The
+complete ordered placement/constructor loop and native publication remain
+unconnected. These components do not yet execute original initialization
 callbacks, supply exact range-query inputs, or enable AI in the graphical runtime.
 This does not declare Veldin finished: airborne and wrench animation, original
 pickup and destruction presentation, one complete weapon/enemy loop, original

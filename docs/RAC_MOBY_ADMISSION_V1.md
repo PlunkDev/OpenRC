@@ -124,10 +124,14 @@ must use the actual source-to-live mapping. This policy must not require a
 render model, rig, or normal-update callback merely to decide whether a
 placement exists.
 
-The session-state owner and initial-artifact bridge are implemented, but this
-load policy is not yet connected to them. In particular, persistent selector
-rows and the source's cached selector bytes have different lifetimes: the
-initial loader copies the row while an in-place reload path skips that copy.
+The session-state owner, initial-artifact bridge, and source-to-neutral
+[single-placement admission compiler/executor](PLACEMENT_ADMISSION_V1.md)
+are implemented. A plan survives binary roundtrip and executes against the
+owned current bytes, preserving registration aliases and ordinary-rejection
+writes. This is not yet the complete ordered load policy or native frontend
+publication. In particular, persistent selector rows and the source's cached
+selector bytes have different lifetimes: the initial loader copies the row
+while an in-place reload path skips that copy.
 Those are explicit source operations, not an automatic refresh on every load.
 
 These components deliberately do not mark original initialization, subsequent
