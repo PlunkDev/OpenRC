@@ -1,4 +1,5 @@
 #include "openrc/runtime_actor_behavior.hpp"
+#include "openrc/runtime_actor_schedule.hpp"
 
 #include <array>
 #include <cstddef>
@@ -947,6 +948,69 @@ void test_explicit_schedule_preserves_source_order_and_selection() {
       "rescheduled actors replayed skipped updates or lost explicit RNG order");
 }
 
+void test_group_selection_drives_behavior_rng_and_replay() {
+  using namespace openrc::game;
+  const auto scene = make_scene();
+  const auto registry = make_registry(
+      scene, [](ActorBehaviorInvocationV1 &invocation) {
+        invocation.set_field(0U, 0U, invocation.next_random_u32(0U));
+        invocation.emit_set_presentation_enabled(true);
+      });
+  ActorBehaviorRuntimeV1 runtime(scene, registry, runtime_limits(), 60U);
+  constexpr ActorUpdateScheduleLimitsV1 limits{16U, 4U, 16U, 64U, 8U, 16U};
+  std::vector<ActorUpdateCandidateV1> candidates{
+      {10U, 3U, 2U, true, true, false, false},
+      {20U, 3U, 2U, true, false, false, false}};
+  const std::vector<ActorActivationGroupV1> groups{{2U, {20U, 10U}}};
+  std::vector<ActorUpdateRangeEligibilityV1> ranges{{20U, true}};
+  const auto selected = build_grouped_actor_update_schedule_v1(
+      candidates, groups, ranges, limits);
+  const auto before = runtime.snapshot();
+  const auto first = runtime.fixed_tick(0U, selected.ordered_authored_ids);
+  const auto after = runtime.snapshot();
+  expect(first.journal.size() == 2U &&
+             first.journal[0U].authored_id == 20U &&
+             first.journal[1U].authored_id == 10U &&
+             std::get<std::uint32_t>(after.instances[0U].field_values[0U]) ==
+                 12U &&
+             std::get<std::uint32_t>(after.instances[1U].field_values[0U]) ==
+                 11U,
+         "group selection did not drive shared RNG in source member order");
+
+  // Selection inputs belong to the source-world owner. Rebuilding the same
+  // list after restoring behavior state must reproduce both state and journal.
+  ActorBehaviorRuntimeV1 restored(scene, registry, runtime_limits(), 60U, before);
+  const auto replay_selection = build_grouped_actor_update_schedule_v1(
+      candidates, groups, ranges, limits);
+  expect(restored.initialization_journal().empty() &&
+             restored.fixed_tick(0U, replay_selection.ordered_authored_ids) ==
+                 first &&
+             restored.snapshot() == after,
+         "group selection and behavior snapshot replay diverged");
+
+  ranges[0U].eligible = false;
+  const auto asleep = build_grouped_actor_update_schedule_v1(
+      candidates, groups, ranges, limits);
+  expect(runtime.fixed_tick(1U, asleep.ordered_authored_ids).journal.empty() &&
+             runtime.snapshot().shared_random_streams[0U].call_count == 2U,
+         "an unactivated group consumed behavior updates or shared RNG");
+
+  candidates[0U].live = false;
+  ranges[0U].eligible = true;
+  const auto awake = build_grouped_actor_update_schedule_v1(
+      candidates, groups, ranges, limits);
+  const auto resumed = runtime.fixed_tick(2U, awake.ordered_authored_ids);
+  const auto final_state = runtime.snapshot();
+  expect(resumed.journal.size() == 1U &&
+             resumed.journal[0U].authored_id == 20U &&
+             final_state.instances[0U].state_ticks == 1U &&
+             final_state.instances[1U].state_ticks == 2U &&
+             final_state.shared_random_streams[0U].call_count == 3U &&
+             std::get<std::uint32_t>(
+                 final_state.instances[1U].field_values[0U]) == 13U,
+         "reactivated group ran an inactive sibling or replayed skipped ticks");
+}
+
 void test_mixed_source_cadences_preserve_shared_rng_order() {
   auto scene = make_scene();
   auto pal_program = scene.programs[0U];
@@ -1007,6 +1071,7 @@ int main() {
     test_animation_frame_bounds_abort_before_commit();
     test_source_cadence_phase_restore_and_hash();
     test_explicit_schedule_preserves_source_order_and_selection();
+    test_group_selection_drives_behavior_rng_and_replay();
     test_mixed_source_cadences_preserve_shared_rng_order();
     std::cout << "runtime actor-behavior tests passed\n";
     return 0;

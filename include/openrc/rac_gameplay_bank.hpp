@@ -21,6 +21,9 @@ inline constexpr std::uint32_t kRacGameplayShrubRecordBytesV1 = 0x70U;
 inline constexpr std::uint32_t kRacGameplayPvarTableRecordBytesV1 = 0x08U;
 inline constexpr std::uint32_t kRacGameplayPvarFixupRecordBytesV1 = 0x08U;
 inline constexpr std::uint32_t kRacGameplayPvarPointerBytesV1 = 0x04U;
+inline constexpr std::uint32_t kRacGameplayMobyGroupHeaderBytesV1 = 0x10U;
+inline constexpr std::uint32_t kRacGameplayMobyGroupTableRecordBytesV1 = 0x04U;
+inline constexpr std::uint32_t kRacGameplayMobyGroupMemberBytesV1 = 0x02U;
 
 // Values follow the on-disc header slots. The physical block order is
 // deliberately different and is reconstructed by the parser.
@@ -74,6 +77,9 @@ struct RacGameplayBankLimitsV1 {
     std::uint64_t max_pvar_entries = 65'536U;
     std::uint64_t max_pvar_moby_link_fixups = 1'048'576U;
     std::uint64_t max_pvar_relative_pointer_fixups = 1'048'576U;
+    std::uint64_t max_moby_groups = 112U;
+    std::uint64_t max_moby_group_members_per_group = 32'768U;
+    std::uint64_t max_total_moby_group_members = 1'048'576U;
 };
 
 struct RacGameplayRangeV1 {
@@ -182,6 +188,28 @@ struct RacGameplayMobyInstanceV1 {
     std::int32_t light_index = 0;
 };
 
+struct RacGameplayMobyGroupMemberV1 {
+    RacGameplayRangeV1 record_range;
+    // The low 15 bits select an authored static-Moby record; bit 15 ends the
+    // list after this member. These are not live/runtime Moby slot indices:
+    // the original loader remaps and filters them using saved/progress state.
+    std::uint16_t raw_value = 0U;
+    std::uint32_t static_moby_index = 0U;
+};
+
+struct RacGameplayMobyGroupV1 {
+    // Dense on-disc table slot, retained even when the group is absent.
+    std::uint32_t source_group_id = 0U;
+    RacGameplayRangeV1 table_record_range;
+    // Byte offset relative to moby_group_member_data_range. Every negative
+    // source value denotes absence; preserve the exact value for auditing.
+    std::int32_t source_member_data_offset = -1;
+    // Empty for an absent group; otherwise covers every member through and
+    // including the halfword carrying the final-entry marker.
+    RacGameplayRangeV1 member_records_range;
+    std::vector<RacGameplayMobyGroupMemberV1> members;
+};
+
 // TIE and shrub placement records carry a complete 4x4 matrix at byte 0x10.
 // The remaining words are retained verbatim until their runtime meaning is
 // proven. This keeps the complete fixed-size record available without
@@ -217,6 +245,15 @@ struct RacGameplayBankV1 {
     std::uint32_t static_moby_count = 0U;
     std::uint32_t spawnable_moby_count = 0U;
     std::vector<RacGameplayMobyInstanceV1> static_mobies;
+
+    std::uint32_t moby_group_count = 0U;
+    RacGameplayRangeV1 moby_group_header_range;
+    // Header words +8/+12 are skipped by the source loader. Keep them opaque.
+    std::array<std::uint32_t, 2U> moby_group_header_tail_words{};
+    RacGameplayRangeV1 moby_group_table_records_range;
+    // Exact source-declared copied byte region, including any source padding.
+    RacGameplayRangeV1 moby_group_member_data_range;
+    std::vector<RacGameplayMobyGroupV1> moby_groups;
 
     std::uint32_t pvar_count = 0U;
     RacGameplayRangeV1 pvar_table_records_range;
@@ -258,6 +295,8 @@ find_rac_gameplay_block_v1(const RacGameplayBankV1& bank,
 // relative-pointer fixups are bounded without assigning class-specific field
 // semantics. Moby placement fields and complete TIE/shrub transform matrices
 // are decoded while all TIE/shrub record words remain available verbatim.
+// Moby groups preserve source table IDs, ordered authored members and their
+// halfword terminators; live-slot remapping is a separate loader operation.
 [[nodiscard]] RacGameplayBankV1
 parse_rac_gameplay_bank_v1(std::span<const std::byte> bytes,
                            RacGameplayBankLimitsV1 limits);

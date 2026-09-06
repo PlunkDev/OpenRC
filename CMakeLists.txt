@@ -74,6 +74,7 @@ add_library(openrc_core STATIC
     src/core/ps2_save_bundle.cpp
     src/core/rac_gameplay_bank.cpp
     src/core/rac_actor_library_compile.cpp
+    src/core/rac_actor_schedule_compile.cpp
     src/core/rac_collectible_scene_compile.cpp
     src/core/rac_destructible_scene_compile.cpp
     src/core/rac_level_bootstrap_compile.cpp
@@ -100,6 +101,7 @@ add_library(openrc_core STATIC
     src/core/runtime_level_content.cpp
     src/core/runtime_level_foundation.cpp
     src/core/runtime_actor_behavior.cpp
+    src/core/runtime_actor_schedule.cpp
     src/core/runtime_actor_behavior_scene_resource.cpp
     src/core/runtime_gameplay.cpp
     src/core/runtime_gameplay_scene.cpp
@@ -484,6 +486,8 @@ if(OPENRC_BUILD_TESTS)
         openrc-level-actor-behavior-scene-compile-tests
         openrc-runtime-actor-behavior-scene-resource-tests
         openrc-runtime-actor-behavior-tests
+        openrc-runtime-actor-schedule-tests
+        openrc-rac-actor-schedule-compile-tests
     )
     add_executable(
         openrc-actor-behavior-scene-tests
@@ -500,6 +504,14 @@ if(OPENRC_BUILD_TESTS)
     add_executable(
         openrc-runtime-actor-behavior-tests
         tests/runtime_actor_behavior_tests.cpp
+    )
+    add_executable(
+        openrc-runtime-actor-schedule-tests
+        tests/runtime_actor_schedule_tests.cpp
+    )
+    add_executable(
+        openrc-rac-actor-schedule-compile-tests
+        tests/rac_actor_schedule_compile_tests.cpp
     )
     foreach(target IN LISTS OPENRC_ACTOR_BEHAVIOR_TEST_TARGETS)
         target_link_libraries(${target} PRIVATE openrc_core)
@@ -1936,6 +1948,8 @@ if(OPENRC_BUILD_TESTS)
         COMMAND openrc-runtime-actor-behavior-scene-resource-tests
     )
     add_test(NAME runtime-actor-behavior COMMAND openrc-runtime-actor-behavior-tests)
+    add_test(NAME runtime-actor-schedule COMMAND openrc-runtime-actor-schedule-tests)
+    add_test(NAME rac-actor-schedule-compile COMMAND openrc-rac-actor-schedule-compile-tests)
     add_test(NAME player-combat COMMAND openrc-player-combat-tests)
     add_test(NAME destructible-scene COMMAND openrc-destructible-scene-tests)
     add_test(

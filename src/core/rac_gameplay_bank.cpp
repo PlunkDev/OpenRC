@@ -111,6 +111,13 @@ constexpr std::array<BlockDescriptionV1, kRacGameplayBlockCountV1>
            (static_cast<std::uint32_t>(byte_value(bytes[offset + 3U])) << 24U);
 }
 
+[[nodiscard]] std::uint16_t read_le16(const std::span<const std::byte> bytes,
+                                      const std::size_t offset) noexcept {
+    return static_cast<std::uint16_t>(
+        static_cast<std::uint16_t>(byte_value(bytes[offset])) |
+        (static_cast<std::uint16_t>(byte_value(bytes[offset + 1U])) << 8U));
+}
+
 [[nodiscard]] float read_le_float(const std::span<const std::byte> bytes,
                                   const std::size_t offset) noexcept {
     return std::bit_cast<float>(read_le32(bytes, offset));
@@ -829,6 +836,107 @@ void validate_semantic_anchors(const std::span<const std::byte> bytes,
     parse_pvars(bytes, result, limits);
 }
 
+void parse_moby_groups(const std::span<const std::byte> bytes,
+                       RacGameplayBankV1& result,
+                       const RacGameplayBankLimitsV1 limits) {
+    const auto& block = require_block(
+        result, RacGameplayBlockKindV1::moby_groups, "moby-group block");
+    if (block.range.size < kRacGameplayMobyGroupHeaderBytesV1) {
+        fail("RacGameplayBankV1 has a truncated moby-group header");
+    }
+    const auto block_offset = static_cast<std::size_t>(block.range.offset);
+    const auto group_count = read_le32(bytes, block_offset);
+    const auto member_data_bytes = read_le32(bytes, block_offset + 4U);
+    if (group_count > limits.max_moby_groups ||
+        group_count > static_cast<std::uint32_t>(
+                          std::numeric_limits<std::int32_t>::max())) {
+        fail("RacGameplayBankV1 has an invalid moby-group count");
+    }
+    const auto data_relative_offset = checked_table_bytes(
+        group_count, kRacGameplayMobyGroupHeaderBytesV1,
+        kRacGameplayMobyGroupTableRecordBytesV1, "the moby-group table");
+    if (data_relative_offset > block.range.size ||
+        member_data_bytes > block.range.size - data_relative_offset) {
+        fail("RacGameplayBankV1 has a truncated moby-group table or member "
+             "data");
+    }
+    validate_zero_tail(bytes, block, data_relative_offset + member_data_bytes,
+                       "the moby-group data");
+    result.moby_group_count = group_count;
+    result.moby_group_header_range = {
+        block.range.offset, kRacGameplayMobyGroupHeaderBytesV1};
+    result.moby_group_header_tail_words = {
+        read_le32(bytes, block_offset + 8U),
+        read_le32(bytes, block_offset + 12U)};
+    result.moby_group_table_records_range = {
+        block.range.offset + kRacGameplayMobyGroupHeaderBytesV1,
+        static_cast<std::uint64_t>(group_count) *
+            kRacGameplayMobyGroupTableRecordBytesV1};
+    result.moby_group_member_data_range = {
+        block.range.offset + data_relative_offset, member_data_bytes};
+    result.moby_groups.reserve(group_count);
+
+    std::uint64_t total_members = 0U;
+    for (std::uint32_t group_id = 0U; group_id < group_count; ++group_id) {
+        RacGameplayMobyGroupV1 group;
+        group.source_group_id = group_id;
+        group.table_record_range = {
+            result.moby_group_table_records_range.offset +
+                static_cast<std::uint64_t>(group_id) *
+                    kRacGameplayMobyGroupTableRecordBytesV1,
+            kRacGameplayMobyGroupTableRecordBytesV1};
+        group.source_member_data_offset = read_le_i32(
+            bytes, static_cast<std::size_t>(group.table_record_range.offset));
+        if (group.source_member_data_offset >= 0) {
+            auto relative_cursor =
+                static_cast<std::uint64_t>(group.source_member_data_offset);
+            if ((relative_cursor & 1U) != 0U) {
+                fail("RacGameplayBankV1 has an unaligned moby-group member "
+                     "offset");
+            }
+            group.member_records_range.offset =
+                result.moby_group_member_data_range.offset + relative_cursor;
+            for (;;) {
+                if (relative_cursor > member_data_bytes ||
+                    kRacGameplayMobyGroupMemberBytesV1 >
+                        member_data_bytes - relative_cursor) {
+                    fail("RacGameplayBankV1 has an out-of-bounds or "
+                         "unterminated moby-group member list");
+                }
+                if (group.members.size() >=
+                        limits.max_moby_group_members_per_group ||
+                    total_members >= limits.max_total_moby_group_members) {
+                    fail("RacGameplayBankV1 moby-group members exceed a "
+                         "caller limit");
+                }
+                const auto member_offset =
+                    result.moby_group_member_data_range.offset +
+                    relative_cursor;
+                const auto raw_member =
+                    read_le16(bytes, static_cast<std::size_t>(member_offset));
+                const auto moby_index =
+                    static_cast<std::uint32_t>(raw_member & 0x7fffU);
+                if (moby_index >= result.static_moby_count) {
+                    fail("RacGameplayBankV1 moby group references an absent "
+                         "authored static Moby");
+                }
+                group.members.push_back(RacGameplayMobyGroupMemberV1{
+                    {member_offset, kRacGameplayMobyGroupMemberBytesV1},
+                    raw_member, moby_index});
+                ++total_members;
+                relative_cursor += kRacGameplayMobyGroupMemberBytesV1;
+                if ((raw_member & 0x8000U) != 0U) {
+                    break;
+                }
+            }
+            group.member_records_range.size =
+                relative_cursor -
+                static_cast<std::uint64_t>(group.source_member_data_offset);
+        }
+        result.moby_groups.push_back(std::move(group));
+    }
+}
+
 } // namespace
 
 std::string_view
@@ -859,7 +967,10 @@ parse_rac_gameplay_bank_v1(const std::span<const std::byte> bytes,
         limits.max_tie_instances == 0U || limits.max_shrub_classes == 0U ||
         limits.max_shrub_instances == 0U || limits.max_pvar_entries == 0U ||
         limits.max_pvar_moby_link_fixups == 0U ||
-        limits.max_pvar_relative_pointer_fixups == 0U) {
+        limits.max_pvar_relative_pointer_fixups == 0U ||
+        limits.max_moby_groups == 0U ||
+        limits.max_moby_group_members_per_group == 0U ||
+        limits.max_total_moby_group_members == 0U) {
         fail("RacGameplayBankV1 caller limits must all be non-zero");
     }
     if (bytes.size() > limits.max_input_bytes) {
@@ -927,6 +1038,7 @@ parse_rac_gameplay_bank_v1(const std::span<const std::byte> bytes,
     }
 
     validate_semantic_anchors(bytes, result, limits);
+    parse_moby_groups(bytes, result, limits);
     return result;
 }
 

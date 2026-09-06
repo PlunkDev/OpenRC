@@ -22,6 +22,7 @@ constexpr std::uint32_t kPvarTableOffset = 0x2d0U;
 constexpr std::uint32_t kPvarDataOffset = 0x2e0U;
 constexpr std::uint32_t kPvarMobyLinksOffset = 0x300U;
 constexpr std::uint32_t kPvarRelativePointersOffset = 0x310U;
+constexpr std::uint32_t kMobyGroupsOffset = 0x320U;
 constexpr std::uint32_t kTieClassesOffset = 0x340U;
 constexpr std::uint32_t kTieInstancesOffset = 0x350U;
 constexpr std::uint32_t kShrubClassesOffset = 0x450U;
@@ -46,6 +47,23 @@ void write_le32(std::vector<std::byte>& bytes,
     bytes[offset + 1U] = static_cast<std::byte>((value >> 8U) & 0xffU);
     bytes[offset + 2U] = static_cast<std::byte>((value >> 16U) & 0xffU);
     bytes[offset + 3U] = static_cast<std::byte>((value >> 24U) & 0xffU);
+}
+
+[[nodiscard]] std::uint32_t read_le32(const std::vector<std::byte>& bytes,
+                                      const std::size_t offset) {
+    std::uint32_t result = 0U;
+    for (std::size_t index = 0U; index < 4U; ++index) {
+        result |= std::to_integer<std::uint32_t>(bytes[offset + index])
+                  << (index * 8U);
+    }
+    return result;
+}
+
+void write_le16(std::vector<std::byte>& bytes,
+                const std::size_t offset,
+                const std::uint16_t value) {
+    bytes[offset] = static_cast<std::byte>(value & 0xffU);
+    bytes[offset + 1U] = static_cast<std::byte>((value >> 8U) & 0xffU);
 }
 
 void write_matrix(std::vector<std::byte>& bytes,
@@ -224,6 +242,149 @@ void expect_rejected(Mutation&& mutation, const std::string& message) {
         return;
     }
     throw std::runtime_error(message);
+}
+
+[[nodiscard]] std::vector<std::byte> make_bank_with_groups() {
+    auto bytes = make_bank();
+    // Grow only the former empty 16-byte group block. All following pointer
+    // slots retain their original relative section placement.
+    bytes.insert(bytes.begin() + kMobyGroupsOffset + 0x10U,
+                 0x20U, std::byte{0});
+    for (const auto slot : kPhysicalPointerSlots) {
+        const auto old_offset = read_le32(bytes, slot);
+        if (old_offset > kMobyGroupsOffset) {
+            write_le32(bytes, slot, old_offset + 0x20U);
+        }
+    }
+    write_le32(bytes, kMobyGroupsOffset, 3U);
+    write_le32(bytes, kMobyGroupsOffset + 4U, 6U);
+    write_le32(bytes, kMobyGroupsOffset + 8U, 0x12345678U);
+    write_le32(bytes, kMobyGroupsOffset + 12U, 0x9abcdef0U);
+    write_le32(bytes, kMobyGroupsOffset + 16U, 0U);
+    write_le32(bytes, kMobyGroupsOffset + 20U, 0xfffffffeU);
+    write_le32(bytes, kMobyGroupsOffset + 24U, 4U);
+    write_le16(bytes, kMobyGroupsOffset + 28U, 1U);
+    write_le16(bytes, kMobyGroupsOffset + 30U, 0x8000U);
+    write_le16(bytes, kMobyGroupsOffset + 32U, 0x8001U);
+    return bytes;
+}
+
+void test_moby_groups_preserve_source_ids_order_and_ranges() {
+    const auto empty =
+        openrc::parse_rac_gameplay_bank_v1(make_bank(), kLimits);
+    expect(empty.moby_group_count == 0U && empty.moby_groups.empty() &&
+               empty.moby_group_header_range ==
+                   openrc::RacGameplayRangeV1{kMobyGroupsOffset, 16U},
+           "An empty RAC Moby-group section was not preserved");
+
+    const auto parsed =
+        openrc::parse_rac_gameplay_bank_v1(make_bank_with_groups(), kLimits);
+    expect(parsed.moby_group_count == 3U && parsed.moby_groups.size() == 3U &&
+               parsed.moby_group_header_tail_words ==
+                   std::array<std::uint32_t, 2U>{0x12345678U, 0x9abcdef0U} &&
+               parsed.moby_group_table_records_range ==
+                   openrc::RacGameplayRangeV1{kMobyGroupsOffset + 16U, 12U} &&
+               parsed.moby_group_member_data_range ==
+                   openrc::RacGameplayRangeV1{kMobyGroupsOffset + 28U, 6U},
+           "RAC Moby-group header, opaque words or source ranges changed");
+    const auto& first = parsed.moby_groups[0U];
+    expect(first.source_group_id == 0U &&
+               first.source_member_data_offset == 0 &&
+               first.table_record_range ==
+                   openrc::RacGameplayRangeV1{kMobyGroupsOffset + 16U, 4U} &&
+               first.member_records_range ==
+                   openrc::RacGameplayRangeV1{kMobyGroupsOffset + 28U, 4U} &&
+               first.members.size() == 2U &&
+               first.members[0U].static_moby_index == 1U &&
+               first.members[0U].raw_value == 1U &&
+               first.members[0U].record_range ==
+                   openrc::RacGameplayRangeV1{kMobyGroupsOffset + 28U, 2U} &&
+               first.members[1U].static_moby_index == 0U &&
+               first.members[1U].raw_value == 0x8000U,
+           "RAC Moby-group authored order or final member was changed");
+    expect(parsed.moby_groups[1U].source_group_id == 1U &&
+               parsed.moby_groups[1U].source_member_data_offset == -2 &&
+               parsed.moby_groups[1U].members.empty() &&
+               parsed.moby_groups[1U].member_records_range ==
+                   openrc::RacGameplayRangeV1{} &&
+               parsed.moby_groups[2U].source_group_id == 2U &&
+               parsed.moby_groups[2U].members.size() == 1U &&
+               parsed.moby_groups[2U].members[0U].static_moby_index == 1U &&
+               parsed.moby_groups[2U].members[0U].raw_value == 0x8001U,
+           "RAC Moby-group parser compacted an absent source table slot");
+
+    // Source offsets, not physical list order, determine group identity.
+    auto reordered = make_bank_with_groups();
+    write_le32(reordered, kMobyGroupsOffset + 16U, 4U);
+    write_le32(reordered, kMobyGroupsOffset + 24U, 0U);
+    const auto permuted =
+        openrc::parse_rac_gameplay_bank_v1(reordered, kLimits);
+    expect(permuted.moby_groups[0U].members.size() == 1U &&
+               permuted.moby_groups[2U].members.size() == 2U &&
+               permuted.moby_groups[2U].members[0U].static_moby_index == 1U,
+           "RAC Moby-group parser assumed monotonically ordered lists");
+}
+
+void test_moby_group_bounds_and_termination() {
+    const auto expect_bad = [](const auto& mutate, const auto& limits,
+                               const std::string& message) {
+        auto bytes = make_bank_with_groups();
+        mutate(bytes);
+        try {
+            static_cast<void>(openrc::parse_rac_gameplay_bank_v1(bytes, limits));
+        } catch (const openrc::RacGameplayBankError&) {
+            return;
+        }
+        throw std::runtime_error(message);
+    };
+    expect_bad([](auto& bytes) {
+        write_le32(bytes, kMobyGroupsOffset, 0xffffffffU);
+    }, kLimits, "RAC Moby groups accepted a negative table count");
+    expect_bad([](auto& bytes) {
+        write_le32(bytes, kMobyGroupsOffset, 12U);
+    }, kLimits, "RAC Moby groups accepted a truncated table");
+    expect_bad([](auto& bytes) {
+        write_le32(bytes, kMobyGroupsOffset + 4U, 21U);
+    }, kLimits, "RAC Moby groups accepted copied data outside their block");
+    expect_bad([](auto& bytes) {
+        write_le32(bytes, kMobyGroupsOffset + 16U, 1U);
+    }, kLimits, "RAC Moby groups accepted an unaligned member offset");
+    expect_bad([](auto& bytes) {
+        write_le32(bytes, kMobyGroupsOffset + 16U, 6U);
+    }, kLimits, "RAC Moby groups accepted an offset at the data end");
+    expect_bad([](auto& bytes) {
+        write_le32(bytes, kMobyGroupsOffset + 4U, 5U);
+        bytes[kMobyGroupsOffset + 33U] = std::byte{0U};
+    }, kLimits, "RAC Moby groups accepted a truncated member halfword");
+    expect_bad([](auto& bytes) {
+        write_le16(bytes, kMobyGroupsOffset + 32U, 1U);
+    }, kLimits, "RAC Moby groups accepted a list without a final marker");
+    expect_bad([](auto& bytes) {
+        write_le16(bytes, kMobyGroupsOffset + 32U, 0x8002U);
+    }, kLimits, "RAC Moby groups accepted an absent authored Moby");
+    expect_bad([](auto& bytes) {
+        bytes[kMobyGroupsOffset + 47U] = std::byte{1U};
+    }, kLimits, "RAC Moby groups accepted data beyond the declared block body");
+
+    const auto unchanged = [](auto&) {};
+    auto limited = kLimits;
+    limited.max_moby_groups = 2U;
+    expect_bad(unchanged, limited, "RAC Moby groups ignored their table limit");
+    limited = kLimits;
+    limited.max_moby_group_members_per_group = 1U;
+    expect_bad(unchanged, limited, "RAC Moby groups ignored their per-list limit");
+    limited = kLimits;
+    limited.max_total_moby_group_members = 2U;
+    expect_bad(unchanged, limited, "RAC Moby groups ignored their aggregate limit");
+    for (const auto member : {
+             &openrc::RacGameplayBankLimitsV1::max_moby_groups,
+             &openrc::RacGameplayBankLimitsV1::max_moby_group_members_per_group,
+             &openrc::RacGameplayBankLimitsV1::max_total_moby_group_members}) {
+        limited = kLimits;
+        limited.*member = 0U;
+        expect_bad(unchanged, limited,
+                   "RAC Moby groups accepted an absent explicit caller limit");
+    }
 }
 
 void test_valid_bank() {
@@ -660,6 +821,8 @@ void test_structural_rejections() {
 int main() {
     try {
         test_valid_bank();
+        test_moby_groups_preserve_source_ids_order_and_ranges();
+        test_moby_group_bounds_and_termination();
         test_limits();
         test_structural_rejections();
         std::cout << "OpenRC RacGameplayBankV1 tests passed\n";

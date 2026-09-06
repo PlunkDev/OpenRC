@@ -75,7 +75,8 @@ finish line indefinitely.
   gameplay blocks, and the RAC1 moby class/instance anchors across both
   regional payloads for all 19 levels
 - [x] recover dense static-Moby/camera/sound PVar ownership, aligned opaque
-  ranges, and both terminated relocation streams across all 38 gameplay banks
+  ranges, and both terminated relocation streams across all 38 gameplay banks;
+  decode ordered Moby-group lists with explicit source-to-entity remapping
 - [x] identify all 21 shared companion-bank payloads as bounded
   `RacMobyClassV1` model cores across their 399 level observations
 - [x] normalize ordinary-Moby class-relative animation frame addresses and
@@ -253,6 +254,10 @@ per-instance AI and subsequent animation selection is connected.
 The neutral behavior format and runtime foundation are complete, but the exact
 native-game profile remains at eight resources until that first class-749
 program is compiled and exercised end to end.
+The recovered initialization/normal-update selection order and group-remapping
+adapter are implemented and tested separately. They do not yet execute the
+original initialization callbacks, recover save-dependent admission or exact
+range-query inputs, or enable AI in the graphical runtime.
 This does not declare Veldin finished: airborne and wrench animation, original
 pickup and destruction presentation, one complete weapon/enemy loop, original
 camera behavior, menus, and full scene-family coverage remain open.

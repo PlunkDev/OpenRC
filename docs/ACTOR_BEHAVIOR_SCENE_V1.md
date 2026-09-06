@@ -91,6 +91,59 @@ The source scheduler must supply its recovered grouping, sleep, and
 update-distance policy; the generic runtime does not infer that order from
 authored IDs.
 
+## Recovered actor selection and order
+
+`runtime_actor_schedule.hpp` implements the recovered selection policy using
+neutral actor identities. It is separate from behavior execution and from
+the canonical ordering of package records and snapshots.
+
+| Pass | Selection | Invocation order |
+| --- | --- | --- |
+| Initialization | Live slots without the direct-update skip flag | Supplied live-slot scan order |
+| Normal update | Eligible direct actors, then live members of activated groups | Stable order buckets; within each bucket, direct scan followed by ascending group ID and source member order |
+| Auxiliary list | Selected actors with the auxiliary flag | Direct scan followed by group/member order, before bucket ordering |
+
+The compiler-side gameplay parser retains dense source group IDs, signed list
+offsets, ordered authored members, final-member markers, and bounded source
+ranges. `compile_rac_actor_activation_groups_v1` converts those groups using
+an explicit source-ordinal-to-optional-neutral-entity map. It removes omitted
+members, preserves survivor order and empty group slots, and requires unique
+surviving entity identities. It neither guesses save/progress eligibility nor
+treats a source ordinal as a live slot. Runtime code sees no source halfwords,
+addresses, or relocation tables.
+
+The caller supplies candidates in actual live-slot scan order, stopping at
+the source end sentinel. An inactive slot is distinct from that sentinel.
+Direct selection first checks liveness and the skip flag. A remaining actor
+either bypasses the range test or requires an explicit range result for that
+update. An eligible grouped actor activates its group instead of immediately
+entering an order bucket. The group pass includes every live member of an
+activated group, even a sibling whose own direct skip/range check failed.
+It does not shortcut a later direct actor's required range evaluation merely
+because an earlier sibling already activated their group.
+
+All counts, references, bucket indices, and output growth are bounded.
+Missing required range results and duplicate selected actors fail explicitly;
+the latter is not silently deduplicated into a different source order. No
+distance formula, all-in-range default, or host-float approximation is hidden
+inside selection.
+
+The source loader rewrites the shared member payload in place. The compiler
+therefore rejects overlapping source list ranges, whose later reads could
+observe earlier remaps; it does not pretend independent remapping reproduces
+that case. All 38 supported gameplay banks pass group parsing and have
+non-overlapping lists, without duplicate membership or placement-group
+mismatches. This corpus check validates the source data, not execution of
+save-dependent admission or AI.
+
+These functions build lists only. Original callback execution must still
+recheck each actor's live state and current animation pre/post flags around
+the callback, because earlier callbacks can change them. Initialization also
+performs world queries, animation work, and shared-state mutations; a static
+post-initialization state/clip pair is not a substitute for those operations.
+The current native compiler does not yet publish or consume this schedule
+through a complete source-backed behavior program.
+
 ## Binary and package boundaries
 
 The canonical little-endian `ORABHVR1` payload uses disjoint program, field,
@@ -130,6 +183,8 @@ empty ninth resource would provide no gameplay evidence and would only create
 another stale cache profile.
 
 The execution substrate currently exposes fields, random streams, animation,
-and visibility commands. Source initialization callbacks, scheduler eligibility,
-world transforms and queries, damage, drops, audio, VFX, and graphical journal
-consumption remain required for the complete Veldin behavior integration.
+and visibility commands. Group parsing, explicit remapping, and selection
+order are implemented separately. Source admission/range inputs, initialization
+callbacks and animation phases, world transforms and queries, damage, drops,
+audio, VFX, and graphical journal consumption remain required for the complete
+Veldin behavior integration.
