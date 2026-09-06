@@ -105,7 +105,7 @@ executed on canonical session storage. This is **not a live new-game oracle**:
 it runs no constructors and proves neither the first-admission state nor a
 complete live roster.
 
-The Release portable build passes 120 tests and PE import audits. Published
+The Release portable build passes 121 tests and PE import audits. Published
 package-only level smoke checks for levels 0 and 1 also pass. The latter
 exercise the unchanged eight-resource profile, not admission in the graphical
 frontend. No visual or full-gameplay fidelity claim follows from these tests.

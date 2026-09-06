@@ -265,7 +265,10 @@ progress through level replacement and schema-bound snapshots. A compiled
 [neutral admission step](PLACEMENT_ADMISSION_V1.md) now runs on that owned
 state, with canonical plan I/O and source/native differential tests. The
 complete ordered placement/constructor loop and native publication remain
-unconnected. These components do not yet execute original initialization
+unconnected. A native [ordered spatial index](ORDERED_SPATIAL_INDEX_V1.md)
+now preserves dynamic cell-list order, allocation, relocation and snapshots;
+source-qualified numerical bounds and live-actor binding remain required.
+These components do not yet execute original initialization
 callbacks, supply exact range-query inputs, or enable AI in the graphical runtime.
 This does not declare Veldin finished: airborne and wrench animation, original
 pickup and destruction presentation, one complete weapon/enemy loop, original
