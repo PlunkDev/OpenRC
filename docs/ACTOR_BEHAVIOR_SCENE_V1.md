@@ -184,7 +184,12 @@ another stale cache profile.
 
 The execution substrate currently exposes fields, random streams, animation,
 and visibility commands. Group parsing, explicit remapping, and selection
-order are implemented separately. Source admission/range inputs, initialization
-callbacks and animation phases, world transforms and queries, damage, drops,
-audio, VFX, and graphical journal consumption remain required for the complete
-Veldin behavior integration.
+order are implemented separately. The compiler also preserves placement
+admission inputs, evaluates a bounded source admission step with explicit state,
+and decodes the original initial-progress template; see
+[the admission contract](RAC_MOBY_ADMISSION_V1.md). These do not yet supply a
+complete live new-game state or materialize actors in the native runtime.
+Session-state and admission integration, exact range-query inputs,
+initialization callbacks and animation phases, world transforms and queries,
+damage, drops, audio, VFX, and graphical journal consumption remain required
+for complete Veldin behavior integration.

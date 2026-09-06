@@ -161,6 +161,20 @@ struct RacGameplayLevelSettingsV1 {
     std::int32_t ship_camera_cuboid_end = 0;
 };
 
+// Exact placement-loader inputs from record +0x04..+0x17. These names describe
+// source operations, not inferred health/reward/mission semantics. Decoding
+// retains all bits, including unused/negative indices on an unconditional
+// placement; execution must validate only the accesses its policy performs.
+struct RacGameplayMobyAdmissionV1 {
+    std::int32_t selector_index = 0;
+    std::uint32_t policy_bits = 0U;
+    std::int32_t key_index = 0;
+    std::int32_t primary_count = 0;
+    std::int32_t alternate_count = 0;
+
+    [[nodiscard]] bool operator==(const RacGameplayMobyAdmissionV1&) const = default;
+};
+
 struct RacGameplayMobyInstanceV1 {
     RacGameplayRangeV1 record_range;
     std::uint32_t class_id = 0U;
@@ -186,6 +200,7 @@ struct RacGameplayMobyInstanceV1 {
     std::int32_t occlusion = 0;
     std::uint32_t mode_bits = 0U;
     std::int32_t light_index = 0;
+    RacGameplayMobyAdmissionV1 admission;
 };
 
 struct RacGameplayMobyGroupMemberV1 {

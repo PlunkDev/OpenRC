@@ -387,6 +387,31 @@ void test_moby_group_bounds_and_termination() {
     }
 }
 
+void test_moby_admission_inputs_are_preserved_without_inventing_policy() {
+    auto bytes = make_bank();
+    const auto first = kMobyInstancesOffset + 0x10U;
+    write_le32(bytes, first + 0x04U, 0xfffffffeU);
+    write_le32(bytes, first + 0x08U, 0x80000013U);
+    write_le32(bytes, first + 0x0cU, 0xffffffffU);
+    write_le32(bytes, first + 0x10U, 0x7fffffffU);
+    write_le32(bytes, first + 0x14U, 0x80000000U);
+    const auto second = first + openrc::kRacGameplayMobyRecordBytesV1;
+    write_le32(bytes, second + 0x04U, 0xffffffffU);
+    write_le32(bytes, second + 0x08U, 0U);
+    write_le32(bytes, second + 0x0cU, 0x80000000U);
+    write_le32(bytes, second + 0x10U, 7U);
+    write_le32(bytes, second + 0x14U, 22U);
+    const auto parsed = openrc::parse_rac_gameplay_bank_v1(bytes, kLimits);
+    expect(parsed.static_mobies[0U].admission ==
+               openrc::RacGameplayMobyAdmissionV1{
+                   -2, 0x80000013U, -1, 2147483647, (-2147483647 - 1)},
+           "Moby admission decoding discarded signed fields or unknown flags");
+    expect(parsed.static_mobies[1U].admission ==
+               openrc::RacGameplayMobyAdmissionV1{
+                   -1, 0U, (-2147483647 - 1), 7, 22},
+           "Moby admission decoding interpreted unused unconditional indices");
+}
+
 void test_valid_bank() {
     const auto result =
         openrc::parse_rac_gameplay_bank_v1(make_bank(), kLimits);
@@ -821,6 +846,7 @@ void test_structural_rejections() {
 int main() {
     try {
         test_valid_bank();
+        test_moby_admission_inputs_are_preserved_without_inventing_policy();
         test_moby_groups_preserve_source_ids_order_and_ranges();
         test_moby_group_bounds_and_termination();
         test_limits();

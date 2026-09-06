@@ -255,9 +255,12 @@ The neutral behavior format and runtime foundation are complete, but the exact
 native-game profile remains at eight resources until that first class-749
 program is compiled and exercised end to end.
 The recovered initialization/normal-update selection order and group-remapping
-adapter are implemented and tested separately. They do not yet execute the
-original initialization callbacks, recover save-dependent admission or exact
-range-query inputs, or enable AI in the graphical runtime.
+adapter are implemented and tested separately. Compiler-side placement inputs,
+a bounded state-dependent admission evaluator, and the original initial-progress
+template decoder are also implemented; their exact scope is documented in
+[the admission contract](RAC_MOBY_ADMISSION_V1.md). They do not yet integrate
+session-state-dependent materialization, execute original initialization
+callbacks, supply exact range-query inputs, or enable AI in the graphical runtime.
 This does not declare Veldin finished: airborne and wrench animation, original
 pickup and destruction presentation, one complete weapon/enemy loop, original
 camera behavior, menus, and full scene-family coverage remain open.

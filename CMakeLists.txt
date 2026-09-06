@@ -73,6 +73,8 @@ add_library(openrc_core STATIC
     src/core/ps_adpcm.cpp
     src/core/ps2_save_bundle.cpp
     src/core/rac_gameplay_bank.cpp
+    src/core/rac_moby_admission.cpp
+    src/core/rac_initial_progress_template.cpp
     src/core/rac_actor_library_compile.cpp
     src/core/rac_actor_schedule_compile.cpp
     src/core/rac_collectible_scene_compile.cpp
@@ -488,6 +490,8 @@ if(OPENRC_BUILD_TESTS)
         openrc-runtime-actor-behavior-tests
         openrc-runtime-actor-schedule-tests
         openrc-rac-actor-schedule-compile-tests
+        openrc-rac-moby-admission-tests
+        openrc-rac-initial-progress-template-tests
     )
     add_executable(
         openrc-actor-behavior-scene-tests
@@ -512,6 +516,14 @@ if(OPENRC_BUILD_TESTS)
     add_executable(
         openrc-rac-actor-schedule-compile-tests
         tests/rac_actor_schedule_compile_tests.cpp
+    )
+    add_executable(
+        openrc-rac-moby-admission-tests
+        tests/rac_moby_admission_tests.cpp
+    )
+    add_executable(
+        openrc-rac-initial-progress-template-tests
+        tests/rac_initial_progress_template_tests.cpp
     )
     foreach(target IN LISTS OPENRC_ACTOR_BEHAVIOR_TEST_TARGETS)
         target_link_libraries(${target} PRIVATE openrc_core)
@@ -1950,6 +1962,8 @@ if(OPENRC_BUILD_TESTS)
     add_test(NAME runtime-actor-behavior COMMAND openrc-runtime-actor-behavior-tests)
     add_test(NAME runtime-actor-schedule COMMAND openrc-runtime-actor-schedule-tests)
     add_test(NAME rac-actor-schedule-compile COMMAND openrc-rac-actor-schedule-compile-tests)
+    add_test(NAME rac-moby-admission COMMAND openrc-rac-moby-admission-tests)
+    add_test(NAME rac-initial-progress-template COMMAND openrc-rac-initial-progress-template-tests)
     add_test(NAME player-combat COMMAND openrc-player-combat-tests)
     add_test(NAME destructible-scene COMMAND openrc-destructible-scene-tests)
     add_test(

@@ -786,6 +786,12 @@ void validate_semantic_anchors(const std::span<const std::byte> bytes,
         RacGameplayMobyInstanceV1 instance;
         instance.record_range = {
             record_offset, kRacGameplayMobyRecordBytesV1};
+        instance.admission = {
+            read_le_i32(bytes, record_offset + 0x04U),
+            read_le32(bytes, record_offset + 0x08U),
+            read_le_i32(bytes, record_offset + 0x0cU),
+            read_le_i32(bytes, record_offset + 0x10U),
+            read_le_i32(bytes, record_offset + 0x14U)};
         instance.class_id = read_le32(bytes, record_offset + 0x18U);
         if (!class_id_membership.contains(instance.class_id)) {
             fail("A RacGameplayBankV1 moby instance references an absent class");
