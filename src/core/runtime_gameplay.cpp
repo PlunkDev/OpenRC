@@ -100,7 +100,6 @@ void validate_state(
     const std::vector<EntityGameplayItemTotalV1> &item_totals,
     const std::optional<EntityGameplayRuntimeV1> &entity_gameplay) {
   const auto player_snapshot = player.snapshot();
-  const auto session_snapshot = session.snapshot();
   const auto &active_level = world.active_level();
   const auto expected_tick = session.next_tick_index();
 
@@ -110,7 +109,7 @@ void validate_state(
       *session.active_level_id() != foundation.level_id ||
       active_level->spawn_point_id != session.active_spawn_point_id() ||
       active_level->instance_sequence !=
-          session_snapshot.level_instance_sequence) {
+          session.level_instance_sequence()) {
     fail("Runtime gameplay has inconsistent active-level state");
   }
   if (foundation.bootstrap.level_id != foundation.level_id) {

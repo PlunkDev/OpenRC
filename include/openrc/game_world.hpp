@@ -90,6 +90,7 @@ public:
                                 std::uint64_t expected_revision);
   [[nodiscard]] std::uint64_t deterministic_seed() const noexcept;
   [[nodiscard]] std::uint64_t next_tick_index() const noexcept;
+  [[nodiscard]] std::uint64_t level_instance_sequence() const noexcept;
   [[nodiscard]] const std::optional<LevelIdV1> &
   active_level_id() const noexcept;
   [[nodiscard]] const std::optional<SpawnPointIdV1> &

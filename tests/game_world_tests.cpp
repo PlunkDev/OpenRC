@@ -29,6 +29,9 @@ void test_session_level_sequence_and_snapshot() {
   using namespace openrc::game;
 
   GameSessionV1 session(0x123456789abcdef0U);
+  static_assert(noexcept(session.level_instance_sequence()));
+  expect(session.level_instance_sequence() == 0U,
+         "an unloaded session already has a committed level instance");
   const auto first =
       session.request_level(7U, 3U, LevelRequestReasonV1::new_game);
   expect(first.sequence == 0U && first.level_id == 7U &&
@@ -50,7 +53,8 @@ void test_session_level_sequence_and_snapshot() {
   world.load_level(session, first);
   expect(world.active_level() == ActiveLevelV1{7U, 3U, 1U} &&
              session.active_level_id() == 7U &&
-             session.active_spawn_point_id() == 3U,
+             session.active_spawn_point_id() == 3U &&
+             session.level_instance_sequence() == 1U,
          "the first active level identity is wrong");
 
   const auto second = session.request_level(12U, std::nullopt,
@@ -72,7 +76,8 @@ void test_session_level_sequence_and_snapshot() {
          "the persistent session snapshot lost a level transition");
 
   const GameSessionV1 restored(session.snapshot());
-  expect(restored.snapshot() == session.snapshot(),
+  expect(restored.snapshot() == session.snapshot() &&
+             restored.level_instance_sequence() == 2U,
          "a game-session snapshot did not round-trip exactly");
 }
 
@@ -251,6 +256,8 @@ void test_prepared_persistent_state_survives_level_lifecycle() {
       session.request_level(9U, 2U, LevelRequestReasonV1::transition);
   const auto snapshot = session.snapshot();
   GameSessionV1 restored(snapshot, initial.schema, limits);
+  expect(restored.level_instance_sequence() == snapshot.level_instance_sequence,
+         "metadata-only level identity disagrees with persistent snapshot");
   expect(restored.snapshot() == snapshot &&
              restored.pending_level_request() == pending,
          "persistent snapshot restoration changed bytes/revision or level "

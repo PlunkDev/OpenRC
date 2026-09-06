@@ -226,6 +226,10 @@ std::uint64_t GameSessionV1::next_tick_index() const noexcept {
   return next_tick_index_;
 }
 
+std::uint64_t GameSessionV1::level_instance_sequence() const noexcept {
+  return level_instance_sequence_;
+}
+
 const std::optional<LevelIdV1> &
 GameSessionV1::active_level_id() const noexcept {
   return active_level_id_;
