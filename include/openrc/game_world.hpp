@@ -1,6 +1,7 @@
 #pragma once
 
 #include "openrc/game_input.hpp"
+#include "openrc/session_state.hpp"
 
 #include <array>
 #include <cstddef>
@@ -48,6 +49,8 @@ struct GameSessionSnapshotV1 {
   std::uint64_t level_instance_sequence = 0U;
   std::optional<LevelIdV1> active_level_id;
   std::optional<SpawnPointIdV1> active_spawn_point_id;
+  // Absence means no prepared persistent-state contract was supplied.
+  std::optional<SessionStateSnapshotV1> persistent_state;
 
   [[nodiscard]] bool operator==(const GameSessionSnapshotV1 &) const = default;
 };
@@ -64,6 +67,14 @@ class GameSessionV1 final {
 public:
   explicit GameSessionV1(std::uint64_t deterministic_seed = 0U) noexcept;
   explicit GameSessionV1(const GameSessionSnapshotV1 &snapshot);
+  GameSessionV1(std::uint64_t deterministic_seed,
+                const SessionStateInitialV1 &initial_state,
+                const SessionStateLimitsV1 &limits);
+  // A snapshot containing persistent bytes needs the trusted prepared schema.
+  // Restoration never replays initial values or level-load side effects.
+  GameSessionV1(const GameSessionSnapshotV1 &snapshot,
+                const SessionStateSchemaV1 &schema,
+                const SessionStateLimitsV1 &limits);
 
   [[nodiscard]] LevelRequestV1
   request_level(LevelIdV1 level_id,
@@ -72,7 +83,11 @@ public:
 
   void commit_simulation_tick(const GameInputCommandV1 &command);
 
-  [[nodiscard]] GameSessionSnapshotV1 snapshot() const noexcept;
+  [[nodiscard]] GameSessionSnapshotV1 snapshot() const;
+  [[nodiscard]] const SessionStateV1 *persistent_state() const noexcept;
+  void
+  apply_persistent_state_writes(std::span<const SessionStateWriteV1> writes,
+                                std::uint64_t expected_revision);
   [[nodiscard]] std::uint64_t deterministic_seed() const noexcept;
   [[nodiscard]] std::uint64_t next_tick_index() const noexcept;
   [[nodiscard]] const std::optional<LevelIdV1> &
@@ -87,6 +102,7 @@ private:
 
   [[nodiscard]] ActiveLevelV1
   commit_level_request(const LevelRequestV1 &request);
+  void restore_metadata(const GameSessionSnapshotV1 &snapshot);
 
   std::uint64_t deterministic_seed_ = 0U;
   std::uint64_t next_tick_index_ = 0U;
@@ -96,6 +112,7 @@ private:
   std::uint64_t level_instance_sequence_ = 0U;
   std::optional<LevelIdV1> active_level_id_;
   std::optional<SpawnPointIdV1> active_spawn_point_id_;
+  std::optional<SessionStateV1> persistent_state_;
 };
 
 struct WorldTransformV1 {

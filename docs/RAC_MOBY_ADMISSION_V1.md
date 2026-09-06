@@ -80,6 +80,13 @@ alternate-bit/checkpoint state, and the byte before the selector cache are not
 supplied by these extracted template fields. Their producers and subsequent
 mutations must be accounted for separately.
 
+The compiler bridge now preserves these decoded fields in a bounded neutral
+[session-state artifact](SESSION_STATE_V1.md). Key, auxiliary-halfword, and
+word views share canonical registration bytes. The artifact survives binary
+roundtrip, session ownership, level replacement, and schema-bound snapshot
+restoration without reapplying initial values. It does not provide the
+remaining live inputs or execute the source reset wrapper.
+
 ## Verification scope
 
 The local supported-disc corpus check independently compares all five decoded
@@ -102,9 +109,10 @@ edges, all registration scan cases, writes surviving rejection, missing-input
 rollback, supported index boundaries, rejected same-step aliases, and
 caller-refreshed cross-step aliases. Template tests cover every extracted byte
 in all rows, reordered tags, malformed layouts, checksums, and allocation limits.
-The Release portable build passes all 114 tests and PE import audits. Published
-package-only level smoke tests pass for levels 0 and 1 with the unchanged
-eight-resource profile; these are regression checks, not evidence of live AI.
+The supported-ISO compiler probe additionally checks every decoded template
+field after neutral binary roundtrip and session creation, preserves state
+through levels 0, 1, and 0, and restores the exact snapshot. These are storage
+and mapping checks, not evidence of live AI or first-admission state.
 
 ## Integration still required
 
@@ -115,6 +123,12 @@ visibility is not a substitute for absence. Surviving group members and links
 must use the actual source-to-live mapping. This policy must not require a
 render model, rig, or normal-update callback merely to decide whether a
 placement exists.
+
+The session-state owner and initial-artifact bridge are implemented, but this
+load policy is not yet connected to them. In particular, persistent selector
+rows and the source's cached selector bytes have different lifetimes: the
+initial loader copies the row while an in-place reload path skips that copy.
+Those are explicit source operations, not an automatic refresh on every load.
 
 These components deliberately do not mark original initialization, subsequent
 animation selection, enemy AI, or new-game/save/checkpoint integration complete.

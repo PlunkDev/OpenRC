@@ -67,6 +67,7 @@ void test_session_level_sequence_and_snapshot() {
                      2U,
                      12U,
                      std::nullopt,
+                     std::nullopt,
                  },
          "the persistent session snapshot lost a level transition");
 
@@ -205,6 +206,92 @@ void test_snapshot_validation() {
       "an unknown level-request reason was accepted");
 }
 
+void test_prepared_persistent_state_survives_level_lifecycle() {
+  using namespace openrc;
+  using namespace openrc::game;
+  constexpr SessionStateLimitsV1 limits{2U,   8U,  64U,  1024U, 64U,
+                                        128U, 64U, 256U, 16U};
+  SessionStateInitialV1 initial;
+  initial.schema.identity_key = "test.session/progress";
+  initial.schema.buffers = {{"progress", 8U}};
+  initial.schema.views = {
+      {"word", "progress", SessionStateValueTypeV1::u32, 0U, 2U, 4U},
+      {"key", "progress", SessionStateValueTypeV1::u16, 0U, 1U, 2U},
+      {"high-key-byte", "progress", SessionStateValueTypeV1::u8, 1U, 1U, 1U},
+  };
+  initial.buffers = {
+      {"progress",
+       {std::byte{0x12}, std::byte{0x34}, std::byte{0x56}, std::byte{0x78},
+        std::byte{0x9a}, std::byte{0xbc}, std::byte{0xde}, std::byte{0xf0}}}};
+  const auto source_copy = initial;
+  GameSessionV1 session(99U, initial, limits);
+  const std::array writes{
+      SessionStateWriteV1{"key", 0U, SessionStateValueTypeV1::u16, 0xabcdU},
+      SessionStateWriteV1{"high-key-byte", 0U, SessionStateValueTypeV1::u8,
+                          0x11U},
+  };
+  session.apply_persistent_state_writes(writes, 0U);
+  expect(session.persistent_state()->read_u32("word", 0U) == 0x785611cdU &&
+             initial == source_copy,
+         "session-owned aliases did not share bytes or mutated the prepared "
+         "initial data");
+  const auto persistent = session.snapshot().persistent_state;
+  WorldV1 world;
+  for (const auto reason :
+       {LevelRequestReasonV1::new_game, LevelRequestReasonV1::transition,
+        LevelRequestReasonV1::checkpoint_restart}) {
+    world.load_level(session, session.request_level(7U, 0U, reason));
+    expect(session.snapshot().persistent_state == persistent,
+           "a level request/replacement replayed persistent initial values");
+  }
+  world.unload_level();
+  expect(session.snapshot().persistent_state == persistent,
+         "world unload erased session progress");
+  const auto pending =
+      session.request_level(9U, 2U, LevelRequestReasonV1::transition);
+  const auto snapshot = session.snapshot();
+  GameSessionV1 restored(snapshot, initial.schema, limits);
+  expect(restored.snapshot() == snapshot &&
+             restored.pending_level_request() == pending,
+         "persistent snapshot restoration changed bytes/revision or level "
+         "metadata");
+  expect_world_error([&] { GameSessionV1 missing_schema(snapshot); },
+                     "persistent snapshot invented its trusted schema");
+  auto wrong_schema = initial.schema;
+  wrong_schema.views[1].byte_offset = 2U;
+  expect_world_error(
+      [&] { GameSessionV1 wrong(snapshot, wrong_schema, limits); },
+      "persistent snapshot accepted another field layout");
+  auto truncated = snapshot;
+  truncated.persistent_state->buffers[0].bytes.pop_back();
+  expect_world_error(
+      [&] { GameSessionV1 wrong(truncated, initial.schema, limits); },
+      "persistent snapshot implicitly filled missing bytes");
+  expect_world_error(
+      [&] { restored.apply_persistent_state_writes(writes, 0U); },
+      "stale persistent writes were accepted by session owner");
+  expect(restored.snapshot() == snapshot,
+         "failed persistent writes changed session metadata/state");
+  restored.apply_persistent_state_writes(
+      std::array{
+          SessionStateWriteV1{"key", 0U, SessionStateValueTypeV1::u16, 0U}},
+      1U);
+  expect(session.snapshot() == snapshot && restored.snapshot() != snapshot,
+         "restored session shared mutable storage with its original");
+  const GameSessionV1 fresh(99U, initial, limits);
+  expect(fresh.persistent_state()->read_u32("word", 0U) == 0x78563412U &&
+             fresh.persistent_state()->revision() == 0U,
+         "explicit new session inherited old mutable progress");
+  GameSessionV1 absent;
+  expect(!absent.persistent_state() && !absent.snapshot().persistent_state,
+         "no-contract session manufactured default progress");
+  expect_world_error([&] { absent.apply_persistent_state_writes({}, 0U); },
+                     "session without a contract accepted a state operation");
+  expect_world_error(
+      [&] { GameSessionV1 wrong(absent.snapshot(), initial.schema, limits); },
+      "schema-only restoration manufactured a missing state image");
+}
+
 } // namespace
 
 int main() {
@@ -214,6 +301,7 @@ int main() {
     test_transform_and_unloaded_world_validation();
     test_replay_tick_validation();
     test_snapshot_validation();
+    test_prepared_persistent_state_survives_level_lifecycle();
     std::cout << "game_world_tests: ok\n";
     return 0;
   } catch (const std::exception &error) {

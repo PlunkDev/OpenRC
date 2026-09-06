@@ -96,6 +96,10 @@ struct RuntimeGameplaySessionOptionsV1 {
   std::optional<SpawnPointIdV1> spawn_point_id;
   LevelRequestReasonV1 level_request_reason = LevelRequestReasonV1::new_game;
   std::optional<RuntimeGameplayEntityContentV1> entity_gameplay;
+  // Prepared session-wide data is supplied once, independently of level assets.
+  // Neither omission nor a later level reload initializes any implicit bytes.
+  std::optional<SessionStateInitialV1> initial_persistent_state;
+  SessionStateLimitsV1 persistent_state_limits;
 };
 
 struct RuntimeMovementAxesV1 {
@@ -112,6 +116,8 @@ struct RuntimeMovementAxesV1 {
 // source_movement retains its double-precision radial magnitude. A mapper may
 // rotate that vector but must preserve its length. An empty mapper keeps the
 // source response in world space.
+// The mapper is a pure transform: it must not mutate or reenter its owning
+// runtime. Persistent-state writes during an active frame are rejected.
 using RuntimeMovementMapperV1 = std::function<RuntimeMovementAxesV1(
     const GameInputCommandV1 &source_response_input,
     RuntimeMovementAxesV1 source_movement, double fixed_delta_seconds)>;
@@ -216,6 +222,9 @@ public:
   // Restores canonical persistent totals without changing current collected
   // entity state. Neutral content must be active.
   void restore_item_totals(std::vector<EntityGameplayItemTotalV1> totals);
+  void
+  apply_persistent_state_writes(std::span<const SessionStateWriteV1> writes,
+                                std::uint64_t expected_revision);
 
   [[nodiscard]] RuntimeGameplaySnapshotV1 snapshot() const;
   [[nodiscard]] std::uint64_t interpolation_numerator() const noexcept;
@@ -251,6 +260,7 @@ private:
   PlayerCombatV1 combat_;
   std::vector<EntityGameplayItemTotalV1> item_totals_;
   std::optional<EntityGameplayRuntimeV1> entity_gameplay_;
+  bool advancing_frame_ = false;
 };
 
 } // namespace openrc::game

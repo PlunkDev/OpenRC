@@ -501,8 +501,7 @@ void test_staged_frame_snapshot_matches_committed_state() {
       runtime.advance_frame(0U, movement_sample(0, 0, jump_mask));
   expect(sampled_without_tick.fixed_step.step_count == 0U &&
              sampled_without_tick.snapshot == runtime.snapshot() &&
-             sampled_without_tick.snapshot.pending_pressed_buttons ==
-                 jump_mask,
+             sampled_without_tick.snapshot.pending_pressed_buttons == jump_mask,
          "a staged no-tick input snapshot differs from committed state");
 }
 
@@ -730,23 +729,38 @@ void test_primary_action_destroys_destructible_and_grants_drop() {
 
   const auto active = runtime.advance_frame(16'666'667U);
   const std::vector<EntityGameplayEventV1> expected_events{
-      {EntityGameplayEventKindV1::entity_damaged, 2U, 10U, {}, 0U, 1U, 0U,
-       1U, 0U, 0U},
-      {EntityGameplayEventKindV1::entity_destroyed, 2U, 10U, {}, 0U, 1U, 0U,
-       1U, 0U, 0U},
+      {EntityGameplayEventKindV1::entity_damaged,
+       2U,
+       10U,
+       {},
+       0U,
+       1U,
+       0U,
+       1U,
+       0U,
+       0U},
+      {EntityGameplayEventKindV1::entity_destroyed,
+       2U,
+       10U,
+       {},
+       0U,
+       1U,
+       0U,
+       1U,
+       0U,
+       0U},
       {EntityGameplayEventKindV1::item_granted, 2U, 10U,
        "openrc.currency/bolts", 1U, 0U, 0U, 0U, 0U, 0U},
   };
-  expect(active.ticks.size() == 1U &&
-             active.ticks.front().combat.damage_pulse &&
-             active.ticks.front().combat.damage_pulse->attack_sequence == 1U &&
-             active.ticks.front().combat.damage_pulse->source_authored_id ==
-                 0U &&
-             active.ticks.front().combat.damage_pulse->damage_channel ==
-                 kDamageChannelMeleeV1 &&
-             active.ticks.front().gameplay_events == expected_events,
-         "the production wrench pulse did not destroy the neutral target in "
-         "canonical event order");
+  expect(
+      active.ticks.size() == 1U && active.ticks.front().combat.damage_pulse &&
+          active.ticks.front().combat.damage_pulse->attack_sequence == 1U &&
+          active.ticks.front().combat.damage_pulse->source_authored_id == 0U &&
+          active.ticks.front().combat.damage_pulse->damage_channel ==
+              kDamageChannelMeleeV1 &&
+          active.ticks.front().gameplay_events == expected_events,
+      "the production wrench pulse did not destroy the neutral target in "
+      "canonical event order");
 
   const auto *gameplay = runtime.entity_gameplay();
   expect(gameplay != nullptr && gameplay->destroyed(10U) &&
@@ -786,8 +800,7 @@ void test_damage_geometry_domain_is_shared_by_producer_and_consumer() {
   const auto primary = game_button_mask_v1(GameButtonV1::primary_action);
   const auto frame =
       runtime.advance_frame(16'666'667U, movement_sample(0, 0, primary));
-  expect(frame.ticks.size() == 1U &&
-             frame.ticks.front().combat.damage_pulse &&
+  expect(frame.ticks.size() == 1U && frame.ticks.front().combat.damage_pulse &&
              frame.ticks.front().combat.damage_pulse->capsule_end.x ==
                  kGameplayDamageMaximumGeometryMagnitudeV1 &&
              frame.ticks.front().gameplay_events.size() == 3U &&
@@ -855,8 +868,7 @@ void test_optional_entity_content_uses_global_level_instance_sequence() {
 
   runtime.load_level(foundation(8U), entity_gameplay_content(8U));
   const auto first_content = runtime.snapshot();
-  const auto first_entity_id =
-      *runtime.entity_gameplay()->find_entity_id(20U);
+  const auto first_entity_id = *runtime.entity_gameplay()->find_entity_id(20U);
   expect(first_content.session.level_instance_sequence == 2U &&
              first_content.active_level == ActiveLevelV1{8U, 10U, 2U} &&
              first_content.entity_gameplay &&
@@ -882,8 +894,7 @@ void test_optional_entity_content_uses_global_level_instance_sequence() {
 
   runtime.load_level(foundation(10U), entity_gameplay_content(10U));
   const auto second_content = runtime.snapshot();
-  const auto second_entity_id =
-      *runtime.entity_gameplay()->find_entity_id(20U);
+  const auto second_entity_id = *runtime.entity_gameplay()->find_entity_id(20U);
   expect(second_content.session.level_instance_sequence == 4U &&
              second_content.active_level == ActiveLevelV1{10U, 10U, 4U} &&
              second_content.entity_gameplay &&
@@ -933,6 +944,91 @@ void test_level_replacement_retains_global_tick_sequence() {
          "an old level's button edge reached the replacement level");
 }
 
+void test_prepared_state_is_owned_across_runtime_ticks_and_levels() {
+  using namespace openrc;
+  using namespace openrc::game;
+  RuntimeGameplaySessionOptionsV1 options;
+  options.persistent_state_limits = {2U,   4U,  64U,  1024U, 64U,
+                                     128U, 64U, 256U, 16U};
+  options.initial_persistent_state = SessionStateInitialV1{
+      {"test.runtime/progress",
+       {{"progress", 4U}},
+       {{"word", "progress", SessionStateValueTypeV1::u32, 0U, 1U, 4U}}},
+      {{"progress", {std::byte{7}, std::byte{0}, std::byte{0}, std::byte{0}}}},
+  };
+  RuntimeGameplaySessionV1 runtime(foundation(), options);
+  expect(runtime.session().persistent_state()->read_u32("word", 0U) == 7U,
+         "runtime ignored explicitly supplied prepared state");
+  const std::array writes{SessionStateWriteV1{
+      "word", 0U, SessionStateValueTypeV1::u32, 0xfedcba98U}};
+  runtime.apply_persistent_state_writes(writes, 0U);
+  const auto committed = runtime.snapshot().session.persistent_state;
+  const auto before_callback = runtime.snapshot();
+  expect_gameplay_error(
+      [&] {
+        static_cast<void>(runtime.advance_frame(
+            50'000'000U, [&](const GameInputCommandV1 &,
+                             RuntimeMovementAxesV1 axes, double) {
+              runtime.apply_persistent_state_writes(writes, 1U);
+              return axes;
+            }));
+      },
+      "movement callback mutated the committed state outside the staged frame");
+  expect(runtime.snapshot() == before_callback,
+         "failed callback frame retained a persistent write or another partial "
+         "mutation");
+  expect_gameplay_error(
+      [&] {
+        static_cast<void>(runtime.advance_frame(
+            50'000'000U, [&](const GameInputCommandV1 &,
+                             RuntimeMovementAxesV1 axes, double) {
+              static_cast<void>(runtime.advance_frame(0U));
+              return axes;
+            }));
+      },
+      "runtime frame advancement accepted a recursive callback");
+  expect(runtime.snapshot() == before_callback,
+         "reentrant advance changed the committed runtime snapshot");
+  runtime.apply_persistent_state_writes({}, 1U);
+  static_cast<void>(runtime.advance_frame(
+      16'666'667U,
+      [&](const GameInputCommandV1 &, RuntimeMovementAxesV1 axes, double) {
+        expect_gameplay_error(
+            [&] { runtime.apply_persistent_state_writes({}, 1U); },
+            "empty persistent write bypassed active-frame guard");
+        return axes;
+      }));
+  static_cast<void>(runtime.advance_frame(50'000'000U));
+  expect(runtime.snapshot().session.persistent_state == committed,
+         "fixed-tick session staging lost persistent bytes or advanced their "
+         "revision");
+  const auto before_failure = runtime.snapshot();
+  auto invalid = foundation(8U);
+  invalid.bootstrap.level_id = 99U;
+  expect_gameplay_error([&] { runtime.load_level(invalid); },
+                        "invalid foundation unexpectedly loaded");
+  expect(runtime.snapshot() == before_failure,
+         "failed level replacement changed persistent state or other runtime "
+         "state");
+  runtime.load_level(foundation(8U));
+  runtime.load_level(foundation(7U), entity_gameplay_content(7U));
+  expect(
+      runtime.snapshot().session.persistent_state == committed,
+      "optional-content transition reinitialized or discarded persistent data");
+  const auto before_stale = runtime.snapshot();
+  expect_gameplay_error(
+      [&] { runtime.apply_persistent_state_writes(writes, 0U); },
+      "runtime accepted stale state writes");
+  expect(runtime.snapshot() == before_stale,
+         "stale state operation was not atomic at runtime ownership boundary");
+  RuntimeGameplaySessionV1 absent(foundation());
+  expect(!absent.snapshot().session.persistent_state,
+         "runtime without a prepared state contract created default progress");
+  expect_gameplay_error(
+      [&] { absent.apply_persistent_state_writes({}, 0U); },
+      "runtime without a state contract accepted an operation");
+}
+
 } // namespace
 
 int main() {
@@ -956,6 +1052,7 @@ int main() {
     test_item_total_restore_and_reload_preserve_persistence();
     test_optional_entity_content_uses_global_level_instance_sequence();
     test_level_replacement_retains_global_tick_sequence();
+    test_prepared_state_is_owned_across_runtime_ticks_and_levels();
     std::cout << "runtime_gameplay_tests: ok\n";
     return 0;
   } catch (const std::exception &error) {

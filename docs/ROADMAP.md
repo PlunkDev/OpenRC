@@ -258,7 +258,11 @@ The recovered initialization/normal-update selection order and group-remapping
 adapter are implemented and tested separately. Compiler-side placement inputs,
 a bounded state-dependent admission evaluator, and the original initial-progress
 template decoder are also implemented; their exact scope is documented in
-[the admission contract](RAC_MOBY_ADMISSION_V1.md). They do not yet integrate
+[the admission contract](RAC_MOBY_ADMISSION_V1.md). A neutral
+[session-state owner](SESSION_STATE_V1.md), bounded initial-artifact I/O, and
+template-to-state compiler bridge preserve shared byte views and mutable
+progress through level replacement and schema-bound snapshots. They do not
+yet publish a native progression resource or integrate
 session-state-dependent materialization, execute original initialization
 callbacks, supply exact range-query inputs, or enable AI in the graphical runtime.
 This does not declare Veldin finished: airborne and wrench animation, original

@@ -4,6 +4,8 @@
 #include <cmath>
 #include <functional>
 #include <limits>
+#include <string>
+#include <utility>
 
 namespace openrc::game {
 namespace {
@@ -66,16 +68,52 @@ void validate_session_snapshot(const GameSessionSnapshotV1 &snapshot) {
 GameSessionV1::GameSessionV1(const std::uint64_t deterministic_seed) noexcept
     : deterministic_seed_(deterministic_seed) {}
 
-GameSessionV1::GameSessionV1(const GameSessionSnapshotV1 &snapshot)
-    : deterministic_seed_(snapshot.deterministic_seed),
-      next_tick_index_(snapshot.next_tick_index),
-      next_level_request_sequence_(snapshot.next_level_request_sequence),
-      next_level_commit_sequence_(snapshot.next_level_commit_sequence),
-      pending_level_request_(snapshot.pending_level_request),
-      level_instance_sequence_(snapshot.level_instance_sequence),
-      active_level_id_(snapshot.active_level_id),
-      active_spawn_point_id_(snapshot.active_spawn_point_id) {
+void GameSessionV1::restore_metadata(const GameSessionSnapshotV1 &snapshot) {
   validate_session_snapshot(snapshot);
+  deterministic_seed_ = snapshot.deterministic_seed;
+  next_tick_index_ = snapshot.next_tick_index;
+  next_level_request_sequence_ = snapshot.next_level_request_sequence;
+  next_level_commit_sequence_ = snapshot.next_level_commit_sequence;
+  pending_level_request_ = snapshot.pending_level_request;
+  level_instance_sequence_ = snapshot.level_instance_sequence;
+  active_level_id_ = snapshot.active_level_id;
+  active_spawn_point_id_ = snapshot.active_spawn_point_id;
+}
+
+GameSessionV1::GameSessionV1(const GameSessionSnapshotV1 &snapshot) {
+  if (snapshot.persistent_state) {
+    throw GameWorldError(
+        "Restoring persistent state requires its prepared schema and limits");
+  }
+  restore_metadata(snapshot);
+}
+
+GameSessionV1::GameSessionV1(const std::uint64_t deterministic_seed,
+                             const SessionStateInitialV1 &initial_state,
+                             const SessionStateLimitsV1 &limits)
+    : deterministic_seed_(deterministic_seed) {
+  try {
+    persistent_state_.emplace(initial_state, limits);
+  } catch (const SessionStateError &error) {
+    throw GameWorldError("Cannot initialize session persistent state: " +
+                         std::string(error.what()));
+  }
+}
+
+GameSessionV1::GameSessionV1(const GameSessionSnapshotV1 &snapshot,
+                             const SessionStateSchemaV1 &schema,
+                             const SessionStateLimitsV1 &limits) {
+  if (!snapshot.persistent_state) {
+    throw GameWorldError(
+        "A persistent-state restore cannot invent missing snapshot bytes");
+  }
+  restore_metadata(snapshot);
+  try {
+    persistent_state_.emplace(schema, *snapshot.persistent_state, limits);
+  } catch (const SessionStateError &error) {
+    throw GameWorldError("Cannot restore session persistent state: " +
+                         std::string(error.what()));
+  }
 }
 
 LevelRequestV1
@@ -146,7 +184,7 @@ GameSessionV1::commit_level_request(const LevelRequestV1 &request) {
   };
 }
 
-GameSessionSnapshotV1 GameSessionV1::snapshot() const noexcept {
+GameSessionSnapshotV1 GameSessionV1::snapshot() const {
   return {
       deterministic_seed_,
       next_tick_index_,
@@ -156,7 +194,28 @@ GameSessionSnapshotV1 GameSessionV1::snapshot() const noexcept {
       level_instance_sequence_,
       active_level_id_,
       active_spawn_point_id_,
+      persistent_state_ ? std::optional{persistent_state_->snapshot()}
+                        : std::nullopt,
   };
+}
+
+const SessionStateV1 *GameSessionV1::persistent_state() const noexcept {
+  return persistent_state_ ? &*persistent_state_ : nullptr;
+}
+
+void GameSessionV1::apply_persistent_state_writes(
+    const std::span<const SessionStateWriteV1> writes,
+    const std::uint64_t expected_revision) {
+  if (!persistent_state_) {
+    throw GameWorldError(
+        "The game session has no prepared persistent-state contract");
+  }
+  try {
+    persistent_state_->apply_batch(writes, expected_revision);
+  } catch (const SessionStateError &error) {
+    throw GameWorldError("Cannot update session persistent state: " +
+                         std::string(error.what()));
+  }
 }
 
 std::uint64_t GameSessionV1::deterministic_seed() const noexcept {

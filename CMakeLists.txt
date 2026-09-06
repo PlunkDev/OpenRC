@@ -75,6 +75,7 @@ add_library(openrc_core STATIC
     src/core/rac_gameplay_bank.cpp
     src/core/rac_moby_admission.cpp
     src/core/rac_initial_progress_template.cpp
+    src/core/rac_initial_progress_compile.cpp
     src/core/rac_actor_library_compile.cpp
     src/core/rac_actor_schedule_compile.cpp
     src/core/rac_collectible_scene_compile.cpp
@@ -129,6 +130,8 @@ add_library(openrc_core STATIC
     src/core/sblk_audio.cpp
     src/core/sblk_wav.cpp
     src/core/settings.cpp
+    src/core/session_state.cpp
+    src/core/session_state_io.cpp
     src/core/two_fip.cpp
     src/core/third_person_camera.cpp
     src/core/vagp.cpp
@@ -492,6 +495,9 @@ if(OPENRC_BUILD_TESTS)
         openrc-rac-actor-schedule-compile-tests
         openrc-rac-moby-admission-tests
         openrc-rac-initial-progress-template-tests
+        openrc-rac-initial-progress-compile-tests
+        openrc-session-state-tests
+        openrc-session-state-io-tests
     )
     add_executable(
         openrc-actor-behavior-scene-tests
@@ -525,6 +531,12 @@ if(OPENRC_BUILD_TESTS)
         openrc-rac-initial-progress-template-tests
         tests/rac_initial_progress_template_tests.cpp
     )
+    add_executable(
+        openrc-rac-initial-progress-compile-tests
+        tests/rac_initial_progress_compile_tests.cpp
+    )
+    add_executable(openrc-session-state-tests tests/session_state_tests.cpp)
+    add_executable(openrc-session-state-io-tests tests/session_state_io_tests.cpp)
     foreach(target IN LISTS OPENRC_ACTOR_BEHAVIOR_TEST_TARGETS)
         target_link_libraries(${target} PRIVATE openrc_core)
         target_compile_features(${target} PRIVATE cxx_std_20)
@@ -1964,6 +1976,9 @@ if(OPENRC_BUILD_TESTS)
     add_test(NAME rac-actor-schedule-compile COMMAND openrc-rac-actor-schedule-compile-tests)
     add_test(NAME rac-moby-admission COMMAND openrc-rac-moby-admission-tests)
     add_test(NAME rac-initial-progress-template COMMAND openrc-rac-initial-progress-template-tests)
+    add_test(NAME rac-initial-progress-compile COMMAND openrc-rac-initial-progress-compile-tests)
+    add_test(NAME session-state COMMAND openrc-session-state-tests)
+    add_test(NAME session-state-io COMMAND openrc-session-state-io-tests)
     add_test(NAME player-combat COMMAND openrc-player-combat-tests)
     add_test(NAME destructible-scene COMMAND openrc-destructible-scene-tests)
     add_test(
