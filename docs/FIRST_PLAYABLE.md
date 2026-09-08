@@ -18,9 +18,9 @@ their stated component scope, not original-game fidelity for the whole feature.
 | Area | Status | What is actually established / still required |
 | --- | --- | --- |
 | One launcher, prepared-package boundary, portable import guards | DONE at infrastructure scope | Existing compilation, validation and package-only launch; this does not implement the PS2 frontend. |
-| Startup, intro and original menu | MISSING as a playable flow | Original keyed text, font metrics and frontend textures are recovered content prerequisites, not a replacement menu. Original layout, input, transitions, presentation and audio still need reconstruction. |
+| Startup, intro and original menu | MISSING as a playable flow | Original text, metrics, textures and source layout/glyph plans are recovered prerequisites, not a replacement menu. Numeric/render integration, input, transitions, presentation and audio remain. |
 | Level loading, geometry, textures and static collision | PARTIAL | Shared source-backed loaders/rendering exist; scene-family coverage and original loading lifecycle remain incomplete. |
-| Original ordered actor initialization | PARTIAL | Admission/session state and ordered spatial lists exist. Full constructor/post-step numerics, live-token/entity binding and ordered integration remain required. |
+| Original ordered actor initialization | PARTIAL | Admission/session state, ordered spatial lists and the pure fresh constructor exist. Full placement/post-step numerics, live-token/entity binding and ordered integration remain required. |
 | Ratchet movement and gameplay animations | PARTIAL | Source animation banks and a grounded subset exist; full state transitions, acceleration/turning, airborne behavior and weapon handling are not verified. Prototype behavior is not fidelity evidence. |
 | Camera | PARTIAL | A third-person prototype exists; the original camera is not reconstructed. |
 | Enemies, weapons, damage and health | PARTIAL foundations | Neutral behavior/damage infrastructure exists; original complete per-type AI, attacks, weapon states/ammo/effects, health and reactions are not integrated. |
@@ -47,7 +47,9 @@ confirmed. There is no physical-PS2 numerical capture from this batch.
   instruction traces stay in ignored `local/forensics`. Current additions:
   [shared keyed text and original font metrics](RAC_TEXT_BANK_V1.md),
   [original frontend textures](RAC_FRONTEND_TEXTURE_V1.md), and
-  [bounded source numerical recovery](SOURCE_NUMERIC_RECOVERY_V1.md).
+  [bounded source numerical recovery](SOURCE_NUMERIC_RECOVERY_V1.md), plus
+  [original text layout/glyph plans](RAC_TEXT_LAYOUT_V1.md) and
+  [the fresh Moby constructor](RAC_MOBY_FRESH_CONSTRUCTOR_V1.md).
 - **INFERRED:** any interpretation beyond those contracts must be labeled and
   independently testable; a likely gameplay meaning does not become a constant.
 - **UNKNOWN:** original frontend presentation/audio dispatch and remaining
@@ -56,8 +58,8 @@ confirmed. There is no physical-PS2 numerical capture from this batch.
 Keep the current admission, session-state and spatial-index implementation.
 Continue the exact constructor/post-step with qualified arithmetic and original
 ordered side effects, then bind it to the actual loaded entity world. In
-parallel, extend the recovered font metrics/atlases and bounded glyph-emitter
-evidence with original layout, glyph/control-stream and inherited render-state
+parallel, continue from recovered layout/glyph plans and bounded glyph-emitter
+evidence into qualified numeric execution and inherited render-state
 contracts. Decoding
 strings alone does not justify a made-up UI resource or renderer. Reuse the
 scene/audio parsers when tracing required
@@ -71,14 +73,19 @@ a separate original-fidelity pass.
 
 ## Latest verified batch (2026-09-08)
 
-The complete portable Release build passed **127/127 tests** and all required
-PE import audits, then published the existing launcher, compiler and runtime.
-A fresh source preparation published all 19 level packages with compiler
-profile `native-eight-resource-v5-vu-loi`; repeating Prepare verified and reused
-the same data. Source comparisons for text, font metrics, frontend textures,
-integer spatial projection and frame structure are recorded in their linked
-component notes. The Veldin and Novalis package-only checks and hidden
-graphical smoke passed again on the final published executables.
+The latest complete portable Release build passed **130/130 tests** and all
+required PE import audits, then published the existing launcher, compiler and
+runtime. New instruction/native comparisons matched 1,932 text-layout cases,
+2,416 floating glyph/control cases and 1,928 complete fresh-constructor states.
+These compiler-only additions do not change runtime packages or the current
+`native-eight-resource-v5-vu-loi` compiler identity.
+
+The preceding batch prepared and reuse-verified all 19 level packages and passed
+hidden graphical smoke. This batch repeated Veldin/Novalis package-only checks
+on the newly published CLI: both passed with unchanged replay hashes and eight
+resources. It did not claim a new graphical fidelity pass or re-extract the
+unchanged source corpus. Earlier format/projection/frame comparisons remain
+recorded in their component notes.
 
 Those smoke checks exercise development loading and forced interaction probes.
 They do **not** satisfy the normal startup/menu/new-game playthrough, original

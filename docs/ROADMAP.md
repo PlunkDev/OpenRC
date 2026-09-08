@@ -280,6 +280,11 @@ ordered live-loader integration remain open. The original
 [shared keyed text bank and font-metric tables](RAC_TEXT_BANK_V1.md), together
 with the [frontend texture catalog](RAC_FRONTEND_TEXTURE_V1.md), are decoded
 and verified, but are not an implemented original menu or HUD.
+The [original integer layout and floating glyph/control plan](RAC_TEXT_LAYOUT_V1.md)
+now preserve source text behavior and explicit arithmetic order. The pure
+[fresh constructor](RAC_MOBY_FRESH_CONSTRUCTOR_V1.md) now matches complete
+source initial state; neither addition bypasses remaining render/numeric/ordered
+integration or advances the whole-system completion claim.
 These components do not yet execute original initialization
 callbacks, supply exact range-query inputs, or enable AI in the graphical runtime.
 This does not declare Veldin finished: airborne and wrench animation, original

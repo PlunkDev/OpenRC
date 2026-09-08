@@ -95,6 +95,7 @@ add_library(openrc_core STATIC
     src/core/rac_moby_actor_scene_compile.cpp
     src/core/rac_moby_animation_compile.cpp
     src/core/rac_moby_class.cpp
+    src/core/rac_moby_fresh_constructor.cpp
     src/core/rac_moby_spatial_bounds.cpp
     src/core/rac_moby_bind_pose.cpp
     src/core/rac_moby_model_geometry.cpp
@@ -106,6 +107,8 @@ add_library(openrc_core STATIC
     src/core/rac_ratchet_sequence.cpp
     src/core/rac_text_bank.cpp
     src/core/rac_font_metrics.cpp
+    src/core/rac_text_layout.cpp
+    src/core/rac_float_glyph.cpp
     src/core/rac_frontend_texture.cpp
     src/core/rac_tie_class.cpp
     src/core/render_scene.cpp
@@ -2137,6 +2140,18 @@ if(OPENRC_BUILD_TESTS)
     target_link_libraries(openrc-rac-font-metrics-tests PRIVATE openrc_core)
     target_compile_features(openrc-rac-font-metrics-tests PRIVATE cxx_std_20)
 
+    add_executable(openrc-rac-text-layout-tests tests/rac_text_layout_tests.cpp)
+    target_link_libraries(openrc-rac-text-layout-tests PRIVATE openrc_core)
+    target_compile_features(openrc-rac-text-layout-tests PRIVATE cxx_std_20)
+
+    add_executable(openrc-rac-moby-fresh-constructor-tests tests/rac_moby_fresh_constructor_tests.cpp)
+    target_link_libraries(openrc-rac-moby-fresh-constructor-tests PRIVATE openrc_core)
+    target_compile_features(openrc-rac-moby-fresh-constructor-tests PRIVATE cxx_std_20)
+
+    add_executable(openrc-rac-float-glyph-tests tests/rac_float_glyph_tests.cpp)
+    target_link_libraries(openrc-rac-float-glyph-tests PRIVATE openrc_core)
+    target_compile_features(openrc-rac-float-glyph-tests PRIVATE cxx_std_20)
+
     add_executable(openrc-ps2-palette-tests tests/ps2_palette_tests.cpp)
     target_link_libraries(openrc-ps2-palette-tests PRIVATE openrc_core)
     target_compile_features(openrc-ps2-palette-tests PRIVATE cxx_std_20)
@@ -2240,6 +2255,9 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-rac-moby-spatial-bounds-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-text-bank-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-font-metrics-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-rac-text-layout-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-rac-moby-fresh-constructor-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-rac-float-glyph-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-ps2-palette-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-frontend-texture-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-gif-gs-tests PRIVATE /W4 /permissive- /utf-8)
@@ -2261,6 +2279,9 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-rac-moby-spatial-bounds-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-text-bank-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-font-metrics-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-rac-text-layout-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-rac-moby-fresh-constructor-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-rac-float-glyph-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-ps2-palette-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-frontend-texture-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-gif-gs-tests PRIVATE -Wall -Wextra -Wpedantic)
@@ -2283,6 +2304,9 @@ if(OPENRC_BUILD_TESTS)
     add_test(NAME rac-moby-spatial-bounds COMMAND openrc-rac-moby-spatial-bounds-tests)
     add_test(NAME rac-text-bank COMMAND openrc-rac-text-bank-tests)
     add_test(NAME rac-font-metrics COMMAND openrc-rac-font-metrics-tests)
+    add_test(NAME rac-text-layout COMMAND openrc-rac-text-layout-tests)
+    add_test(NAME rac-moby-fresh-constructor COMMAND openrc-rac-moby-fresh-constructor-tests)
+    add_test(NAME rac-float-glyph COMMAND openrc-rac-float-glyph-tests)
     add_test(NAME ps2-palette COMMAND openrc-ps2-palette-tests)
     add_test(NAME rac-frontend-texture COMMAND openrc-rac-frontend-texture-tests)
     add_test(NAME gif-gs COMMAND openrc-gif-gs-tests)

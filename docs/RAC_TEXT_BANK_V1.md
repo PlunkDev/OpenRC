@@ -70,9 +70,13 @@ owner's floating glyph path, including measurement, shadow and color passes.
 These are recovered dependencies, not implemented menu behavior. The original
 [frontend textures](RAC_FRONTEND_TEXTURE_V1.md), including all three font
 atlases, are now decoded and source-compared. Their prepared UI resource,
-render-state contract and complete layout behavior are not yet implemented.
+render-state contract and complete menu integration are not yet implemented.
+The [original layout and floating glyph/control plan](RAC_TEXT_LAYOUT_V1.md)
+are now implemented and independently source-compared without evaluating host
+floating arithmetic or claiming a rendered menu.
 
 **PARTIAL frontend:** keyed text and font-metric decoding are implemented and
-verified. Control-stream interpretation, font rendering, actual menu
-presentation, navigation, audio and transitions remain. There is no replacement
+verified. Source layout/control interpretation is recovered separately; numeric
+execution, font rendering, actual menu presentation, navigation, audio and
+transitions remain. There is no replacement
 Start button, menu renderer or new runtime here.

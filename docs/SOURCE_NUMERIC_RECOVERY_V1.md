@@ -82,8 +82,12 @@ for zero rotations and source helper/control-flow selection for nonzero axes.
 Nonzero numerical results remain explicitly host-float approximations; full
 FMAC forwarding, stalls and MUL/ADD/ACC rounding are not certified by that test.
 
+The pure [fresh constructor](RAC_MOBY_FRESH_CONSTRUCTOR_V1.md) has now been
+implemented and source-compared independently: it contains raw FP transfers
+but no FP arithmetic. This does not qualify the later placement/post-step.
+
 Next: qualify those remaining arithmetic operations, finish the complete
-source-ordered constructor/post-step and bind live-order tokens to native
+source-ordered placement/post-step and bind live-order tokens to native
 entities. Neither the published resource count nor actual AI has been expanded
 by these diagnostic/numerical components. The native compiler identity advances
 to `native-eight-resource-v5-vu-loi`: corrected LOI semantics affect existing
