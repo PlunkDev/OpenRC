@@ -294,6 +294,34 @@ public:
     using std::runtime_error::runtime_error;
 };
 
+// IMAGE remains an ordered, owned transfer payload, not an applied VRAM write.
+// The register prefix count orders it against registers.register_writes;
+// packet offsets refer to the complete linear GIF byte stream in qword units.
+struct GifGsImagePayloadV1 {
+    std::uint64_t tag_index = 0U;
+    std::uint64_t packet_qword_index = 0U;
+    std::uint64_t preceding_register_write_count = 0U;
+    std::vector<std::byte> bytes;
+};
+
+struct GifGsLinearDecodeResultV1 {
+    GifGsDecodeResultV1 registers;
+    std::vector<GifGsImagePayloadV1> images;
+    std::uint64_t tag_count = 0U;
+    std::uint64_t end_of_packet_count = 0U;
+};
+
+// Compiler-side fully owned, execution-ordered GIF bytes after transport
+// resolution. PACKED/REGLIST use the same register/primitive consumer as
+// XGKICK. IMAGE data is retained at its exact position, never decoded as tags.
+// The stream may contain multiple EOPs but must end at one; a DIRECT boundary
+// is not a GIF boundary. All register event IDs are zero (one logical input),
+// not fabricated XGKICK captures. Shared limits apply to the whole input;
+// max_xgkick_events is only required nonzero, not counted as hardware events.
+// This does not execute IMAGE/CLUT residency, path arbitration or rasterization.
+[[nodiscard]] GifGsLinearDecodeResultV1 decode_gif_gs_linear_stream_v1(
+    std::span<const std::byte> bytes, GifGsDecodeLimitsV1 limits);
+
 // Decodes a complete, bounded PACKED/REGLIST PATH1 packet captured by XGKICK.
 // This is a convenience wrapper over the stream decoder and applies all
 // limits, including max_xgkick_events, to its one-element stream.

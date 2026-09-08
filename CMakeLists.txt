@@ -111,6 +111,10 @@ add_library(openrc_core STATIC
     src/core/rac_float_glyph.cpp
     src/core/rac_float_quad.cpp
     src/core/rac_frontend_gs_scope.cpp
+    src/core/rac_frontend_gs_stream.cpp
+    src/core/rac_frontend_owner.cpp
+    src/core/rac_moby_reference.cpp
+    src/core/ee_cop1_numeric.cpp
     src/core/rac_moby_authored_tail.cpp
     src/core/rac_frontend_texture.cpp
     src/core/rac_tie_class.cpp
@@ -2163,6 +2167,22 @@ if(OPENRC_BUILD_TESTS)
     target_link_libraries(openrc-rac-frontend-gs-scope-tests PRIVATE openrc_core)
     target_compile_features(openrc-rac-frontend-gs-scope-tests PRIVATE cxx_std_20)
 
+    add_executable(openrc-rac-frontend-gs-stream-tests tests/rac_frontend_gs_stream_tests.cpp)
+    target_link_libraries(openrc-rac-frontend-gs-stream-tests PRIVATE openrc_core)
+    target_compile_features(openrc-rac-frontend-gs-stream-tests PRIVATE cxx_std_20)
+
+    add_executable(openrc-rac-frontend-owner-tests tests/rac_frontend_owner_tests.cpp)
+    target_link_libraries(openrc-rac-frontend-owner-tests PRIVATE openrc_core)
+    target_compile_features(openrc-rac-frontend-owner-tests PRIVATE cxx_std_20)
+
+    add_executable(openrc-rac-moby-reference-tests tests/rac_moby_reference_tests.cpp)
+    target_link_libraries(openrc-rac-moby-reference-tests PRIVATE openrc_core)
+    target_compile_features(openrc-rac-moby-reference-tests PRIVATE cxx_std_20)
+
+    add_executable(openrc-ee-cop1-numeric-tests tests/ee_cop1_numeric_tests.cpp)
+    target_link_libraries(openrc-ee-cop1-numeric-tests PRIVATE openrc_core)
+    target_compile_features(openrc-ee-cop1-numeric-tests PRIVATE cxx_std_20)
+
     add_executable(openrc-rac-moby-authored-tail-tests tests/rac_moby_authored_tail_tests.cpp)
     target_link_libraries(openrc-rac-moby-authored-tail-tests PRIVATE openrc_core)
     target_compile_features(openrc-rac-moby-authored-tail-tests PRIVATE cxx_std_20)
@@ -2275,6 +2295,10 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-rac-float-glyph-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-float-quad-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-frontend-gs-scope-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-rac-frontend-gs-stream-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-rac-frontend-owner-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-rac-moby-reference-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-ee-cop1-numeric-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-moby-authored-tail-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-ps2-palette-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-frontend-texture-tests PRIVATE /W4 /permissive- /utf-8)
@@ -2302,6 +2326,10 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-rac-float-glyph-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-float-quad-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-frontend-gs-scope-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-rac-frontend-gs-stream-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-rac-frontend-owner-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-rac-moby-reference-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-ee-cop1-numeric-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-moby-authored-tail-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-ps2-palette-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-frontend-texture-tests PRIVATE -Wall -Wextra -Wpedantic)
@@ -2330,6 +2358,10 @@ if(OPENRC_BUILD_TESTS)
     add_test(NAME rac-float-glyph COMMAND openrc-rac-float-glyph-tests)
     add_test(NAME rac-float-quad COMMAND openrc-rac-float-quad-tests)
     add_test(NAME rac-frontend-gs-scope COMMAND openrc-rac-frontend-gs-scope-tests)
+    add_test(NAME rac-frontend-gs-stream COMMAND openrc-rac-frontend-gs-stream-tests)
+    add_test(NAME rac-frontend-owner COMMAND openrc-rac-frontend-owner-tests)
+    add_test(NAME rac-moby-reference COMMAND openrc-rac-moby-reference-tests)
+    add_test(NAME ee-cop1-numeric COMMAND openrc-ee-cop1-numeric-tests)
     add_test(NAME rac-moby-authored-tail COMMAND openrc-rac-moby-authored-tail-tests)
     add_test(NAME ps2-palette COMMAND openrc-ps2-palette-tests)
     add_test(NAME rac-frontend-texture COMMAND openrc-rac-frontend-texture-tests)

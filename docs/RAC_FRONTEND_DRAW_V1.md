@@ -87,9 +87,8 @@ invalidations.
 
 Missing incoming GS registers remain unknown. In particular this callback does
 not establish TEX1; source ELF screen/frame data is not evidence of current
-live render-target state. The enclosing direct-versus-render-to-texture branch,
-complete inherited GS state, image transfer/residency, CLUT latch and raster
-consumers remain separate integration requirements.
+live render-target state. Complete inherited GS state, image transfer/residency,
+CLUT latch and raster consumers remain separate integration requirements.
 
 A separate actual-instruction tracer and audited native probe matched **79
 cases, 4,859 bind calls, 2,534 cold uploads and 308,352 command bytes**. This
@@ -102,6 +101,47 @@ unknown incoming state and failed output requests. These are original
 instructions over explicit synthetic live globals, not a console/live-menu
 capture, DMA-device execution or proof of texture sampling.
 
+## Enclosing original draw owner
+
+`plan_rac_frontend_owner_v1` retains the reached control flow of `21a610` as
+ordered calls, raw writes, emitted packets and explicit numeric dependencies.
+Separate observations cover the initial object pass, 14-slot projected-bounds
+prepass, both callback passes and the final object pass. Source gate precedence,
+slot-six gating, direct/RTT selection and callback-return crop precedence are
+preserved. The final pass does not invent a null-object skip that the original
+does not perform. A callback pointer reread after RTT setup/clear may differ
+from the pointer that passed initial selection.
+
+The RTT path emits the complete 240-byte setup and clear packets, retains live
+frame/depth/allocator values, and represents both viewport setters as ordered
+26-effect plans. Converted values and multiplication remain symbolic; source
+call delay-slot stores execute before their callee's conversion. Projection
+`1f3140` is a typed unexecuted dependency, not a host-math approximation.
+
+Restore reads the actual command-cursor state. A nonzero value selects REF9 to
+exactly 144 caller-owned bytes at the masked live environment address. Zero
+selects the original immediate-environment call with its unmasked argument;
+that source callee is recorded, not falsely claimed to have executed. Display
+dimensions are read live when reconstructing the viewport. This is not a stack
+that restores arbitrary guessed incoming GS state. Reached source ranges and
+finite output/dimension domains are validated; unsupported inputs fail instead
+of being normalized into a different render target.
+
+Eight permanent unit-test groups cover phase freshness, skip precedence,
+projected writes, RTT setup/restore, return flags and signed/wrapping crop,
+viewport ordering, both restore branches and input/budget rejection. The
+bounded owner does not execute object rendering, camera/projector callees,
+menu callbacks or the composite quad call. Their real effects, the complete
+menu lifecycle and the renderer remain integration work.
+
+An independent actual-instruction tracer and audited native comparison matched
+**48 cases and 10,711 ordered effects**, including 272 direct callbacks,
+698 RTT callback plans, 420 composite calls, 347,200 emitted packet bytes and
+36,296 symbolic viewport operations. All reached gates, argument words, raw
+writes and complete packet bytes were compared. Opaque source callees use
+explicit observations/hooks in this diagnostic; the result is not a running
+original menu, a hardware numerical capture or an executed graphics device.
+
 ## Shared PACKED and REGLIST consumption
 
 The existing bounded GIF/GS decoder now accepts both register formats. REGLIST
@@ -111,7 +151,8 @@ PACKED A+D, not by fabricating PACKED vertex fields. It concatenates all
 as sixteen, ignores REGLIST PRE/PRIM and treats REGLIST A+D as NOP. Only the
 final unused upper64 is padding. Raw qword and selected half are retained as
 write provenance. Unknown data stays unknown and all stream limits remain
-aggregate limits. IMAGE transfer is not added to this register decoder.
+aggregate limits. The strict XGKICK entry point remains register-only; the
+shared linear stream entry point below additionally retains IMAGE payloads.
 
 Synthetic regressions exercise all 64 NREG/loop combinations, both halves,
 odd counts crossing loop boundaries, padding poison, natural register fields,
@@ -123,6 +164,40 @@ PRMODECONT stays unknown; the known-state case provides an explicit synthetic
 incoming write. The immutable packet adapter used by this test is not a claim
 that EE PATH2 submission has become VU PATH1 execution or that the GS has
 rasterized those commands.
+
+## Actual transport and continuous GIF input
+
+`read_rac_frontend_gs_stream_v1` follows the actual command bytes through the
+source frontend's canonical CNT/DIRECT, REF/DIRECT and zero-payload NEXT forms.
+It does not trust the emitter's execution-order annotations. Explicit immutable
+source mappings must be aligned, disjoint and bounded; references must resolve
+wholly within one owner. NEXT targets stay inside command storage or terminate
+at its declared continuation. Aggregate source, command and output budgets
+bound malformed/cyclic input. Unsupported DMA flags, commands and VIF forms
+fail explicitly. This is the recovered frontend transport domain, not a full
+DMA/VIF device or permission to dereference source addresses in the runtime.
+
+All reached payload bytes are concatenated before GIF framing. In particular,
+an IMAGE header in one DIRECT can own texture data delivered by the next REF.
+`decode_gif_gs_linear_stream_v1` uses the existing register/primitive consumer
+continuously across PACKED, REGLIST, IMAGE and EOP boundaries. IMAGE bytes are
+owned output with exact tag, stream offset and preceding-register-count
+provenance. They are not interpreted as tags or applied to VRAM. Nonempty
+unqualified format 3 is rejected; empty tags ignore PRE and payload descriptors.
+The final input must end at EOP, but intermediate DIRECTs need not do so.
+
+Eight permanent test groups cover real batch/quad output, both upload gates,
+ownership and budgets, malformed transport, split GIF payloads, IMAGE framing,
+state/strip continuity and the enclosing RTT packet subsequence. The latter
+checks the three-tag 240-byte setup, non-EOP clear and exact caller-owned REF9
+restore; it does not execute opaque callbacks/projectors in the owner plan.
+
+The original 79-case instruction-generated command corpus also passes the
+transport and shared decoder: **5,744 DMA tags, 14,665,216 GIF bytes and 2,594
+IMAGE payloads containing 14,446,848 bytes**. Register/tag counts and ordered
+image bytes/prefixes are checked against the original upload queue. Texture
+contents in this transport diagnostic are explicitly generated test bytes;
+this is not a captured live GS upload or hardware/raster qualification.
 
 ## Remaining frontend work
 

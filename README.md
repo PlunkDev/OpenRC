@@ -45,14 +45,19 @@ both in progress. The repository currently provides:
   host-font replacement or a claim of completed menu rendering;
 - a source-compared [frontend quad and submission scope](docs/RAC_FRONTEND_DRAW_V1.md)
   preserving original command bytes, cold texture binding/upload order and
-  explicit unknown incoming render state, integrated with the shared bounded
-  PACKED/REGLIST decoder without claiming a visible original menu;
+  explicit unknown incoming render state, with actual CNT/NEXT/REF transport
+  and continuous PACKED/REGLIST/IMAGE consumption; image retention is not GS
+  residency or a visible original menu;
+- the enclosing original frontend draw-order plan, including projected bounds,
+  two callback passes, RTT setup/clear/restore and the final object pass;
+  opaque callbacks, projection arithmetic and actual menu execution remain open;
 - a source-compared [fresh Moby constructor](docs/RAC_MOBY_FRESH_CONSTRUCTOR_V1.md)
   preserving complete initial named state and original frame selection; ordered
   placement/post-step integration into the live world remains incomplete;
 - the source [authored Moby color tail](docs/RAC_MOBY_AUTHORED_TAIL_V1.md), with
   complete raw input retention, ordered stores and the exact pending reference
-  call gate; its live shared-reference mutation remains separate;
+  call gate, plus a source-compared [indexed reference-store adapter](docs/RAC_MOBY_REFERENCE_V1.md)
+  on canonical state; binding tokens to the staged live world remains separate;
 - a strict `RacGameplayBankV1` parser for both regional gameplay payloads on
   all 19 levels, exposing 36 named block ranges plus validated RAC1 moby-class
   IDs and 0x78-byte static-instance placements, dense per-instance PVar

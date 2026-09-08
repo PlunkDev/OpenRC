@@ -285,11 +285,17 @@ The [original integer layout and floating glyph/control plan](RAC_TEXT_LAYOUT_V1
 now preserve source text behavior and explicit arithmetic order. The pure
 [fresh constructor](RAC_MOBY_FRESH_CONSTRUCTOR_V1.md) now matches complete
 source initial state. The [authored color tail](RAC_MOBY_AUTHORED_TAIL_V1.md)
-preserves raw record words and original ordered stores, but not the following
-live shared-reference mutation. The [quad and frontend submission scope](RAC_FRONTEND_DRAW_V1.md)
-now preserve complete packet construction and cold-upload ordering, with
-shared PACKED/REGLIST drawing-stream regression coverage. None bypasses remaining
+preserves raw record words and original ordered stores. The following
+[indexed reference-store adapter](RAC_MOBY_REFERENCE_V1.md) now mutates explicitly
+bound canonical state, but live-token/entity ownership remains unconnected.
+The [quad and frontend submission scope](RAC_FRONTEND_DRAW_V1.md)
+preserve complete packet construction and cold-upload ordering, with actual
+CNT/NEXT/REF transport and shared PACKED/REGLIST/IMAGE stream coverage.
+IMAGE retention is not VRAM/CLUT residency. None bypasses remaining
 render/numeric/ordered integration or advances the whole-system completion claim.
+The enclosing original draw owner also preserves full reached phase ordering
+and both restore branches, with source-compared calls, writes and packets;
+opaque callees and viewport projection remain explicitly unexecuted dependencies.
 These components do not yet execute original initialization
 callbacks, supply exact range-query inputs, or enable AI in the graphical runtime.
 This does not declare Veldin finished: airborne and wrench animation, original

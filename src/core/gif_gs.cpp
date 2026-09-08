@@ -256,6 +256,31 @@ public:
         process_register_data(data, write_index, descriptor, address);
     }
 
+    void process_tag_payload(const DvpVuGifTagV1& tag,
+                             const std::uint64_t tag_index,
+                             const std::uint64_t tag_qword_index,
+                             const std::span<const DvpVuVectorV1> qwords) {
+        begin_tag(tag);
+        for (std::uint64_t loop = 0U; loop < tag.nloop; ++loop) {
+            for (std::uint8_t reg = 0U; reg < tag.register_count; ++reg) {
+                const auto item = loop * tag.register_count + reg;
+                const auto index = tag_qword_index + 1U +
+                                   (tag.format == 0U ? item : item / 2U);
+                const auto descriptor =
+                    static_cast<GifGsRegisterDescriptorV1>(tag.registers[reg]);
+                const auto& qword = qwords[static_cast<std::size_t>(index)];
+                if (tag.format == 0U) {
+                    process_write(tag_index, loop, reg, index, descriptor,
+                                  qword);
+                } else {
+                    process_reglist_write(tag_index, loop, reg, index,
+                                          static_cast<std::uint8_t>(item & 1U),
+                                          descriptor, qword);
+                }
+            }
+        }
+    }
+
     [[nodiscard]] GifGsDecodeResultV1 finish() && {
         result_.final_raster = raster_snapshot();
         result_.final_texture_binding = texture_binding_snapshot();
@@ -1103,43 +1128,9 @@ GifGsDecodeResultV1 decode_dvp_vu_xgkick_gs_stream_v1(
              ++tag_index) {
             const auto& record = event.tags[tag_index];
             const auto& tag = record.tag;
-            decoder.begin_tag(tag);
-            for (std::uint64_t loop_index = 0U; loop_index < tag.nloop;
-                 ++loop_index) {
-                for (std::uint8_t register_index = 0U;
-                     register_index < tag.register_count;
-                     ++register_index) {
-                    const auto payload_offset = checked_add(
-                        checked_multiply(loop_index,
-                                         tag.register_count,
-                                         "GIF register item offset"),
-                        register_index,
-                        "GIF register item offset");
-                    const auto qword_offset =
-                        tag.format == 0U ? payload_offset : payload_offset / 2U;
-                    const auto packet_index = checked_add(
-                        checked_add(record.packet_qword_index,
-                                    1U,
-                                    "GIF payload start"),
-                        qword_offset,
-                        "GIF payload qword index");
-                    const auto descriptor =
-                        static_cast<GifGsRegisterDescriptorV1>(
-                            tag.registers[register_index]);
-                    const auto& qword = event.packet_qwords[
-                        static_cast<std::size_t>(packet_index)];
-                    if (tag.format == 0U) {
-                        decoder.process_write(tag_index, loop_index,
-                                              register_index, packet_index,
-                                              descriptor, qword);
-                    } else {
-                        decoder.process_reglist_write(
-                            tag_index, loop_index, register_index, packet_index,
-                            static_cast<std::uint8_t>(payload_offset & 1U),
-                            descriptor, qword);
-                    }
-                }
-            }
+            decoder.process_tag_payload(tag, tag_index,
+                                        record.packet_qword_index,
+                                        event.packet_qwords);
         }
     }
 
@@ -1147,6 +1138,90 @@ GifGsDecodeResultV1 decode_dvp_vu_xgkick_gs_stream_v1(
     if (result.register_writes.size() != total_writes) {
         fail("Internal GIF/GS register write count mismatch");
     }
+    return result;
+}
+
+GifGsLinearDecodeResultV1
+decode_gif_gs_linear_stream_v1(const std::span<const std::byte> bytes,
+                               const GifGsDecodeLimitsV1 limits) {
+    validate_limits(limits);
+    if (bytes.empty() || (bytes.size() & 15U) != 0U ||
+        bytes.size() / 16U > limits.max_packet_qwords) {
+        fail("Linear GIF stream extent exceeds complete bounded qwords");
+    }
+    std::vector<DvpVuVectorV1> qwords(bytes.size() / 16U);
+    for (std::size_t q = 0U; q < qwords.size(); ++q) {
+        for (std::size_t lane = 0U; lane < 4U; ++lane) {
+            std::uint32_t word = 0U;
+            for (unsigned b = 0U; b < 4U; ++b)
+                word |= std::to_integer<std::uint32_t>(
+                            bytes[q * 16U + lane * 4U + b])
+                        << (b * 8U);
+            qwords[q].lanes[lane] = {word, kFullKnown};
+        }
+    }
+    GifGsLinearDecodeResultV1 result;
+    Decoder decoder{limits};
+    std::uint64_t writes = 0U;
+    bool last_eop = false;
+    for (std::size_t cursor = 0U; cursor < qwords.size();) {
+        if (result.tag_count >= limits.max_tags)
+            fail("Linear GIF stream tag limit exceeded");
+        const auto& raw = qwords[cursor];
+        const auto low = std::uint64_t{raw.lanes[0].bits} |
+                         (std::uint64_t{raw.lanes[1].bits} << 32U);
+        const auto high = std::uint64_t{raw.lanes[2].bits} |
+                          (std::uint64_t{raw.lanes[3].bits} << 32U);
+        DvpVuGifTagV1 tag;
+        tag.nloop = static_cast<std::uint16_t>(low & 0x7fffU);
+        tag.eop = ((low >> 15U) & 1U) != 0U;
+        tag.pre = ((low >> 46U) & 1U) != 0U;
+        tag.prim = static_cast<std::uint16_t>((low >> 47U) & 0x7ffU);
+        tag.format = static_cast<std::uint8_t>((low >> 58U) & 3U);
+        tag.register_count = static_cast<std::uint8_t>(low >> 60U);
+        if (tag.register_count == 0U)
+            tag.register_count = 16U;
+        tag.registers_known = true;
+        for (unsigned i = 0U; i < 16U; ++i)
+            tag.registers[i] =
+                static_cast<std::uint8_t>((high >> (4U * i)) & 15U);
+        if (tag.nloop != 0U && tag.format == 3U)
+            fail(
+                "Linear GIF format 3 is outside the established source domain");
+        const auto items = std::uint64_t{tag.nloop} * tag.register_count;
+        const auto payload = tag.nloop == 0U    ? 0U
+                             : tag.format == 0U ? items
+                             : tag.format == 1U ? (items + 1U) / 2U
+                                                : tag.nloop;
+        if (payload > qwords.size() - cursor - 1U)
+            fail("Linear GIF payload is truncated");
+        tag.payload_qword_count = payload;
+        if (tag.nloop != 0U && tag.format == 2U) {
+            decoder.begin_tag(tag);
+            GifGsImagePayloadV1 image;
+            image.tag_index = result.tag_count;
+            image.packet_qword_index = cursor + 1U;
+            image.preceding_register_write_count = writes;
+            const auto data = bytes.subspan(
+                (cursor + 1U) * 16U, static_cast<std::size_t>(payload) * 16U);
+            image.bytes.assign(data.begin(), data.end());
+            result.images.push_back(std::move(image));
+        } else {
+            if (items > limits.max_register_writes - writes)
+                fail("Linear GIF aggregate register write limit exceeded");
+            writes += items;
+            decoder.process_tag_payload(tag, result.tag_count, cursor, qwords);
+        }
+        ++result.tag_count;
+        result.end_of_packet_count += tag.eop ? 1U : 0U;
+        last_eop = tag.eop;
+        cursor += 1U + static_cast<std::size_t>(payload);
+    }
+    if (!last_eop)
+        fail("Linear GIF stream ends before EOP");
+    result.registers = std::move(decoder).finish();
+    if (result.registers.register_writes.size() != writes)
+        fail("Internal linear GIF register count mismatch");
     return result;
 }
 

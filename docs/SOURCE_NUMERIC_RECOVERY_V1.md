@@ -107,6 +107,39 @@ only that adder would not qualify the compound operation. ITOF and the other
 host-based paths retain `host_float_approximation`. This VU model also does not
 certify the EE COP1 arithmetic required by the floating frontend emitter.
 
+## EE COP1 conversion values
+
+The compiler-side `ee_cop1_numeric.hpp` now provides independently derived,
+integer-only CVT.S.W and CVT.W.S value helpers. Signed words convert by keeping
+the leading 24 significant bits, toward zero. Raw single encodings convert
+to an integer part or the sign-selected endpoint for encoded exponents above
+157. The explicit `clamped` result marks that path, including exact negative
+2^31; it is not an exception or invalid-operation flag. No host rounding mode,
+host float cast or hidden accumulator is used.
+
+This value contract is finitely corroborated by the
+[R5900 toolchain author's truncation report](https://sourceware.org/pipermail/binutils/2012-November/079351.html)
+and all 64 value rows in the
+[published ps2autotests conversion results](https://github.com/unknownbrackets/ps2autotests/blob/7655976cb25c95abcb409b360ac828e0a48356c4/tests/cpu/ee_fpu/convert.expected).
+Those external results were compared independently in memory; neither their
+tables nor harness code are copied into OpenRC. This is not a new console run
+or exhaustive hardware qualification.
+
+The separate CTC1 helper projects a supplied FCSR write through writable mask
+`0x0083c078` and fixed bits `0x01000001`, corroborated by the public
+[FCR test results](https://github.com/unknownbrackets/ps2autotests/blob/master/tests/cpu/ee_fpu/fcr.expected).
+It is not a default for unknown caller state. Conversion FCSR effects remain
+explicitly unqualified: the available conversion-value harness does not record
+those flags, and the reference descriptions conflict on clamped conversions.
+
+Five permanent test groups cover all signed halfwords, every exponent/sign,
+precision boundaries, 65,536 generated raw values and all 512 writable FCSR
+combinations. An audited original-ELF probe verifies both complete conversion
+leaves, the actual startup CTC1 and **131,088 source-routing cases** with
+poisoned unrelated state. The probe validates binding/control flow against the
+original instructions, not a physical numerical oracle. General EE ADD/MUL,
+frontend projection and VU MUL/ACC remain separate incomplete dependencies.
+
 ## Source integer spatial projection
 
 `project_rac_moby_spatial_bounds_v1` accepts explicit, already converted raw

@@ -64,8 +64,10 @@ zero, high-bit values and other words ending in `ffff`. A present value means
 **a pending call**, not a successful registration or an admitted entity.
 
 Source helper `0x24b1b0` separately reads the current signed level and base
-table, applies its own gate, and may write a shared indexed reference. Resolving
-that live state, destination ownership and actual mutation is still required.
+table, applies its own gate, and may write a shared indexed reference. The
+separate [reference-store adapter](RAC_MOBY_REFERENCE_V1.md) now implements and
+source-compares that mutation on explicitly bound canonical state. Binding its
+neutral references to the actual staged entity world is still required.
 The color helper neither skips it nor substitutes a runtime source pointer.
 After its return, or the exact caller skip, source live-count advance and the
 next admission may proceed. Later source callers can modify that same shared
