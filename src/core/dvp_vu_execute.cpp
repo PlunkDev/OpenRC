@@ -1,4 +1,5 @@
 #include "openrc/dvp_vu_execute.hpp"
+#include "openrc/dvp_vu_numeric.hpp"
 
 #include <algorithm>
 #include <array>
@@ -193,8 +194,12 @@ enum class FloatBinaryOperation : std::uint8_t {
     if (!fully_known(left) || !fully_known(right)) {
         return {};
     }
-    const auto left_bits = normalize_vu_float_bits(left.bits);
-    const auto right_bits = normalize_vu_float_bits(right.bits);
+    // MIN/MAX select an input encoding: the arithmetic denormal flush and
+    // overflow clamp must not rewrite the selected operand. Raw sign/magnitude
+    // ordering also keeps signed zero distinct. See the numeric recovery note
+    // for the documented/corroborated scope (not a fresh hardware capture).
+    const auto left_bits = left.bits;
+    const auto right_bits = right.bits;
     const auto left_sign = (left_bits >> 31U) != 0U;
     const auto right_sign = (right_bits >> 31U) != 0U;
 
@@ -216,20 +221,7 @@ enum class FloatBinaryOperation : std::uint8_t {
     if (!fully_known(source)) {
         return {};
     }
-    const auto source_bits = normalize_vu_float_bits(source.bits);
-    const auto value = static_cast<double>(std::bit_cast<float>(source_bits));
-    const auto scaled = std::ldexp(value, fractional_bits);
-    std::int32_t result = 0;
-    if (scaled >=
-        static_cast<double>(std::numeric_limits<std::int32_t>::max())) {
-        result = std::numeric_limits<std::int32_t>::max();
-    } else if (scaled <=
-               static_cast<double>(std::numeric_limits<std::int32_t>::min())) {
-        result = std::numeric_limits<std::int32_t>::min();
-    } else {
-        result = static_cast<std::int32_t>(std::trunc(scaled));
-    }
-    return known_word(static_cast<std::uint32_t>(result));
+    return known_word(dvp_vu_ftoi_bits_v1(source.bits, fractional_bits));
 }
 
 [[nodiscard]] DvpVuWordV1 convert_itof(const DvpVuWordV1 source,
@@ -474,7 +466,6 @@ make_pending_status(const std::uint64_t ready_cycle,
 }
 
 [[nodiscard]] DvpVuWordV1 upper_operand(const DvpVuUpperInstructionV1& upper,
-                                        const DvpVuInstructionPairV1& pair,
                                         const RegisterSnapshot& before,
                                         const std::size_t lane) {
     switch (upper.operand_mode) {
@@ -485,7 +476,9 @@ make_pending_status(const std::uint64_t ready_cycle,
         return selected ? before.vf[upper.ft].lanes[*selected] : DvpVuWordV1{};
     }
     case DvpVuUpperOperandMode::scalar_i:
-        return upper.immediate ? known_word(pair.raw_lower) : before.scalar_i;
+        // A paired LOI supplies I to the NEXT instruction. Like the other
+        // operands, this instruction reads the pre-pair snapshot.
+        return before.scalar_i;
     case DvpVuUpperOperandMode::scalar_q:
         return before.scalar_q;
     case DvpVuUpperOperandMode::none:
@@ -788,7 +781,9 @@ void execute_upper(const DvpVuInstructionPairV1& pair,
                                 output,
                                 upper.destination_mask);
         }
-        add_warning(result, DvpVuExecutionWarningV1::host_float_approximation);
+        if (is_itof(upper.opcode)) {
+            add_warning(result, DvpVuExecutionWarningV1::host_float_approximation);
+        }
         return;
     }
 
@@ -802,7 +797,7 @@ void execute_upper(const DvpVuInstructionPairV1& pair,
         for (std::size_t lane = 0U; lane < kDvpVuLaneCount; ++lane) {
             output.lanes[lane] =
                 float_minmax(before.vf[upper.fs].lanes[lane],
-                             upper_operand(upper, pair, before, lane),
+                             upper_operand(upper, before, lane),
                              maximum);
         }
         if (upper.fd != 0U) {
@@ -818,7 +813,7 @@ void execute_upper(const DvpVuInstructionPairV1& pair,
     std::array<FloatOutcome, kDvpVuLaneCount> outcomes{};
     for (std::size_t lane = 0U; lane < kDvpVuLaneCount; ++lane) {
         const auto left = before.vf[upper.fs].lanes[lane];
-        const auto right = upper_operand(upper, pair, before, lane);
+        const auto right = upper_operand(upper, before, lane);
         if (is_add_family(upper.opcode)) {
             outcomes[lane] =
                 float_binary(left, right, FloatBinaryOperation::add);
@@ -866,6 +861,9 @@ void execute_upper(const DvpVuInstructionPairV1& pair,
     case DvpVuLowerOpcode::fcand:
     case DvpVuLowerOpcode::fcset:
     case DvpVuLowerOpcode::fsand:
+    case DvpVuLowerOpcode::fmand:
+    case DvpVuLowerOpcode::fmeq:
+    case DvpVuLowerOpcode::fmor:
     case DvpVuLowerOpcode::iadd:
     case DvpVuLowerOpcode::iaddi:
     case DvpVuLowerOpcode::iaddiu:
@@ -1350,6 +1348,31 @@ void execute_vector_load(const DvpVuLowerInstructionV1& lower,
                                      known_word(lower.unsigned_immediate)),
                              kViMask));
         break;
+    case DvpVuLowerOpcode::fmand:
+        write_vi(state, source_it,
+                 masked_word(bit_and(before.mac_flags, before.vi[source_is]),
+                             kViMask));
+        break;
+    case DvpVuLowerOpcode::fmor:
+        write_vi(state, source_it,
+                 masked_word(bit_or(before.mac_flags, before.vi[source_is]),
+                             kViMask));
+        break;
+    case DvpVuLowerOpcode::fmeq: {
+        const auto source = before.vi[source_is];
+        const auto shared_known =
+            before.mac_flags.known_mask & source.known_mask & kViMask;
+        // A single proven mismatch settles equality even if other bits are
+        // unknown. Otherwise do not invent the comparison result.
+        DvpVuWordV1 value{0U, kViMask & ~1U};
+        if (((before.mac_flags.bits ^ source.bits) & shared_known) != 0U) {
+            value = known_vi(0U);
+        } else if (shared_known == kViMask) {
+            value = known_vi(1U);
+        }
+        write_vi(state, source_it, value);
+        break;
+    }
     case DvpVuLowerOpcode::fcand: {
         const auto mask = lower.unsigned_immediate & kClipMask;
         const auto known_one =
@@ -1664,7 +1687,7 @@ void validate_instruction_fields(const DvpVuInstructionPairV1& instruction) {
         static_cast<std::uint8_t>(lower.kind) >
             static_cast<std::uint8_t>(DvpVuLowerKind::immediate_literal) ||
         static_cast<std::uint8_t>(lower.opcode) >
-            static_cast<std::uint8_t>(DvpVuLowerOpcode::xtop) ||
+            static_cast<std::uint8_t>(DvpVuLowerOpcode::fmor) ||
         static_cast<std::uint8_t>(lower.ft_component) >
             static_cast<std::uint8_t>(DvpVuComponent::w) ||
         static_cast<std::uint8_t>(lower.fs_component) >

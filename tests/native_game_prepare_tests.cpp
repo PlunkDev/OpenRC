@@ -655,7 +655,10 @@ make_level_package(const std::uint32_t level_id,
 
 class PublicationFixture final {
 public:
-  explicit PublicationFixture(const ProfileMutation mutation) {
+  explicit PublicationFixture(
+      const ProfileMutation mutation,
+      const std::string_view compiler_version =
+          openrc::kNativeGameCompilerVersionV1) {
     openrc::PreparedGameV2 manifest;
     manifest.content_api_version = openrc::kOpenRcContentApiVersionV1;
     manifest.provenance.game_id = std::string(openrc::kNativeGameIdV1);
@@ -663,7 +666,7 @@ public:
     manifest.provenance.compiler_id =
         std::string(openrc::kNativeGameCompilerIdV1);
     manifest.provenance.compiler_version =
-        std::string(openrc::kNativeGameCompilerVersionV1);
+        std::string(compiler_version);
     manifest.provenance.source_image_bytes = kSourceImageBytes;
     manifest.provenance.source_image_sha256 = kSourceImageSha256;
 
@@ -715,6 +718,20 @@ void expect_native_profile_rejected(Callback &&callback,
 void test_complete_prepared_only_profile_is_accepted() {
   PublicationFixture fixture(ProfileMutation::none);
   fixture.validate();
+}
+
+void test_pre_loi_fix_compiler_cache_is_rejected() {
+  const std::string current(openrc::kNativeGameCompilerVersionV1);
+  const auto suffix = current.find("-native-eight-resource-");
+  if (suffix == std::string::npos) {
+    throw std::runtime_error("native compiler identity lacks its profile suffix");
+  }
+  const auto previous = current.substr(0U, suffix) +
+                        "-native-eight-resource-v4-moby749-initial";
+  PublicationFixture fixture(ProfileMutation::none, previous);
+  expect_native_profile_rejected(
+      [&] { fixture.validate(); },
+      "a structurally valid pre-LOI-fix cache was accepted as current");
 }
 
 void test_empty_crate_profile_is_rejected() {
@@ -798,6 +815,7 @@ void test_player_animation_profile_is_exact() {
 int main() {
   try {
     test_complete_prepared_only_profile_is_accepted();
+    test_pre_loi_fix_compiler_cache_is_rejected();
     test_empty_crate_profile_is_rejected();
     test_crate_binding_chain_is_rejected_when_broken();
     test_crates_must_share_one_render_mesh();

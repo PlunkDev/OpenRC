@@ -12,6 +12,12 @@ modern platform features.
 
 ## Current status
 
+The current target is the original startup/menu and new-game flow through
+introductory Veldin into Novalis; **that end-to-end flow is not playable yet**.
+See [the First Playable acceptance status](docs/FIRST_PLAYABLE.md). Existing
+prototype gameplay and successful component tests are not claims of PS2
+gameplay fidelity.
+
 Stage 1 inventory and the reusable foundation for the first playable slice are
 both in progress. The repository currently provides:
 
@@ -29,6 +35,11 @@ both in progress. The repository currently provides:
 - a bounded `SceneAnimationBankV1` parser for every local resource-block WAD
   run, covering camera-record cadence, actor animation frames, per-frame root
   transforms, and optional PAL five-language subtitle tails;
+- a compiler-side [shared keyed text-bank parser](docs/RAC_TEXT_BANK_V1.md)
+  preserving all eight source slots, raw glyph/control bytes and first-match
+  lookup, verified against all 8,743 rows in the reference source, plus exact
+  decoding of the three original font-metric tables (696 verified rows) and
+  all 40 [frontend texture descriptors and images](docs/RAC_FRONTEND_TEXTURE_V1.md);
 - a strict `RacGameplayBankV1` parser for both regional gameplay payloads on
   all 19 levels, exposing 36 named block ranges plus validated RAC1 moby-class
   IDs and 0x78-byte static-instance placements, dense per-instance PVar

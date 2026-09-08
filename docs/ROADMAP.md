@@ -1,5 +1,10 @@
 # OpenRC roadmap
 
+The current user-facing acceptance gate is
+[Milestone 1: original startup through Veldin into Novalis](FIRST_PLAYABLE.md).
+The component checkmarks below retain their historical, explicitly bounded
+scope; they do not declare original gameplay or the normal new-game flow done.
+
 This roadmap describes technical milestones rather than release dates.
 
 The playable-runtime path is dependency-driven: unfinished broad Stage 1
@@ -268,6 +273,13 @@ complete ordered placement/constructor loop and native publication remain
 unconnected. A native [ordered spatial index](ORDERED_SPATIAL_INDEX_V1.md)
 now preserves dynamic cell-list order, allocation, relocation and snapshots;
 source-qualified numerical bounds and live-actor binding remain required.
+The [numerical recovery layer](SOURCE_NUMERIC_RECOVERY_V1.md) now preserves
+paired-I timing, MAC flag reads, integer-only FTOI conversion and the original
+post-conversion bounds projection. MUL/ADD/ACC qualification and the complete
+ordered live-loader integration remain open. The original
+[shared keyed text bank and font-metric tables](RAC_TEXT_BANK_V1.md), together
+with the [frontend texture catalog](RAC_FRONTEND_TEXTURE_V1.md), are decoded
+and verified, but are not an implemented original menu or HUD.
 These components do not yet execute original initialization
 callbacks, supply exact range-query inputs, or enable AI in the graphical runtime.
 This does not declare Veldin finished: airborne and wrench animation, original

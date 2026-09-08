@@ -424,6 +424,230 @@ void test_status_latency_and_same_pair_snapshot() {
                      "FSAND four pairs after SUB must see new sign status bit");
 }
 
+void test_loi_reads_previous_i_then_publishes_literal() {
+    constexpr auto immediate = 0x80000000U;
+    const auto addi = upper_fields(0x08U, 0U, 1U, 2U) | 0x22U;
+    const auto muli = upper_fields(0x08U, 0U, 1U, 3U) | 0x1eU;
+    const auto program = decode_words(
+        {0x40000000U, 0x40e00000U, kLowerNop, kLowerNop},
+        {kUpperNop | immediate, addi | immediate,
+         muli | kUpperEnd, kUpperNop});
+    auto state = openrc::make_dvp_vu_execution_state_v1();
+    state.vf[1U].lanes[0U] = known_float(3.0F);
+    const auto result = execute(program, std::move(state));
+    expect(result.termination == openrc::DvpVuTerminationV1::program_end,
+           "paired LOI test should terminate normally");
+    expect_known_float(result.final_state.vf[2U].lanes[0U], 5.0F,
+                       "ADDI must use prior I=2, not paired LOI=7");
+    expect_known_float(result.final_state.vf[3U].lanes[0U], 21.0F,
+                       "next MULI must use newly published I=7");
+    expect(result.final_state.scalar_i == known_float(7.0F),
+           "LOI must persist in the scalar register");
+
+    const auto unknown_program = decode_words(
+        {0x40e00000U, kLowerNop},
+        {addi | immediate | kUpperEnd, muli});
+    auto unknown = openrc::make_dvp_vu_execution_state_v1();
+    unknown.vf[1U].lanes[0U] = known_float(3.0F);
+    const auto unknown_result = execute(unknown_program, std::move(unknown));
+    expect(unknown_result.final_state.vf[2U].lanes[0U].known_mask == 0U,
+           "paired literal cannot turn unknown prior I into known input");
+    expect_known_float(unknown_result.final_state.vf[3U].lanes[0U], 21.0F,
+                       "E delay instruction must see the published I");
+}
+
+void test_ftoi_instruction_masks_flags_and_knownness() {
+    for (const auto instruction : {0x17cU, 0x17dU, 0x17eU, 0x17fU}) {
+        const auto program = decode_words(
+            {kLowerNop, kLowerNop},
+            {upper_fields(0x0bU, 1U, 1U, 0U) | instruction | kUpperEnd,
+             upper_fields(0x0fU, 0U, 2U, 0U) | instruction});
+        auto state = openrc::make_dvp_vu_execution_state_v1();
+        state.vf[1U] = known_vector(
+            {0x7fffffffU, 0xfeedbeefU, 0xffffffffU, 0x3f800000U});
+        state.vf[1U].lanes[3U].known_mask = 0x7fffffffU;
+        state.mac_flags = known_word(0xa55aU);
+        state.status_flags = known_word(0x369U);
+        state.clip_flags = known_word(0x123456U);
+        const auto result = execute(program, std::move(state));
+        expect(result.termination == openrc::DvpVuTerminationV1::program_end,
+               "FTOI masked in-place fixture must end normally");
+        expect(result.final_state.vf[1U].lanes[0U] == known_word(0x7fffffffU) &&
+                   result.final_state.vf[1U].lanes[1U] == known_word(0xfeedbeefU) &&
+                   result.final_state.vf[1U].lanes[2U] == known_word(0x80000000U),
+               "FTOI must saturate by sign and preserve unselected Y");
+        expect(result.final_state.vf[1U].lanes[3U].known_mask == 0U,
+               "FTOI must not invent missing input bits");
+        expect(result.final_state.vf[0U] ==
+                   known_vector({0U, 0U, 0U, 0x3f800000U}),
+               "FTOI must not modify VF0");
+        expect(result.final_state.mac_flags.bits == 0xa55aU &&
+                   result.final_state.status_flags.bits == 0x369U &&
+                   result.final_state.clip_flags.bits == 0x123456U,
+               "FTOI saturation must leave all flags unchanged");
+        expect(result.warnings.empty(),
+               "integer-only FTOI has no host-float warning");
+    }
+    const auto itof = decode_words(
+        {kLowerNop, kLowerNop},
+        {upper_fields(0x0fU, 1U, 2U, 0U) | 0x13cU | kUpperEnd, kUpperNop});
+    expect(has_warning(execute(itof, openrc::make_dvp_vu_execution_state_v1()),
+                       openrc::DvpVuExecutionWarningV1::host_float_approximation),
+           "Unrecovered ITOF must retain its approximation warning");
+}
+
+void test_mac_flag_reads_and_partial_information() {
+    const auto program = decode_words(
+        {0x34000000U | lower_fields(0U, 1U, 10U),
+         0x36000000U | lower_fields(0U, 2U, 11U),
+         0x30000000U | lower_fields(0U, 3U, 12U),
+         0x30000000U | lower_fields(0U, 4U, 13U),
+         0x36000000U | lower_fields(0U, 0U, 10U), kLowerNop},
+        {kUpperNop, kUpperNop, kUpperNop, kUpperNop,
+         kUpperNop | kUpperEnd, kUpperNop});
+    auto state = openrc::make_dvp_vu_execution_state_v1();
+    state.mac_flags = known_word(0xa55aU);
+    state.status_flags = known_word(0x123U);
+    state.clip_flags = known_word(0x456789U);
+    state.vi[10U] = known_word(0x00ffU);
+    state.vi[11U] = known_word(0xf000U);
+    state.vi[12U] = known_word(0xa55aU);
+    state.vi[13U] = known_word(0xa55bU);
+    const auto result = execute(program, std::move(state));
+    expect_known_u16(result.final_state.vi[1U], 0x005aU, "FMAND result");
+    expect_known_u16(result.final_state.vi[2U], 0xf55aU, "FMOR result");
+    expect_known_u16(result.final_state.vi[3U], 1U, "FMEQ equality");
+    expect_known_u16(result.final_state.vi[4U], 0U, "FMEQ inequality");
+    expect_known_u16(result.final_state.vi[0U], 0U, "VI0 remains zero");
+    expect(result.final_state.mac_flags.bits == 0xa55aU &&
+               result.final_state.status_flags.bits == 0x123U &&
+               result.final_state.clip_flags.bits == 0x456789U,
+           "MAC flag tests must not write any flags");
+    expect(result.warnings.empty(), "integer flag tests need no float warning");
+
+    auto partial = openrc::make_dvp_vu_execution_state_v1();
+    partial.mac_flags = {0x8001U, 0x8001U};
+    partial.vi[10U] = known_word(0U);
+    partial.vi[11U] = known_word(0xffffU);
+    partial.vi[12U] = known_word(0U);
+    partial.vi[13U] = known_word(0x8001U);
+    const auto mixed = execute(program, std::move(partial));
+    expect_known_u16(mixed.final_state.vi[1U], 0U,
+                     "AND zero must settle unknown bits");
+    expect_known_u16(mixed.final_state.vi[2U], 0xffffU,
+                     "OR ones must settle unknown bits");
+    expect_known_u16(mixed.final_state.vi[3U], 0U,
+                     "known mismatch must settle FMEQ false");
+    expect(mixed.final_state.vi[4U].known_mask == 0xfffeU,
+           "FMEQ unresolved low bit must remain unknown");
+}
+
+void test_mac_latency_and_immediate_branch() {
+    const auto fmor = [](const std::uint8_t destination) {
+        return 0x36000000U | lower_fields(0U, destination, 0U);
+    };
+    const auto add = upper_fields(0x0eU, 0U, 1U, 31U) | 0x28U;
+    const auto branch = 0x50000000U | lower_fields(0U, 4U, 10U) | 2U;
+    const auto skipped = 0x80000032U | lower_fields(0U, 5U, 0U, 9U);
+    const auto program = decode_words(
+        {fmor(2U), kLowerNop, kLowerNop, fmor(3U), fmor(4U),
+         branch, kLowerNop, skipped, kLowerNop, kLowerNop},
+        {add, kUpperNop, kUpperNop, kUpperNop, kUpperNop,
+         kUpperNop, kUpperNop, kUpperNop, kUpperNop | kUpperEnd, kUpperNop});
+    auto state = openrc::make_dvp_vu_execution_state_v1();
+    state.mac_flags = known_word(0xabcdU);
+    state.vi[10U] = known_word(0x0aU);
+    state.vi[5U] = known_word(0U);
+    state.vf[1U] = known_float_vector({0.0F, 1.0F, 0.0F, 0.0F});
+    const auto result = execute(program, std::move(state));
+    expect_known_u16(result.final_state.vi[2U], 0xabcdU,
+                     "same-pair FMOR reads prior MAC");
+    expect_known_u16(result.final_state.vi[3U], 0xabcdU,
+                     "FMOR before four pairs reads prior MAC");
+    expect_known_u16(result.final_state.vi[4U], 0x0aU,
+                     "FMOR at four pairs reads X/Z zero flags");
+    expect_known_u16(result.final_state.vi[5U], 0U,
+                     "branch directly following FMOR sees its result");
+    expect(result.instruction_trace ==
+               std::vector<std::uint16_t>{0U, 1U, 2U, 3U, 4U, 5U, 6U, 8U, 9U},
+           "MAC-read dependent branch must execute its delay slot only");
+}
+
+void test_minmax_preserves_selected_raw_encodings() {
+    struct Case {
+        std::uint32_t left, right, minimum, maximum;
+    };
+    constexpr std::array cases{
+        Case{0U, 0x80000000U, 0x80000000U, 0U},
+        Case{0U, 1U, 0U, 1U},
+        Case{0x80000000U, 0x80000001U, 0x80000001U, 0x80000000U},
+        Case{0x007ffffeU, 0x007fffffU, 0x007ffffeU, 0x007fffffU},
+        Case{0x807ffffeU, 0x807fffffU, 0x807fffffU, 0x807ffffeU},
+        Case{0x7f800000U, 0x7f7fffffU, 0x7f7fffffU, 0x7f800000U},
+        Case{0xff800000U, 0xff7fffffU, 0xff800000U, 0xff7fffffU},
+        Case{0xffffffffU, 0x7fffffffU, 0xffffffffU, 0x7fffffffU},
+        Case{0x80000001U, 1U, 0x80000001U, 1U},
+    };
+    const auto program = decode_words(
+        {kLowerNop, kLowerNop, kLowerNop},
+        {upper_fields(0x08U, 2U, 1U, 3U) | 0x2fU,
+         upper_fields(0x08U, 2U, 1U, 4U) | 0x2bU | kUpperEnd, kUpperNop});
+    for (const auto &item : cases) {
+        for (const auto reverse : {false, true}) {
+            auto state = openrc::make_dvp_vu_execution_state_v1();
+            state.vf[1U].lanes[0U] = known_word(reverse ? item.right : item.left);
+            state.vf[2U].lanes[0U] = known_word(reverse ? item.left : item.right);
+            state.mac_flags = known_word(0xa55aU);
+            const auto result = execute(program, std::move(state));
+            expect(result.final_state.vf[3U].lanes[0U] == known_word(item.minimum) &&
+                       result.final_state.vf[4U].lanes[0U] == known_word(item.maximum),
+                   "MIN/MAX must select raw bits without arithmetic normalization");
+            expect(result.final_state.mac_flags.bits == 0xa55aU,
+                   "MIN/MAX must not update MAC flags");
+        }
+    }
+}
+
+void test_queued_mac_producers_and_unknown_branch() {
+    const auto fmor = [](const std::uint8_t destination) {
+        return 0x36000000U | lower_fields(0U, destination, 0U);
+    };
+    const auto add = upper_fields(0x0eU, 0U, 1U, 31U) | 0x28U;
+    const auto sub = upper_fields(0x0fU, 0U, 0U, 30U) | 0x2cU;
+    const auto program = decode_words(
+        {kLowerNop, kLowerNop, kLowerNop, kLowerNop, fmor(2U),
+         fmor(3U), kLowerNop},
+        {add, sub, kUpperNop, kUpperNop, kUpperNop,
+         kUpperNop | kUpperEnd, kUpperNop});
+    auto state = openrc::make_dvp_vu_execution_state_v1();
+    state.vf[1U] = known_float_vector({0.0F, 1.0F, 0.0F, 0.0F});
+    const auto result = execute(program, std::move(state));
+    expect_known_u16(result.final_state.vi[2U], 0x0aU,
+                     "FMOR must read first producer before second is ready");
+    expect_known_u16(result.final_state.vi[3U], 0x0fU,
+                     "next FMOR must read independently queued producer");
+
+    const auto unknown_program = decode_words(
+        {0x30000000U | lower_fields(0U, 1U, 10U),
+         0x50000000U | lower_fields(0U, 1U, 0U) | 2U,
+         0x80000032U | lower_fields(0U, 2U, 0U, 7U),
+         kLowerNop, kLowerNop, kLowerNop},
+        {kUpperNop, kUpperNop, kUpperNop, kUpperNop,
+         kUpperNop | kUpperEnd, kUpperNop});
+    auto unknown = openrc::make_dvp_vu_execution_state_v1();
+    unknown.mac_flags = {1U, 0xfffeU}; // bit0 differs, but is unknown.
+    unknown.vi[10U] = known_word(0U);
+    const auto unresolved = execute(unknown_program, std::move(unknown));
+    expect(unresolved.termination ==
+               openrc::DvpVuTerminationV1::indeterminate_control,
+           "unproven FMEQ must not choose a branch path");
+    expect_known_u16(unresolved.final_state.vi[2U], 7U,
+                     "indeterminate branch still executes its delay pair");
+    expect(unresolved.instruction_trace ==
+               std::vector<std::uint16_t>{0U, 1U, 2U},
+           "indeterminate control must stop before either branch successor");
+}
+
 void test_clip_latency_four_pairs() {
     const auto clipw = upper_fields(0x0eU, 10U, 8U, 0U) | 0x1ffU;
     const auto fcand_positive_x = 0x24000001U;
@@ -659,6 +883,12 @@ int main() {
         test_branch_executes_one_delay_pair();
         test_e_delay_lq_warns_and_commits();
         test_status_latency_and_same_pair_snapshot();
+        test_loi_reads_previous_i_then_publishes_literal();
+        test_ftoi_instruction_masks_flags_and_knownness();
+        test_mac_flag_reads_and_partial_information();
+        test_mac_latency_and_immediate_branch();
+        test_minmax_preserves_selected_raw_encodings();
+        test_queued_mac_producers_and_unknown_branch();
         test_clip_latency_four_pairs();
         test_div_q_latency_six_and_seven_pairs();
         test_data_memory_address_wraps();

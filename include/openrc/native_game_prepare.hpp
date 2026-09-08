@@ -19,13 +19,15 @@ inline constexpr std::string_view kNativeGameCompilerIdV1 =
 // The profile suffix is intentionally part of publication identity: packages
 // without the complete source-addressed Ratchet animation bank, Veldin
 // class-749 actor corpus, and explicit source state-0 entry classification must
-// be rebuilt.
+// be rebuilt. v5 also invalidates preparation with the incorrect same-pair LOI
+// operand: source VU programs must use the preceding I value. This changes
+// compiler semantics, not the eight-resource runtime schema.
 #ifdef OPENRC_VERSION
 inline constexpr std::string_view kNativeGameCompilerVersionV1 =
-    OPENRC_VERSION "-native-eight-resource-v4-moby749-initial";
+    OPENRC_VERSION "-native-eight-resource-v5-vu-loi";
 #else
 inline constexpr std::string_view kNativeGameCompilerVersionV1 =
-    "0.1.0-dev-native-eight-resource-v4-moby749-initial";
+    "0.1.0-dev-native-eight-resource-v5-vu-loi";
 #endif
 inline constexpr std::uint64_t kNativeGameLevelPackageMaxBytesV1 =
     UINT64_C(768) * 1024U * 1024U;

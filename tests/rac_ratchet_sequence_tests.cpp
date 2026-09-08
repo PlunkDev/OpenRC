@@ -245,6 +245,36 @@ void test_moby_class_relative_frame_offsets() {
       "a Moby frame offset before its bounded sequence was accepted");
 }
 
+void test_frame_table_order_is_not_physical_address_order() {
+  for (const bool class_relative : {false, true}) {
+    auto bytes = make_regular_source();
+    const auto base = static_cast<std::size_t>(kRegularSequenceOffset);
+    const auto origin = class_relative ? kRegularSequenceOffset : 0U;
+    write_le32(bytes, base + 0x1cU, origin + 0x80U);
+    write_le32(bytes, base + 0x20U, origin + 0x50U);
+    const auto result = class_relative
+        ? openrc::parse_rac_moby_sequence_v1(
+              bytes, {kRegularSequenceOffset, kRegularSequenceBytes}, kLimits)
+        : openrc::parse_rac_ratchet_sequence_v1(
+              bytes, {kRegularSequenceOffset, kRegularSequenceBytes}, kLimits);
+    expect(result.frames.size() == 2U &&
+               result.frames[0U].relative_offset == 0x80U &&
+               result.frames[1U].relative_offset == 0x50U &&
+               result.frames[0U].source_offset == 0xc0U &&
+               result.frames[1U].source_offset == 0x90U &&
+               result.frames[0U].packed_offset_word == origin + 0x80U &&
+               result.frames[1U].packed_offset_word == origin + 0x50U &&
+               result.frames[0U].phase_rate == 0.5F &&
+               result.frames[1U].phase_rate == 0.125F,
+           "logical frame indices must preserve the source table, including "
+           "descending physical addresses");
+    expect(result.encoded_bytes == std::vector<std::byte>(
+               bytes.begin() + kRegularSequenceOffset,
+               bytes.begin() + kRegularSequenceOffset + kRegularSequenceBytes),
+           "owned frame table must agree with the parsed logical order");
+  }
+}
+
 void test_envelope_and_limit_rejections() {
   const auto bytes = make_regular_source();
   for (const auto limits : {
@@ -545,6 +575,7 @@ int main(const int argc, char **argv) {
     }
     test_regular_sequence_and_owned_bytes();
     test_moby_class_relative_frame_offsets();
+    test_frame_table_order_is_not_physical_address_order();
     test_envelope_and_limit_rejections();
     test_packed_offset_and_frame_rejections();
     std::cout << "RAC Ratchet sequence tests passed\n";

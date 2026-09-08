@@ -213,6 +213,9 @@ enum class FrameOffsetBasis {
   const auto first_frame_offset = physical_offsets.front();
   result.pre_frame_data_range = {directory_end,
                                  first_frame_offset - directory_end};
+  // The source resolves a logical frame index through its table entry, not
+  // through sorted physical addresses. Only physical_offsets is sorted for
+  // range checks; raw_frames must retain every authored ordering.
 
   result.trigger_words.reserve(result.trigger_count);
   for (std::uint32_t index = 0U; index < result.trigger_count; ++index) {

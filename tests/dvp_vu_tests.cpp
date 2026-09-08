@@ -230,6 +230,12 @@ void test_lower_opcode_corpus_and_immediates() {
              openrc::DvpVuLowerOpcode::div},
         Case{0x24012345U, openrc::DvpVuLowerOpcode::fcand},
         Case{0x22023456U, openrc::DvpVuLowerOpcode::fcset},
+        Case{0x34050000U | lower_fields(0U, 0U, 6U),
+             openrc::DvpVuLowerOpcode::fmand},
+        Case{0x30050000U | lower_fields(0U, 0U, 6U),
+             openrc::DvpVuLowerOpcode::fmeq},
+        Case{0x36050000U | lower_fields(0U, 0U, 6U),
+             openrc::DvpVuLowerOpcode::fmor},
         Case{0x2c050345U, openrc::DvpVuLowerOpcode::fsand},
         Case{0x2a200340U, openrc::DvpVuLowerOpcode::fsset},
         Case{0x80000030U | registers, openrc::DvpVuLowerOpcode::iadd},
@@ -327,6 +333,23 @@ void test_lower_opcode_corpus_and_immediates() {
                fsset_report.instructions[0U].lower.unsigned_immediate ==
                    0x0b40U,
            "FSSET did not preserve immediate bit 11");
+}
+
+void test_mac_flag_read_encoding() {
+    for (const auto opcode : {0x30000000U, 0x34000000U, 0x36000000U}) {
+        const auto word = opcode | lower_fields(0U, 13U, 10U);
+        const auto report = decode_words(std::array{word});
+        expect(report.unknown_lower_count == 0U &&
+                   report.instructions[0U].lower.it == 13U &&
+                   report.instructions[0U].lower.is == 10U,
+               "MAC test must preserve source and destination fields");
+        // No lane mask or immediate belongs to these instructions.
+        for (const auto reserved : {0x01000000U, 0x00200000U, 0x400U, 1U}) {
+            const auto bad = decode_words(std::array{word | reserved});
+            expect(bad.unknown_lower_count == 1U,
+                   "reserved MAC test bits must not decode as a valid op");
+        }
+    }
 }
 
 void test_out_of_order_chunks_gaps_flags_literal_and_zero_copy() {
@@ -838,6 +861,7 @@ int main() {
     try {
         test_upper_opcode_corpus_and_raw_fields();
         test_lower_opcode_corpus_and_immediates();
+        test_mac_flag_read_encoding();
         test_out_of_order_chunks_gaps_flags_literal_and_zero_copy();
         test_typed_memory_accesses();
         test_control_flow_delay_slots_and_basic_blocks();

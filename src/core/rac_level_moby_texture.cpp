@@ -1,4 +1,5 @@
 #include "openrc/rac_level_moby_texture.hpp"
+#include "openrc/ps2_palette.hpp"
 
 #include <bit>
 #include <cstddef>
@@ -81,23 +82,6 @@ void require_range(const std::uint64_t offset,
     const std::span<const std::byte> bytes,
     const std::size_t offset) noexcept {
     return std::bit_cast<std::int32_t>(read_le32(bytes, offset));
-}
-
-[[nodiscard]] std::uint8_t
-map_palette_index(const std::uint8_t index) noexcept {
-    // The GS CLUT layout swaps address bits 3 and 4. This permutation is its
-    // own inverse, so the same mapping converts either direction.
-    return static_cast<std::uint8_t>(
-        (index & 0xe7U) | ((index & 0x08U) << 1U) |
-        ((index & 0x10U) >> 1U));
-}
-
-[[nodiscard]] std::uint8_t expand_ps2_alpha(
-    const std::uint8_t alpha) noexcept {
-    return alpha < 0x80U
-               ? static_cast<std::uint8_t>(
-                     static_cast<std::uint16_t>(alpha) * 2U)
-               : 0xffU;
 }
 
 void validate_limits(const RacLevelMobyTextureLimitsV1 limits) {
@@ -263,7 +247,7 @@ RacLevelMobyTextureBankV1 decode_rac_level_moby_texture_bank_v1(
         for (std::uint32_t logical_index = 0U;
              logical_index < kRacLevelMobyTexturePaletteColorCountV1;
              ++logical_index) {
-            const auto raw_index = map_palette_index(
+            const auto raw_index = psmt8_clut_storage_index_v1(
                 static_cast<std::uint8_t>(logical_index));
             const auto raw_offset =
                 static_cast<std::size_t>(palette_offset) +
@@ -276,7 +260,7 @@ RacLevelMobyTextureBankV1 decode_rac_level_moby_texture_bank_v1(
             texture.palette_rgba[output_offset + 2U] =
                 raw_gs_ram[raw_offset + 2U];
             texture.palette_rgba[output_offset + 3U] =
-                static_cast<std::byte>(expand_ps2_alpha(
+                static_cast<std::byte>(ps2_alpha_to_rgba8_v1(
                     byte_value(raw_gs_ram[raw_offset + 3U])));
         }
 

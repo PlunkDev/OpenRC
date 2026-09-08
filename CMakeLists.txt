@@ -39,6 +39,7 @@ add_library(openrc_core STATIC
     src/core/destructible_scene_io.cpp
     src/core/dvp_vu.cpp
     src/core/dvp_vu_execute.cpp
+    src/core/dvp_vu_numeric.cpp
     src/core/ee_r5900_boundary.cpp
     src/core/elf.cpp
     src/core/entity_scene.cpp
@@ -94,6 +95,7 @@ add_library(openrc_core STATIC
     src/core/rac_moby_actor_scene_compile.cpp
     src/core/rac_moby_animation_compile.cpp
     src/core/rac_moby_class.cpp
+    src/core/rac_moby_spatial_bounds.cpp
     src/core/rac_moby_bind_pose.cpp
     src/core/rac_moby_model_geometry.cpp
     src/core/rac_moby_packet_geometry.cpp
@@ -102,6 +104,9 @@ add_library(openrc_core STATIC
     src/core/rac_ratchet_animation_compile.cpp
     src/core/rac_ratchet_pose.cpp
     src/core/rac_ratchet_sequence.cpp
+    src/core/rac_text_bank.cpp
+    src/core/rac_font_metrics.cpp
+    src/core/rac_frontend_texture.cpp
     src/core/rac_tie_class.cpp
     src/core/render_scene.cpp
     src/core/render_scene_io.cpp
@@ -2116,6 +2121,30 @@ if(OPENRC_BUILD_TESTS)
     target_link_libraries(openrc-dvp-vu-execute-tests PRIVATE openrc_core)
     target_compile_features(openrc-dvp-vu-execute-tests PRIVATE cxx_std_20)
 
+    add_executable(openrc-dvp-vu-numeric-tests tests/dvp_vu_numeric_tests.cpp)
+    target_link_libraries(openrc-dvp-vu-numeric-tests PRIVATE openrc_core)
+    target_compile_features(openrc-dvp-vu-numeric-tests PRIVATE cxx_std_20)
+
+    add_executable(openrc-rac-moby-spatial-bounds-tests tests/rac_moby_spatial_bounds_tests.cpp)
+    target_link_libraries(openrc-rac-moby-spatial-bounds-tests PRIVATE openrc_core)
+    target_compile_features(openrc-rac-moby-spatial-bounds-tests PRIVATE cxx_std_20)
+
+    add_executable(openrc-rac-text-bank-tests tests/rac_text_bank_tests.cpp)
+    target_link_libraries(openrc-rac-text-bank-tests PRIVATE openrc_core)
+    target_compile_features(openrc-rac-text-bank-tests PRIVATE cxx_std_20)
+
+    add_executable(openrc-rac-font-metrics-tests tests/rac_font_metrics_tests.cpp)
+    target_link_libraries(openrc-rac-font-metrics-tests PRIVATE openrc_core)
+    target_compile_features(openrc-rac-font-metrics-tests PRIVATE cxx_std_20)
+
+    add_executable(openrc-ps2-palette-tests tests/ps2_palette_tests.cpp)
+    target_link_libraries(openrc-ps2-palette-tests PRIVATE openrc_core)
+    target_compile_features(openrc-ps2-palette-tests PRIVATE cxx_std_20)
+
+    add_executable(openrc-rac-frontend-texture-tests tests/rac_frontend_texture_tests.cpp)
+    target_link_libraries(openrc-rac-frontend-texture-tests PRIVATE openrc_core)
+    target_compile_features(openrc-rac-frontend-texture-tests PRIVATE cxx_std_20)
+
     add_executable(openrc-gif-gs-tests tests/gif_gs_tests.cpp)
     target_link_libraries(openrc-gif-gs-tests PRIVATE openrc_core)
     target_compile_features(openrc-gif-gs-tests PRIVATE cxx_std_20)
@@ -2207,6 +2236,12 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-ee-r5900-boundary-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-dvp-vu-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-dvp-vu-execute-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-dvp-vu-numeric-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-rac-moby-spatial-bounds-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-rac-text-bank-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-rac-font-metrics-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-ps2-palette-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-rac-frontend-texture-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-gif-gs-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-scene-block-geometry-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-scene-geometry-tests PRIVATE /W4 /permissive- /utf-8)
@@ -2222,6 +2257,12 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-ee-r5900-boundary-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-dvp-vu-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-dvp-vu-execute-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-dvp-vu-numeric-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-rac-moby-spatial-bounds-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-rac-text-bank-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-rac-font-metrics-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-ps2-palette-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-rac-frontend-texture-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-gif-gs-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-scene-block-geometry-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-scene-geometry-tests PRIVATE -Wall -Wextra -Wpedantic)
@@ -2238,6 +2279,12 @@ if(OPENRC_BUILD_TESTS)
     add_test(NAME ee-r5900-boundary COMMAND openrc-ee-r5900-boundary-tests)
     add_test(NAME dvp-vu COMMAND openrc-dvp-vu-tests)
     add_test(NAME dvp-vu-execute COMMAND openrc-dvp-vu-execute-tests)
+    add_test(NAME dvp-vu-numeric COMMAND openrc-dvp-vu-numeric-tests)
+    add_test(NAME rac-moby-spatial-bounds COMMAND openrc-rac-moby-spatial-bounds-tests)
+    add_test(NAME rac-text-bank COMMAND openrc-rac-text-bank-tests)
+    add_test(NAME rac-font-metrics COMMAND openrc-rac-font-metrics-tests)
+    add_test(NAME ps2-palette COMMAND openrc-ps2-palette-tests)
+    add_test(NAME rac-frontend-texture COMMAND openrc-rac-frontend-texture-tests)
     add_test(NAME gif-gs COMMAND openrc-gif-gs-tests)
     add_test(NAME scene-block-geometry COMMAND openrc-scene-block-geometry-tests)
     add_test(NAME scene-geometry COMMAND openrc-scene-geometry-tests)

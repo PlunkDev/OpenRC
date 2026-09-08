@@ -1,4 +1,5 @@
 #include "openrc/two_fip.hpp"
+#include "openrc/ps2_palette.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -47,22 +48,6 @@ void write_le16(
     }
     return static_cast<std::uint64_t>(width) *
         static_cast<std::uint64_t>(height);
-}
-
-[[nodiscard]] std::size_t palette_storage_index(
-    const std::size_t logical_index) noexcept {
-    // PS2 PSMT8 CLUT order exchanges bits 3 and 4 of the palette index.
-    return (logical_index & 0xe7U) |
-        ((logical_index & 0x08U) << 1U) |
-        ((logical_index & 0x10U) >> 1U);
-}
-
-[[nodiscard]] std::uint8_t normalized_alpha(
-    const std::uint8_t ps2_alpha) noexcept {
-    const auto scaled = std::min<std::uint32_t>(
-        255U,
-        static_cast<std::uint32_t>(ps2_alpha) * 2U);
-    return static_cast<std::uint8_t>(scaled);
 }
 
 [[nodiscard]] std::uint64_t validate_image(const TwoFipImage& image) {
@@ -139,7 +124,8 @@ TwoFipImage parse_two_fip(
     for (std::size_t logical_index = 0;
          logical_index < image.palette.size();
          ++logical_index) {
-        const auto source_index = palette_storage_index(logical_index);
+        const auto source_index = psmt8_clut_storage_index_v1(
+            static_cast<std::uint8_t>(logical_index));
         const auto offset = kTwoFipHeaderSize + source_index * 4U;
         auto& color = image.palette[logical_index];
         color.red = byte_value(bytes[offset]);
@@ -172,7 +158,8 @@ std::vector<std::byte> expand_two_fip_rgba(const TwoFipImage& image) {
         result.push_back(static_cast<std::byte>(color.red));
         result.push_back(static_cast<std::byte>(color.green));
         result.push_back(static_cast<std::byte>(color.blue));
-        result.push_back(static_cast<std::byte>(normalized_alpha(color.ps2_alpha)));
+        result.push_back(
+            static_cast<std::byte>(ps2_alpha_to_rgba8_v1(color.ps2_alpha)));
     }
     return result;
 }

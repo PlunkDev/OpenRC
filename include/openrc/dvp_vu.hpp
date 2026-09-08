@@ -191,6 +191,10 @@ enum class DvpVuLowerOpcode : std::uint8_t {
     xgkick,
     xitop,
     xtop,
+    // Appended to preserve the existing diagnostic opcode values.
+    fmand,
+    fmeq,
+    fmor,
 };
 
 struct DvpVuLowerInstructionV1 {

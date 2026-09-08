@@ -342,6 +342,12 @@ struct PendingChunk {
                    0x22000000U)) {
         result.opcode = DvpVuLowerOpcode::fcset;
         result.unsigned_immediate = word & 0x00ffffffU;
+    } else if (matches(word, 0xffe007ffU, 0x34000000U)) {
+        result.opcode = DvpVuLowerOpcode::fmand;
+    } else if (matches(word, 0xffe007ffU, 0x30000000U)) {
+        result.opcode = DvpVuLowerOpcode::fmeq;
+    } else if (matches(word, 0xffe007ffU, 0x36000000U)) {
+        result.opcode = DvpVuLowerOpcode::fmor;
     } else if (matches(
                    word,
                    kLowerOpcode7Mask + kLowerImmediate12UnusedMask +
