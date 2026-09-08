@@ -137,8 +137,40 @@ precision boundaries, 65,536 generated raw values and all 512 writable FCSR
 combinations. An audited original-ELF probe verifies both complete conversion
 leaves, the actual startup CTC1 and **131,088 source-routing cases** with
 poisoned unrelated state. The probe validates binding/control flow against the
-original instructions, not a physical numerical oracle. General EE ADD/MUL,
+original instructions, not a physical numerical oracle. General EE MUL,
 frontend projection and VU MUL/ACC remain separate incomplete dependencies.
+
+## EE COP1 ADD/SUB reference values and flags
+
+`ee_cop1_add_bits_v1` and `ee_cop1_sub_bits_v1` provide integer-only raw32
+reference operations over all operand encodings. The existing independently
+derived VU value adder is shared privately, without exposing VU MAC flags as
+EE state or changing the prior VU behavior. Magnitude alignment retains one
+guard bit, normalization truncates, exp0 inputs contribute signed zero, and
+exp255 remains finite. Overflow saturates; cancellation underflow retains
+the normalized fraction at exponent zero with a separate event.
+
+Separate EE corroboration includes 36 ADD and 36 SUB values from the
+[primary arithmetic harness/results](https://github.com/unknownbrackets/ps2autotests/tree/master/tests/cpu/ee_fpu)
+and 40 selected sums explicitly run through COP1 by the
+[source-author harness](https://github.com/TellowKrinkle/PS2Homebrew/blob/508ee8070d740498d6bc0bec275d0defa0429a93/VUTests/mac.cpp).
+Its sign-adjusted SUB checks and flag sequences corroborate the same narrow
+contract; they do not double the number of independent rounding cases.
+External code/tables are not incorporated. `physical_console_qualified=false`
+remains explicit: a complete reference value domain is not exhaustive hardware
+qualification or a new console capture.
+
+`ee_cop1_add_sub_fcsr_bits_v1` replaces U/O causes, accumulates SU/SO and
+preserves other actual incoming bits. It neither performs CTC1 normalization
+nor invents reset state. Four new generated test groups exercise exponent and
+guard boundaries, underflow reuse, 917,504 exact integer-domain operations,
+65,536 raw-pair identities and 512 writable FCSR combinations. The audited
+native EE and VU test executables pass with the shared helper.
+
+This does not complete timer `1f98c0`, color interpolation `1fa8a8` or timed
+color `21c6c0`: those depend on MUL/ACC or DIV as well. No ideal-product
+approximation, fitted exceptional operands or host-float replacement was
+added for the unresolved multiplication network.
 
 ## Source integer spatial projection
 

@@ -110,9 +110,13 @@ add_library(openrc_core STATIC
     src/core/rac_text_layout.cpp
     src/core/rac_float_glyph.cpp
     src/core/rac_float_quad.cpp
+    src/core/rac_integer_quad.cpp
     src/core/rac_frontend_gs_scope.cpp
     src/core/rac_frontend_gs_stream.cpp
     src/core/rac_frontend_owner.cpp
+    src/core/rac_frontend_new_game.cpp
+    src/core/rac_moby_allocate.cpp
+    src/core/rac_moby_sequence_set.cpp
     src/core/rac_moby_reference.cpp
     src/core/ee_cop1_numeric.cpp
     src/core/rac_moby_authored_tail.cpp
@@ -2163,6 +2167,10 @@ if(OPENRC_BUILD_TESTS)
     target_link_libraries(openrc-rac-float-quad-tests PRIVATE openrc_core)
     target_compile_features(openrc-rac-float-quad-tests PRIVATE cxx_std_20)
 
+    add_executable(openrc-rac-integer-quad-tests tests/rac_integer_quad_tests.cpp)
+    target_link_libraries(openrc-rac-integer-quad-tests PRIVATE openrc_core)
+    target_compile_features(openrc-rac-integer-quad-tests PRIVATE cxx_std_20)
+
     add_executable(openrc-rac-frontend-gs-scope-tests tests/rac_frontend_gs_scope_tests.cpp)
     target_link_libraries(openrc-rac-frontend-gs-scope-tests PRIVATE openrc_core)
     target_compile_features(openrc-rac-frontend-gs-scope-tests PRIVATE cxx_std_20)
@@ -2174,6 +2182,18 @@ if(OPENRC_BUILD_TESTS)
     add_executable(openrc-rac-frontend-owner-tests tests/rac_frontend_owner_tests.cpp)
     target_link_libraries(openrc-rac-frontend-owner-tests PRIVATE openrc_core)
     target_compile_features(openrc-rac-frontend-owner-tests PRIVATE cxx_std_20)
+
+    add_executable(openrc-rac-frontend-new-game-tests tests/rac_frontend_new_game_tests.cpp)
+    target_link_libraries(openrc-rac-frontend-new-game-tests PRIVATE openrc_core)
+    target_compile_features(openrc-rac-frontend-new-game-tests PRIVATE cxx_std_20)
+
+    add_executable(openrc-rac-moby-allocate-tests tests/rac_moby_allocate_tests.cpp)
+    target_link_libraries(openrc-rac-moby-allocate-tests PRIVATE openrc_core)
+    target_compile_features(openrc-rac-moby-allocate-tests PRIVATE cxx_std_20)
+
+    add_executable(openrc-rac-moby-sequence-set-tests tests/rac_moby_sequence_set_tests.cpp)
+    target_link_libraries(openrc-rac-moby-sequence-set-tests PRIVATE openrc_core)
+    target_compile_features(openrc-rac-moby-sequence-set-tests PRIVATE cxx_std_20)
 
     add_executable(openrc-rac-moby-reference-tests tests/rac_moby_reference_tests.cpp)
     target_link_libraries(openrc-rac-moby-reference-tests PRIVATE openrc_core)
@@ -2294,9 +2314,13 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-rac-moby-fresh-constructor-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-float-glyph-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-float-quad-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-rac-integer-quad-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-frontend-gs-scope-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-frontend-gs-stream-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-frontend-owner-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-rac-frontend-new-game-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-rac-moby-allocate-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-rac-moby-sequence-set-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-moby-reference-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-ee-cop1-numeric-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-moby-authored-tail-tests PRIVATE /W4 /permissive- /utf-8)
@@ -2325,9 +2349,13 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-rac-moby-fresh-constructor-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-float-glyph-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-float-quad-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-rac-integer-quad-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-frontend-gs-scope-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-frontend-gs-stream-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-frontend-owner-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-rac-frontend-new-game-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-rac-moby-allocate-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-rac-moby-sequence-set-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-moby-reference-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-ee-cop1-numeric-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-moby-authored-tail-tests PRIVATE -Wall -Wextra -Wpedantic)
@@ -2357,9 +2385,13 @@ if(OPENRC_BUILD_TESTS)
     add_test(NAME rac-moby-fresh-constructor COMMAND openrc-rac-moby-fresh-constructor-tests)
     add_test(NAME rac-float-glyph COMMAND openrc-rac-float-glyph-tests)
     add_test(NAME rac-float-quad COMMAND openrc-rac-float-quad-tests)
+    add_test(NAME rac-integer-quad COMMAND openrc-rac-integer-quad-tests)
     add_test(NAME rac-frontend-gs-scope COMMAND openrc-rac-frontend-gs-scope-tests)
     add_test(NAME rac-frontend-gs-stream COMMAND openrc-rac-frontend-gs-stream-tests)
     add_test(NAME rac-frontend-owner COMMAND openrc-rac-frontend-owner-tests)
+    add_test(NAME rac-frontend-new-game COMMAND openrc-rac-frontend-new-game-tests)
+    add_test(NAME rac-moby-allocate COMMAND openrc-rac-moby-allocate-tests)
+    add_test(NAME rac-moby-sequence-set COMMAND openrc-rac-moby-sequence-set-tests)
     add_test(NAME rac-moby-reference COMMAND openrc-rac-moby-reference-tests)
     add_test(NAME ee-cop1-numeric COMMAND openrc-ee-cop1-numeric-tests)
     add_test(NAME rac-moby-authored-tail COMMAND openrc-rac-moby-authored-tail-tests)

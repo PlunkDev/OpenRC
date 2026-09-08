@@ -18,9 +18,9 @@ their stated component scope, not original-game fidelity for the whole feature.
 | Area | Status | What is actually established / still required |
 | --- | --- | --- |
 | One launcher, prepared-package boundary, portable import guards | DONE at infrastructure scope | Existing compilation, validation and package-only launch; this does not implement the PS2 frontend. |
-| Startup, intro and original menu | MISSING as a playable flow | Original text, metrics, textures, layout/glyph and enclosing draw plans, quad/upload scope and continuous GIF input are recovered prerequisites, not a replacement menu. Opaque callbacks, projection/numeric/full inherited-state/render integration, input, transitions, presentation and audio remain. |
+| Startup, intro and original menu | MISSING as a playable flow | Original text-node control, metrics, textures, layout/glyph and enclosing draw plans, quad/upload scope and continuous GIF input are recovered prerequisites, not a replacement menu. Remaining callbacks, projection/numeric/full inherited-state/render integration, input, transitions, presentation and audio remain. |
 | Level loading, geometry, textures and static collision | PARTIAL | Shared source-backed loaders/rendering exist; scene-family coverage and original loading lifecycle remain incomplete. |
-| Original ordered actor initialization | PARTIAL | Admission/session state, ordered spatial lists, fresh constructor, authored color tail and canonical indexed reference-store adapter exist. Full placement/post-step numerics, live-token/entity binding and ordered integration remain required. |
+| Original ordered actor initialization | PARTIAL | Admission/session state, ordered spatial lists, fresh constructor, authored color tail, canonical indexed reference store, staged dynamic allocator and original sequence/frame setter exist. Full placement/post-step numerics, live-token/entity binding and ordered integration remain required. |
 | Ratchet movement and gameplay animations | PARTIAL | Source animation banks and a grounded subset exist; full state transitions, acceleration/turning, airborne behavior and weapon handling are not verified. Prototype behavior is not fidelity evidence. |
 | Camera | PARTIAL | A third-person prototype exists; the original camera is not reconstructed. |
 | Enemies, weapons, damage and health | PARTIAL foundations | Neutral behavior/damage infrastructure exists; original complete per-type AI, attacks, weapon states/ammo/effects, health and reactions are not integrated. |
@@ -52,9 +52,12 @@ numerical capture from this batch.
   [bounded source numerical recovery](SOURCE_NUMERIC_RECOVERY_V1.md), plus
   [original text layout/glyph plans](RAC_TEXT_LAYOUT_V1.md),
   [quad and frontend submission scope](RAC_FRONTEND_DRAW_V1.md),
+  [the original frontend text-node callback](RAC_FRONTEND_TEXT_NODE_V1.md),
   [the fresh Moby constructor](RAC_MOBY_FRESH_CONSTRUCTOR_V1.md) and
   [the authored color tail](RAC_MOBY_AUTHORED_TAIL_V1.md) and
-  [the indexed reference-store adapter](RAC_MOBY_REFERENCE_V1.md).
+  [the indexed reference-store adapter](RAC_MOBY_REFERENCE_V1.md) and
+  [staged dynamic allocation](RAC_MOBY_ALLOCATE_V1.md) and
+  [the original sequence/frame setter](RAC_MOBY_SEQUENCE_SET_V1.md).
 - **INFERRED:** any interpretation beyond those contracts must be labeled and
   independently testable; a likely gameplay meaning does not become a constant.
 - **UNKNOWN:** original frontend presentation/audio dispatch and remaining
@@ -78,16 +81,18 @@ a separate original-fidelity pass.
 
 ## Latest verified batch (2026-09-08)
 
-The latest complete portable Release build passed **137/137 tests** and all
+The latest complete portable Release build passed **141/141 tests** and all
 required PE import audits, then published the existing launcher, compiler and
-runtime. New original-instruction/native comparisons matched 48 enclosing
-frontend-owner cases (10,711 effects), 2,939 indexed-reference cases and 131,088
-EE conversion-leaf routing cases. The existing 79-case original command corpus
-also passes actual transport and shared continuous GIF decoding, retaining
-2,594 IMAGE payloads containing 14,446,848 bytes of explicit diagnostic data.
-RTT packet-subsequence, live restore, mixed register formats and pending-strip
-continuity regressions pass. Earlier quad, text-layout, glyph, constructor and
-authored-tail comparisons remain recorded in their component notes.
+runtime. New original-instruction/native comparisons matched 3,200 integer
+composite-quad cases, 96 shared frontend text-node cases, 1,367 dynamic-object
+allocation cases and 1,157 sequence/frame-setter cases. The text-node comparison
+covers ordered effects and existing layout/glyph composition with explicit
+numeric-callee observations and symbolic glyph arithmetic; it is not a live
+frontend rendering comparison. The allocator and setter compare complete
+reached object/PVar results but do not yet publish actors into the loaded world.
+Existing floating-quad (4,133 cases), fresh-constructor (1,928 cases) and EE
+conversion-leaf routing (131,088 cases) comparisons also pass. Earlier transport,
+owner, indexed-reference and layout evidence remains in the component notes.
 
 These changes add source components and their integration checks without
 changing existing preparation semantics. The compiler identity remains
@@ -98,11 +103,14 @@ valid. Current published executables passed exact-profile validation of all
 and both hidden graphical smoke launches. Local caches and user settings were
 preserved; no new preparation was needed for this batch.
 
-EE conversion values and CTC1 projection now have explicit integer reference
-helpers, but conversion FCSR effects remain unqualified. VU ADD/SUB retain
-their reference-model warning; remaining EE arithmetic/projection, VU MUL/ACC
-and full hardware qualification are not claimed. The frontend owner still
-records unexecuted callees; IMAGE retention does not implement GS residency or
+EE ADD/SUB now have explicit raw-bit reference helpers and a separate update of
+underflow/overflow cause and sticky status bits. They share the existing VU
+integer addition core without changing its behavior. EE conversion values and
+CTC1 projection retain their earlier helpers; conversion FCSR effects remain
+unqualified. EE/VU arithmetic still carries the reference-model warning:
+remaining multiplication/accumulator/division behavior, projection and full
+hardware qualification are not claimed. The frontend owner still records
+unexecuted callees; IMAGE retention does not implement GS residency or
 rasterization. These checks do not add a normal-flow or original visual/gameplay
 fidelity pass.
 

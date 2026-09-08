@@ -1,3 +1,4 @@
+#include "openrc/dvp_vu_numeric.hpp"
 #include "openrc/ee_cop1_numeric.hpp"
 
 #include <array>
@@ -194,6 +195,182 @@ void test_ctc1_writable_fields_and_fixed_rounding() {
   }
 }
 
+void test_add_sub_signed_zeros_and_encoded_ranges() {
+  using openrc::EeCop1AddSubResultV1;
+  expect(!EeCop1AddSubResultV1::physical_console_qualified,
+         "reference arithmetic must not claim physical-console qualification");
+  for (const auto left_sign : {0U, 0x80000000U}) {
+    for (const auto right_sign : {0U, 0x80000000U}) {
+      for (const auto fraction : {0U, 1U, 0x123456U, 0x7fffffU}) {
+        const auto left = left_sign | fraction;
+        const auto right = right_sign | (0x7fffffU - fraction);
+        expect(
+            openrc::ee_cop1_add_bits_v1(left, right) ==
+                EeCop1AddSubResultV1{left_sign & right_sign, false, false},
+            "input exp0 fractions must flush silently with signed-zero rules");
+        expect(openrc::ee_cop1_sub_bits_v1(left, right) ==
+                   EeCop1AddSubResultV1{left_sign & (right_sign ^ 0x80000000U),
+                                        false, false},
+               "SUB must invert the second sign before zero combination");
+      }
+    }
+  }
+  for (std::uint32_t exponent = 1U; exponent <= 255U; ++exponent) {
+    for (const auto fraction : {0U, 3U, 0x255555U, 0x7fffffU}) {
+      for (const auto sign : {0U, 0x80000000U}) {
+        const auto bits = sign | (exponent << 23U) | fraction;
+        expect(
+            openrc::ee_cop1_add_bits_v1(bits, sign) ==
+                EeCop1AddSubResultV1{bits, false, false},
+            "finite exp255 and ordinary values must survive signed-zero add");
+        expect(openrc::ee_cop1_sub_bits_v1(bits, bits) ==
+                   EeCop1AddSubResultV1{},
+               "exact finite cancellation is positive zero without underflow");
+        const auto doubled =
+            exponent == 255U ? sign | 0x7fffffffU : bits + 0x00800000U;
+        expect(openrc::ee_cop1_add_bits_v1(bits, bits) ==
+                   EeCop1AddSubResultV1{doubled, false, exponent == 255U},
+               "doubling must extend exponent255 then saturate only above it");
+      }
+    }
+  }
+}
+
+void test_add_sub_guard_distance_and_underflow_remnants() {
+  // A power of two has half-sized predecessor spacing. At exponent distance
+  // 24 the smaller normal operand contributes one retained guard; at 25 its
+  // entire significand disappears. These are generated model discriminators,
+  // not imported external operand/output rows.
+  for (std::uint32_t exponent = 26U; exponent <= 255U; ++exponent) {
+    const auto anchor = exponent << 23U;
+    for (const auto fraction : {0U, 0x2468acU, 0x400000U, 0x7fffffU}) {
+      const auto guard = ((exponent - 24U) << 23U) | fraction;
+      const auto lost = ((exponent - 25U) << 23U) | fraction;
+      expect(openrc::ee_cop1_add_bits_v1(anchor, guard).bits == anchor,
+             "positive guard must truncate after result normalization");
+      expect(openrc::ee_cop1_sub_bits_v1(anchor, guard).bits == anchor - 1U,
+             "one guard must survive subtractive normalization");
+      expect(
+          openrc::ee_cop1_sub_bits_v1(anchor, lost).bits == anchor,
+          "a second guard must not be invented by exact-rational arithmetic");
+    }
+  }
+  for (std::uint32_t difference = 1U; difference <= 4095U; ++difference) {
+    auto fraction = difference;
+    while (fraction < 0x00800000U) {
+      fraction *= 2U;
+    }
+    fraction &= 0x007fffffU;
+    for (const auto sign : {0U, 0x80000000U}) {
+      const auto value = openrc::ee_cop1_sub_bits_v1(
+          sign | (0x00800000U + difference), sign | 0x00800000U);
+      expect(value.bits == (sign | fraction) && value.underflow &&
+                 !value.overflow,
+             "underflow must retain normalized fraction, not gradual bits");
+      expect(openrc::ee_cop1_add_bits_v1(value.bits, 0x3e800000U).bits ==
+                 0x3e800000U,
+             "underflow remnant becomes zero when reused as an exp0 input");
+    }
+  }
+}
+
+void test_add_sub_exact_integer_domain_and_shared_value_boundary() {
+  // Every signed halfword plus/minus these integers is exactly representable.
+  // This oracle uses integer arithmetic and the separately tested conversion,
+  // rather than restating the aligned-significand implementation.
+  constexpr std::array<std::int32_t, 7> deltas{-257, -16, -1, 0, 1, 16, 257};
+  for (std::int32_t integer = -32768; integer < 32768; ++integer) {
+    const auto left =
+        openrc::ee_cop1_cvt_s_w_bits_v1(static_cast<std::uint32_t>(integer))
+            .bits;
+    for (const auto delta : deltas) {
+      const auto right =
+          openrc::ee_cop1_cvt_s_w_bits_v1(static_cast<std::uint32_t>(delta))
+              .bits;
+      const auto add = openrc::ee_cop1_add_bits_v1(left, right);
+      const auto sub = openrc::ee_cop1_sub_bits_v1(left, right);
+      expect(add.bits == openrc::ee_cop1_cvt_s_w_bits_v1(
+                             static_cast<std::uint32_t>(integer + delta))
+                             .bits &&
+                 !add.underflow && !add.overflow,
+             "exact integer-domain ADD disagrees with independent word sum");
+      expect(sub.bits == openrc::ee_cop1_cvt_s_w_bits_v1(
+                             static_cast<std::uint32_t>(integer - delta))
+                             .bits &&
+                 !sub.underflow && !sub.overflow,
+             "exact integer-domain SUB disagrees with independent word "
+             "difference");
+    }
+  }
+  std::uint32_t state = 0x8c9b6301U;
+  for (unsigned sample = 0U; sample < 65536U; ++sample) {
+    state = state * 1664525U + 1013904223U;
+    const auto left = state;
+    state = state * 1664525U + 1013904223U;
+    const auto right = state;
+    const auto add = openrc::ee_cop1_add_bits_v1(left, right);
+    const auto sub = openrc::ee_cop1_sub_bits_v1(left, right);
+    expect(
+        add == openrc::ee_cop1_add_bits_v1(right, left),
+        "reference ADD must be commutative without affecting MUL assumptions");
+    expect(sub == openrc::ee_cop1_add_bits_v1(left, right ^ 0x80000000U),
+           "SUB sign-adjustment identity failed");
+    for (const auto subtract : {false, true}) {
+      const auto ee = subtract ? sub : add;
+      const auto vu = subtract ? openrc::dvp_vu_sub_bits_v1(left, right)
+                               : openrc::dvp_vu_add_bits_v1(left, right);
+      expect(ee.bits == vu.bits && ee.underflow == vu.underflow &&
+                 ee.overflow == vu.overflow,
+             "extracted common value rule changed an existing VU result");
+      expect(vu.zero == ((vu.bits & 0x7f800000U) == 0U) &&
+                 vu.sign == ((vu.bits & 0x80000000U) != 0U),
+             "VU-only flag adapter must remain independent of EE FCSR");
+    }
+  }
+}
+
+void test_add_sub_fcsr_events_and_persistence() {
+  const auto ordinary = openrc::ee_cop1_add_bits_v1(0x40800000U, 0x40800000U);
+  const auto underflow = openrc::ee_cop1_sub_bits_v1(0x00800007U, 0x00800000U);
+  const auto overflow = openrc::ee_cop1_add_bits_v1(0x7ff00000U, 0x7ff00000U);
+  constexpr std::array positions{3U, 4U, 5U, 6U, 14U, 15U, 16U, 17U, 23U};
+  constexpr std::uint32_t mutable_bits = 0x0000c018U;
+  for (unsigned selection = 0U; selection < 512U; ++selection) {
+    auto prior = 0x01000001U;
+    for (unsigned i = 0U; i < positions.size(); ++i) {
+      if ((selection & (1U << i)) != 0U) {
+        prior |= 1U << positions[i];
+      }
+    }
+    for (const auto &event : {ordinary, underflow, overflow}) {
+      const auto current = openrc::ee_cop1_add_sub_fcsr_bits_v1(prior, event);
+      expect((current & ~mutable_bits) == (prior & ~mutable_bits),
+             "ADD/SUB must preserve I/D causes, C and unrelated FCSR bits");
+      expect(((current >> 14U) & 1U) == event.underflow &&
+                 ((current >> 15U) & 1U) == event.overflow,
+             "ADD/SUB current U/O causes must replace the preceding events");
+      expect(
+          ((current >> 3U) & 1U) == (((prior >> 3U) & 1U) | event.underflow) &&
+              ((current >> 4U) & 1U) == (((prior >> 4U) & 1U) | event.overflow),
+          "ADD/SUB sticky U/O must accumulate rather than be replaced");
+      expect(openrc::ee_cop1_add_sub_fcsr_bits_v1(current, event) == current,
+             "reapplying one event must not clear sticky state");
+    }
+  }
+  auto state = openrc::ee_cop1_ctc1_fcsr_bits_v1(0x00830060U);
+  const auto preserved = state & ~mutable_bits;
+  state = openrc::ee_cop1_add_sub_fcsr_bits_v1(state, overflow);
+  expect((state & mutable_bits) == 0x8010U, "overflow did not set O/SO");
+  state = openrc::ee_cop1_add_sub_fcsr_bits_v1(state, ordinary);
+  expect((state & mutable_bits) == 0x10U, "ordinary ADD did not clear O cause");
+  state = openrc::ee_cop1_add_sub_fcsr_bits_v1(state, underflow);
+  expect((state & mutable_bits) == 0x4018U, "underflow lost prior SO sticky");
+  state = openrc::ee_cop1_add_sub_fcsr_bits_v1(state, ordinary);
+  expect((state & mutable_bits) == 0x18U &&
+             (state & ~mutable_bits) == preserved,
+         "ordered ADD/SUB events lost sticky or unrelated state");
+}
+
 } // namespace
 
 int main() {
@@ -203,6 +380,10 @@ int main() {
     test_full_signed_halfword_domain();
     test_precision_transitions_and_raw_samples();
     test_ctc1_writable_fields_and_fixed_rounding();
+    test_add_sub_signed_zeros_and_encoded_ranges();
+    test_add_sub_guard_distance_and_underflow_remnants();
+    test_add_sub_exact_integer_domain_and_shared_value_boundary();
+    test_add_sub_fcsr_events_and_persistence();
     std::cout << "ee_cop1_numeric_tests: ok\n";
     return 0;
   } catch (const std::exception &error) {

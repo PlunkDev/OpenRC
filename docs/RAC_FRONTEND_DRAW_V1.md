@@ -43,6 +43,33 @@ and guarded append behavior. This is source integer/ordering equivalence, not
 numerical or visual PS2 qualification. Raw traces, source identities and
 reproduction fixtures remain under ignored `local/forensics`.
 
+## Integer RTT composite quad owner
+
+`emit_rac_integer_quad_v1` implements the complete scalar `1f5800` callee
+selected by the enclosing owner's RTT composite call. The first eight source
+arguments use their low words; RGBAQ and TEX0 preserve all 64 bits. Two actual
+screen-offset reads, Y then X, are each reused for both corners of that axis.
+Endpoint additions wrap before shifting. UV fields are added, not ORed; XYZ
+packing retains the source sign-extension/OR behavior. There is no COP1
+arithmetic, CPU culling, CLAMP write or normalization in this source function.
+It always emits the complete 128-byte CNT/DIRECT7 and REGLIST11 packet,
+including the final upper64 padding and relative cursor publications 16/32/128.
+
+`emit_rac_frontend_composite_packet_v1` connects the actual typed `21abf0`
+owner call to this emitter with explicit post-restore offset observations.
+It rejects a different call kind/site or a nonzero callback pointer. This
+executes that callee, not preceding opaque callbacks, projection or restore.
+It is never used as a replacement for the original floating glyph path.
+
+Five permanent test groups check packet/register/strip output, full raw
+argument bits, overlapping UV fields, signed wrapping, no invented culling,
+bounded atomic append and the actual owner-to-transport-to-GIF connection.
+An independent tracer executes all 97 original instructions in each of
+**3,200 cases**. The audited native probe matched **409,600 packet bytes**,
+the cursor publications and guarded appends. Synthetic raw arguments and
+original instructions establish source equivalence, not hardware rendering
+or correct inherited sampler/texture state.
+
 ## Original callback and cold texture batch
 
 `rac_frontend_gs_scope.hpp` owns the source callback ALPHA/TEST preamble,
@@ -55,7 +82,9 @@ The recovered owners include begin/bind/end `1f4630`, `1f4868`, `1f4748`,
 transfer `20c2f8`, SCISSOR `234d58` and flush `234e80`. The New Game callback
 writes ALPHA_1 followed by TEST_1 before its batch. This helper represents the
 path that reaches begin; the original callback can return after those two
-writes without beginning a batch. Whole-node selection is not implemented here.
+writes without beginning a batch. Whole-node selection now belongs to the
+separate [original text-node callback](RAC_FRONTEND_TEXT_NODE_V1.md), not this
+submission helper.
 Its SCISSOR writer clamps
 against the caller's live dimensions while retaining source signed arithmetic
 and OR behavior; it neither normalizes an inverted rectangle nor masks away
@@ -131,8 +160,10 @@ Eight permanent unit-test groups cover phase freshness, skip precedence,
 projected writes, RTT setup/restore, return flags and signed/wrapping crop,
 viewport ordering, both restore branches and input/budget rejection. The
 bounded owner does not execute object rendering, camera/projector callees,
-menu callbacks or the composite quad call. Their real effects, the complete
-menu lifecycle and the renderer remain integration work.
+menu callbacks or the composite quad call while constructing that plan. The
+separate integer composite adapter above now executes its genuine callee;
+other real effects, the complete menu lifecycle and the renderer remain
+integration work.
 
 An independent actual-instruction tracer and audited native comparison matched
 **48 cases and 10,711 ordered effects**, including 272 direct callbacks,

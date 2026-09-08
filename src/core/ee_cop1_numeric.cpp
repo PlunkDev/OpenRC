@@ -1,8 +1,34 @@
 #include "openrc/ee_cop1_numeric.hpp"
 
+#include "ps2_fmac_add_reference.hpp"
+
 #include <bit>
 
 namespace openrc {
+
+EeCop1AddSubResultV1 ee_cop1_add_bits_v1(const std::uint32_t left,
+                                         const std::uint32_t right) noexcept {
+  const auto value = detail::ps2_fmac_add_value_v1(left, right);
+  return {value.bits, value.underflow, value.overflow};
+}
+
+EeCop1AddSubResultV1 ee_cop1_sub_bits_v1(const std::uint32_t left,
+                                         const std::uint32_t right) noexcept {
+  return ee_cop1_add_bits_v1(left, right ^ 0x80000000U);
+}
+
+std::uint32_t
+ee_cop1_add_sub_fcsr_bits_v1(const std::uint32_t prior_fcsr,
+                             const EeCop1AddSubResultV1 &result) noexcept {
+  constexpr std::uint32_t cause_underflow = 1U << 14U;
+  constexpr std::uint32_t cause_overflow = 1U << 15U;
+  constexpr std::uint32_t sticky_underflow = 1U << 3U;
+  constexpr std::uint32_t sticky_overflow = 1U << 4U;
+  const auto current = prior_fcsr & ~(cause_underflow | cause_overflow);
+  return current |
+         (result.underflow ? cause_underflow | sticky_underflow : 0U) |
+         (result.overflow ? cause_overflow | sticky_overflow : 0U);
+}
 
 EeCop1ConversionResultV1
 ee_cop1_cvt_s_w_bits_v1(const std::uint32_t source_word) noexcept {

@@ -218,6 +218,14 @@ public:
 [[nodiscard]] RacFrontendOwnerPlanV1
 plan_rac_frontend_owner_v1(const RacFrontendOwnerInputsV1 &input);
 
+// Execute the genuine integer quad callee of a reached source composite call,
+// using its ten preserved argument words and the two actual post-restore screen
+// reads (Y then X). Does not execute preceding opaque owner calls or substitute
+// for floating text. Wrong call identity is rejected, never silently skipped.
+[[nodiscard]] RacFrontendOwnerPacketV1 emit_rac_frontend_composite_packet_v1(
+    const RacFrontendOwnerCallV1 &call,
+    const std::array<std::uint32_t, 2> &screen_offset_reads);
+
 // Original RTT viewport setters1f3760 / restore1f3008. All COP1 arithmetic is
 // retained symbolically and projection1f3140 remains an explicit call. Restore
 // reconstructs display state; it does NOT save/restore arbitrary incoming GS.

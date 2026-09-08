@@ -1,4 +1,5 @@
 #include "openrc/rac_frontend_owner.hpp"
+#include "openrc/rac_integer_quad.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -460,4 +461,26 @@ plan_rac_frontend_owner_v1(const RacFrontendOwnerInputsV1 &input) {
   add(call(K::cold_batch_end_1f4748, 0x21ac9cU));
   return out;
 }
+RacFrontendOwnerPacketV1 emit_rac_frontend_composite_packet_v1(
+    const RacFrontendOwnerCallV1 &source_call,
+    const std::array<std::uint32_t, 2> &screen_offset_reads) {
+  if (source_call.kind != RacFrontendOwnerCallKindV1::composite_quad_1f5800 ||
+      source_call.source_call_pc != 0x21abf0U ||
+      source_call.callback_address != 0U)
+    throw RacFrontendOwnerError(
+        "Expected the reached original RTT composite call");
+  RacIntegerQuadInputsV1 input;
+  for (std::size_t i = 0U; i < 4U; ++i) {
+    input.rectangle_words[i] =
+        static_cast<std::uint32_t>(source_call.arguments[i]);
+    input.uv_rectangle_words[i] =
+        static_cast<std::uint32_t>(source_call.arguments[4U + i]);
+  }
+  input.screen_offset_reads = screen_offset_reads;
+  input.rgbaq = source_call.arguments[8U];
+  input.tex0 = source_call.arguments[9U];
+  const auto result = emit_rac_integer_quad_v1(input);
+  return {0x1f5800U, {result.packet.begin(), result.packet.end()}, {}};
+}
+
 } // namespace openrc
