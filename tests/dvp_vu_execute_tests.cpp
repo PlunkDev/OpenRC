@@ -424,6 +424,149 @@ void test_status_latency_and_same_pair_snapshot() {
                      "FSAND four pairs after SUB must see new sign status bit");
 }
 
+void test_add_sub_reference_operand_families() {
+    // Generated instruction/operand cases, not external hardware fixtures.
+    struct Family {
+        std::uint32_t add_opcode;
+        std::uint32_t sub_opcode;
+        bool scalar;
+        bool accumulator;
+    };
+    constexpr std::array families{
+        Family{0x28U, 0x2cU, false, false}, // vector
+        Family{0x03U, 0x07U, false, false}, // broadcast w
+        Family{0x22U, 0x26U, true, false},  // I
+        Family{0x20U, 0x24U, true, false},  // Q
+        Family{0x2bcU, 0x2fcU, false, true},
+        Family{0x3fU, 0x7fU, false, true},
+        Family{0x23eU, 0x27eU, true, true},
+        Family{0x23cU, 0x27cU, true, true},
+    };
+    for (const auto &family : families) {
+        for (const bool subtract : {false, true}) {
+            const auto instruction =
+                upper_fields(0x08U, family.scalar ? 0U : 2U, 1U,
+                             family.accumulator ? 0U : 3U) |
+                (subtract ? family.sub_opcode : family.add_opcode);
+            const auto program = decode_words(
+                {kLowerNop, kLowerNop}, {instruction | kUpperEnd, kUpperNop});
+            auto state = openrc::make_dvp_vu_execution_state_v1();
+            const auto right = subtract ? 0x35000000U : 0xb5000000U;
+            state.vf[1U] = known_vector({0x41000000U, 11U, 12U, 13U});
+            state.vf[2U] = known_vector({right, 21U, 22U, right});
+            const auto sentinel = known_vector({31U, 32U, 33U, 34U});
+            state.vf[3U] = sentinel;
+            state.accumulator = sentinel;
+            state.scalar_i = known_word(right);
+            state.scalar_q = known_word(right);
+            const auto result = execute(program, std::move(state));
+            expect(result.termination == openrc::DvpVuTerminationV1::program_end,
+                   "ADD/SUB operand family must remain executable");
+            const auto &output = family.accumulator
+                                     ? result.final_state.accumulator
+                                     : result.final_state.vf[3U];
+            auto expected = sentinel;
+            expected.lanes[0U] = known_word(0x40ffffffU);
+            expect(output == expected,
+                   "ADD/SUB family must apply one-guard arithmetic and mask");
+            expect((family.accumulator ? result.final_state.vf[3U]
+                                       : result.final_state.accumulator) == sentinel,
+                   "ADD/SUB must not write the other destination kind");
+            expect(has_warning(result,
+                               openrc::DvpVuExecutionWarningV1::
+                                   vu_add_sub_reference_model) &&
+                       !has_warning(result,
+                                    openrc::DvpVuExecutionWarningV1::
+                                        host_float_approximation),
+                   "ADD/SUB must retain its distinct reference qualification");
+        }
+    }
+}
+
+void test_add_reference_unknown_lanes_and_alias() {
+    const auto add = upper_fields(0x0bU, 2U, 1U, 1U) | 0x28U;
+    const auto program = decode_words(
+        {kLowerNop, kLowerNop, kLowerNop, kLowerNop, kLowerNop, kLowerNop},
+        {add, kUpperNop, kUpperNop, kUpperNop, kUpperNop | kUpperEnd, kUpperNop});
+    auto state = openrc::make_dvp_vu_execution_state_v1();
+    state.vf[1U] = known_vector({0x40800000U, 0x12345678U, 0x00802307U, 0U});
+    state.vf[2U] = known_vector({0xb4800000U, 0U, 0x80802300U, 0U});
+    state.vf[2U].lanes[1U].known_mask = 0U; // inactive lane
+    state.vf[2U].lanes[3U].known_mask = 0xfffffffeU; // active unknown
+    const auto result = execute(program, std::move(state));
+    expect(result.final_state.vf[1U].lanes[0U] == known_word(0x407fffffU) &&
+               result.final_state.vf[1U].lanes[1U] == known_word(0x12345678U) &&
+               result.final_state.vf[1U].lanes[2U] == known_word(0x00600000U) &&
+               result.final_state.vf[1U].lanes[3U].known_mask == 0U,
+           "aliased ADD must preserve snapshot, inactive data and unknown lanes");
+    expect((result.final_state.mac_flags.known_mask & 0xffffU) == 0xeeeeU &&
+               (result.final_state.mac_flags.bits & 0xeeeeU) == 0x0202U,
+           "underflow remnant must publish Z+U, not erase inactive known flags");
+    expect(has_warning(result,
+                       openrc::DvpVuExecutionWarningV1::vu_add_sub_reference_model),
+           "partly unknown ADD must not become an unqualified success");
+}
+
+void test_add_sub_remnant_mac_latency_and_vf0() {
+    const auto fmor = [](const std::uint8_t destination) {
+        return 0x36000000U | lower_fields(0U, destination, 0U);
+    };
+    // Discarded VF0 destination still has an arithmetic MAC result.
+    const auto sub = upper_fields(0x08U, 2U, 1U, 0U) | 0x2cU;
+    const auto program = decode_words(
+        {fmor(1U), kLowerNop, kLowerNop, fmor(2U), fmor(3U), kLowerNop},
+        {sub, kUpperNop, kUpperNop, kUpperNop, kUpperNop | kUpperEnd, kUpperNop});
+    auto state = openrc::make_dvp_vu_execution_state_v1();
+    state.mac_flags = known_word(0U);
+    state.status_flags = known_word(0U);
+    state.vf[1U].lanes[0U] = known_word(0x00805407U);
+    state.vf[2U].lanes[0U] = known_word(0x00805400U);
+    const auto result = execute(program, std::move(state));
+    expect_known_u16(result.final_state.vi[1U], 0U,
+                     "same-pair MAC read must still use the old flags");
+    expect_known_u16(result.final_state.vi[2U], 0U,
+                     "reference numeric flags must not arrive one pair early");
+    expect_known_u16(result.final_state.vi[3U], 0x0808U,
+                     "reference numeric U+Z must arrive after four pairs");
+    expect(result.final_state.status_flags.bits == 0x145U,
+           "reference result must retain both underflow and zero sticky bits");
+    expect(result.final_state.vf[0U] ==
+               known_vector({0U, 0U, 0U, 0x3f800000U}),
+           "reference arithmetic must not alter architectural VF0");
+}
+
+void test_add_reference_does_not_qualify_other_arithmetic() {
+    constexpr std::array legacy_opcodes{0x2aU, 0x29U, 0x2dU};
+    for (const auto opcode : legacy_opcodes) {
+        const auto legacy = upper_fields(0x08U, 2U, 1U, 3U) | opcode;
+        const auto program = decode_words(
+            {kLowerNop, kLowerNop}, {legacy | kUpperEnd, kUpperNop});
+        auto state = openrc::make_dvp_vu_execution_state_v1();
+        state.vf[1U] = known_float_vector({2.0F, 0.0F, 0.0F, 0.0F});
+        state.vf[2U] = known_float_vector({3.0F, 0.0F, 0.0F, 0.0F});
+        state.accumulator = known_float_vector({4.0F, 0.0F, 0.0F, 0.0F});
+        const auto result = execute(program, std::move(state));
+        expect(has_warning(result,
+                           openrc::DvpVuExecutionWarningV1::host_float_approximation) &&
+                   !has_warning(result,
+                                openrc::DvpVuExecutionWarningV1::
+                                    vu_add_sub_reference_model),
+               "MUL/MADD/MSUB remain separately host-approximate");
+    }
+    const auto add = upper_fields(0x08U, 2U, 1U, 3U) | 0x28U;
+    const auto mul = upper_fields(0x08U, 2U, 1U, 4U) | 0x2aU;
+    const auto mixed = decode_words(
+        {kLowerNop, kLowerNop, kLowerNop, kLowerNop},
+        {add, add, mul | kUpperEnd, kUpperNop});
+    const auto result = execute(mixed, openrc::make_dvp_vu_execution_state_v1());
+    expect(result.warnings.size() == 2U &&
+               has_warning(result,
+                           openrc::DvpVuExecutionWarningV1::host_float_approximation) &&
+               has_warning(result,
+                           openrc::DvpVuExecutionWarningV1::vu_add_sub_reference_model),
+           "mixed programs must retain both deduplicated qualification warnings");
+}
+
 void test_loi_reads_previous_i_then_publishes_literal() {
     constexpr auto immediate = 0x80000000U;
     const auto addi = upper_fields(0x08U, 0U, 1U, 2U) | 0x22U;
@@ -883,6 +1026,10 @@ int main() {
         test_branch_executes_one_delay_pair();
         test_e_delay_lq_warns_and_commits();
         test_status_latency_and_same_pair_snapshot();
+        test_add_sub_reference_operand_families();
+        test_add_reference_unknown_lanes_and_alias();
+        test_add_sub_remnant_mac_latency_and_vf0();
+        test_add_reference_does_not_qualify_other_arithmetic();
         test_loi_reads_previous_i_then_publishes_literal();
         test_ftoi_instruction_masks_flags_and_knownness();
         test_mac_flag_reads_and_partial_information();

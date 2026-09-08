@@ -974,6 +974,8 @@ parse_decimal_u16_list(
     switch (warning) {
     case openrc::DvpVuExecutionWarningV1::host_float_approximation:
         return "host-float-approximation";
+    case openrc::DvpVuExecutionWarningV1::vu_add_sub_reference_model:
+        return "vu-add-sub-reference-model";
     case openrc::DvpVuExecutionWarningV1::q_read_before_ready:
         return "q-read-before-ready";
     case openrc::DvpVuExecutionWarningV1::
@@ -2180,6 +2182,11 @@ void print_gif_gs_decode_report(const openrc::GifGsDecodeResultV1& report) {
     std::uint64_t st_write_count = 0U;
     std::uint64_t xyz_write_count = 0U;
     for (const auto& write : report.register_writes) {
+        // These four-lane diagnostics describe the PACKED layout only.
+        // REGLIST consumes one raw64 half; its neighbor/padding is not ST/XYZ.
+        if (write.format != 0U) {
+            continue;
+        }
         auto* known_all = static_cast<std::array<std::uint32_t, 4U>*>(nullptr);
         auto* known_any = static_cast<std::array<std::uint32_t, 4U>*>(nullptr);
         if (write.descriptor == openrc::GifGsRegisterDescriptorV1::st) {
@@ -2252,7 +2259,7 @@ void print_gif_gs_decode_report(const openrc::GifGsDecodeResultV1& report) {
     std::cout
         << "\nDecoded GS stream:\n"
         << "  Register writes:    " << report.register_writes.size() << '\n'
-        << "  A+D writes:         " << report.addressed_writes.size() << '\n'
+        << "  Raw64 GS writes:    " << report.addressed_writes.size() << '\n'
         << "  Vertices:           " << report.vertices.size() << '\n'
         << "  Vertex kicks:       " << submitted_vertices << " submitted, "
         << suppressed_vertices << " ADC/suppressed, "
@@ -2351,10 +2358,10 @@ void print_gif_gs_decode_report(const openrc::GifGsDecodeResultV1& report) {
             }
             std::cout << '\n';
         };
-    print_masks("ST", st_write_count, st_known_all, st_known_any);
-    print_masks("XYZF2", xyz_write_count, xyz_known_all, xyz_known_any);
+    print_masks("PACKED ST", st_write_count, st_known_all, st_known_any);
+    print_masks("PACKED XYZF2", xyz_write_count, xyz_known_all, xyz_known_any);
 
-    std::cout << "  A+D registers:      ";
+    std::cout << "  Raw64 GS registers: ";
     bool wrote_address = false;
     for (std::size_t address = 0U;
          address < addressed_registers.size();

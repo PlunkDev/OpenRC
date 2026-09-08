@@ -96,6 +96,10 @@ enum class DvpVuExecutionWarningV1 : std::uint8_t {
     // undefined. Program 55907 contains one, so compatibility mode executes
     // and commits it while retaining this warning.
     documented_undefined_e_delay_memory,
+    // ADD/SUB use an integer one-guard reference model derived from public
+    // reports, not an exhaustive physical-console qualification. This does
+    // not establish ACC overflow history or full FMAC forwarding correctness.
+    vu_add_sub_reference_model,
 };
 
 struct DvpVuGifTagV1 {

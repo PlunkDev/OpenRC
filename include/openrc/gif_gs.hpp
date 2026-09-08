@@ -203,11 +203,18 @@ struct GifGsRegisterWriteV1 {
     std::uint8_t register_index = 0U;
     std::uint64_t packet_qword_index = 0U;
     GifGsRegisterDescriptorV1 descriptor = GifGsRegisterDescriptorV1::nop;
+    // Complete original packet qword, also for a 64-bit REGLIST item.
     DvpVuVectorV1 payload;
+    // GIF format 0=PACKED, 1=REGLIST. A REGLIST item consumes exactly the
+    // selected lower/upper half of payload; padding is never a write.
+    std::uint8_t format = 0U;
+    std::uint8_t packet_half_index = 0U;
 };
 
 struct GifGsAddressedWriteV1 {
     std::uint64_t register_write_index = 0U;
+    // PACKED A+D address or REGLIST descriptor. REGLIST A+D/NOP produces
+    // no addressed write; reserved descriptors remain explicitly unsupported.
     std::optional<std::uint8_t> address;
     // The GS dispatch table ignores address bit 7.
     std::optional<std::uint8_t> dispatched_address;
@@ -287,7 +294,7 @@ public:
     using std::runtime_error::runtime_error;
 };
 
-// Decodes one complete, bounded PACKED-mode PATH1 packet captured by XGKICK.
+// Decodes a complete, bounded PACKED/REGLIST PATH1 packet captured by XGKICK.
 // This is a convenience wrapper over the stream decoder and applies all
 // limits, including max_xgkick_events, to its one-element stream.
 [[nodiscard]] GifGsDecodeResultV1
@@ -298,6 +305,9 @@ decode_dvp_vu_xgkick_gs_v1(const DvpVuXgkickEventV1& event,
 // stream. GIFtag and descriptor framing are cross-checked against each copied
 // packet. GS attributes and pending primitive assembly carry across event
 // boundaries, while every resource limit applies to the aggregate result.
+// REGLIST is dispatched as natural raw64 GS values, not repacked PACKED
+// payloads. It ignores PRE/PRIM and treats A+D as NOP; an odd total item
+// count discards only the final upper64 padding, not a half after each loop.
 [[nodiscard]] GifGsDecodeResultV1 decode_dvp_vu_xgkick_gs_stream_v1(
     std::span<const DvpVuXgkickEventV1> events,
     GifGsDecodeLimitsV1 limits);

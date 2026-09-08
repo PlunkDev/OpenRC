@@ -40,8 +40,9 @@ The floating call keeps integer bases and signed subpixel operands. Its exact
 coordinate expression is `ADD.S(CVT.S.W(base), MUL.S(CVT.S.W(subpixel), 1/16))`,
 with separate operations and glyph scale bits `0x3f800000`. No host floating
 arithmetic is evaluated. Integer glyph calls are represented as calls; their
-callee implementation is not supplied by this helper. Clip arguments are not
-claimed as emitted GS packets or complete inherited render state.
+callee implementation is not supplied by this helper. The separate
+[frontend draw scope](RAC_FRONTEND_DRAW_V1.md) now emits original SCISSOR
+packets; layout alone does not establish complete inherited render state.
 
 ## Floating glyph/control owner
 
@@ -87,6 +88,8 @@ bounded work, clipped measurement and layout-to-glyph composition.
 
 **PARTIAL original frontend:** these are source-backed layout and dispatch
 contracts, not a visible menu or hardware-fidelity proof. Remaining work includes
-qualified EE numeric execution, emitter/inherited GS state, original font/atlas
+qualified EE numeric execution, inherited GS state, original font/atlas
 selection and render integration, menu lifecycle/input/transitions, intro/audio
-and normal New Game. Existing packages remain unchanged at eight resources.
+and normal New Game. The [quad emitter and callback submission scope](RAC_FRONTEND_DRAW_V1.md)
+now preserve source packet construction and upload order without bypassing those
+requirements. Packages still contain eight resources.

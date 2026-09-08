@@ -37,15 +37,27 @@ raw scale bits and input immutability; and reject a contradictory present-null
 model. These are instruction/native comparisons, not live Veldin or physical
 PS2 captures.
 
+## Completed authored color tail
+
+The separate compiler-side [authored tail](RAC_MOBY_AUTHORED_TAIL_V1.md)
+now preserves the four previously missing raw words at record offsets
+`+0x64/+0x68/+0x6c/+0x74`. It implements the complete packed-store leaf,
+ordered color/cache/light results and the exact next-reference-call gate.
+All 3,330 independent original-instruction/native comparison cases passed,
+including production-parser checks of all five tail words in 296 source rows.
+This is a later placement step, not part of the fresh constructor itself;
+the returned reference index does not execute the pending shared helper.
+
 ## Ordered integration is still incomplete
 
 Every accepted record still requires the complete following authored placement
 and post-step before the next admission, including nonzero rotations. Qualified
 MUL/ADD/ACC behavior, source field transfers, shared model mutations, derived
 vector/matrix/cache writes, counter update and ordered spatial effects cannot
-be skipped or represented by an empty callback. Four authored tail words still
-need preservation by the placement parser. External sequence-0 resolution,
-including the player, remains the compiler's responsibility.
+be skipped or represented by an empty callback. The authored color tail must
+follow that complete post-step, and pending shared-reference helper `0x24b1b0`
+must finish before count advance or the next admission. External sequence-0
+resolution, including the player, remains the compiler's responsibility.
 
 The current graphical level loader creates authored definitions directly; it
 does not yet run this owner. The eventual transaction must use the canonical
@@ -58,4 +70,5 @@ and [ordered spatial index](ORDERED_SPATIAL_INDEX_V1.md) remain the foundation.
 No runtime resource count, gameplay behavior, save schema or compiler cache
 identity changes in this component-only addition. Full constructor/post-step
 integration remains **PARTIAL**; the pure fresh constructor is now implemented
-and independently source-compared.
+and independently source-compared, as is the separate authored color tail.
+Neither component implements class callbacks, enemy AI or player gameplay.

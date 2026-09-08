@@ -167,6 +167,137 @@ void test_invalid_fractional_formats_rejected() {
   }
 }
 
+void expect_add(const std::uint32_t left, const std::uint32_t right,
+                const std::uint32_t bits, const bool underflow = false,
+                const bool overflow = false) {
+  const openrc::DvpVuAddResultV1 expected{
+      bits, (bits & 0x7f800000U) == 0U, (bits & 0x80000000U) != 0U,
+      underflow, overflow};
+  const auto actual = openrc::dvp_vu_add_bits_v1(left, right);
+  if (actual != expected) {
+    std::cerr << "ADD left=" << std::hex << left << " right=" << right
+              << " expected=" << bits << " actual=" << actual.bits << '\n';
+    throw std::runtime_error("VU ADD reference-model value/flags mismatch");
+  }
+}
+
+void test_add_zero_input_classes() {
+  // Independently generated contract tests, not copied hardware fixtures.
+  for (std::uint32_t sample = 0U; sample < 257U; ++sample) {
+    const auto fraction = sample * 0x007fffffU / 256U;
+    for (const auto left_sign : {0U, 0x80000000U}) {
+      for (const auto right_sign : {0U, 0x80000000U}) {
+        expect_add(left_sign | fraction, right_sign | (fraction ^ 0x007fffffU),
+                   left_sign & right_sign);
+      }
+    }
+    expect_add(fraction, 0x00800000U, 0x00800000U);
+    expect_add(0x80000000U | fraction, 0x00800000U, 0x00800000U);
+  }
+}
+
+void test_add_identity_cancellation_and_doubling() {
+  for (std::uint32_t exponent = 1U; exponent < 256U; ++exponent) {
+    for (std::uint32_t sample = 0U; sample < 64U; ++sample) {
+      const auto fraction = sample * 0x007fffffU / 63U;
+      for (const auto sign : {0U, 0x80000000U}) {
+        const auto value = sign | (exponent << 23U) | fraction;
+        expect_add(value, 0U, value);
+        expect_add(0x80000000U, value, value);
+        expect_add(value, value ^ 0x80000000U, 0U);
+        const auto doubled = exponent == 255U
+                                 ? sign | 0x7fffffffU
+                                 : value + 0x00800000U;
+        expect_add(value, value, doubled, false, exponent == 255U);
+      }
+    }
+  }
+}
+
+void test_add_guard_and_carry_boundaries() {
+  // Sweep scales rather than importing another project's selected vectors.
+  // Below a power of two, representable spacing is half that above it. One
+  // retained guard admits that half-ULP decrement, but drops a quarter-ULP.
+  for (std::uint32_t exponent = 27U; exponent < 256U; ++exponent) {
+    const auto base = exponent << 23U;
+    const auto ulp = (exponent - 23U) << 23U;
+    const auto half_ulp = (exponent - 24U) << 23U;
+    const auto quarter_ulp = (exponent - 25U) << 23U;
+    for (const auto sign : {0U, 0x80000000U}) {
+      expect_add(base | sign, ulp | sign, (base + 1U) | sign);
+      expect_add(base | sign, half_ulp | sign, base | sign);
+      expect_add(base | sign, quarter_ulp | sign, base | sign);
+      expect_add(base | sign, ulp | (sign ^ 0x80000000U),
+                 (base - 2U) | sign);
+      expect_add(base | sign, half_ulp | (sign ^ 0x80000000U),
+                 (base - 1U) | sign);
+      expect_add(base | sign, quarter_ulp | (sign ^ 0x80000000U), base | sign);
+      const auto maximum = base | 0x007fffffU;
+      expect_add(maximum | sign, half_ulp | sign, maximum | sign);
+      expect_add(maximum | sign, ulp | sign,
+                 (exponent == 255U ? 0x7fffffffU : base + 0x00800000U) | sign,
+                 false, exponent == 255U);
+    }
+  }
+}
+
+void test_add_underflow_fraction_and_following_flush() {
+  // Synthetic cancellation differences 3, 5, 7 and 9 at the smallest normal
+  // exponent. Normalizing those integers gives the fractions below. This
+  // checks the reported underflow rule, not a physical capture of these pairs.
+  struct Difference {
+    std::uint32_t delta;
+    std::uint32_t fraction;
+  };
+  constexpr std::array differences{
+      Difference{3U, 0x00400000U}, Difference{5U, 0x00200000U},
+      Difference{7U, 0x00600000U}, Difference{9U, 0x00100000U},
+  };
+  for (const auto &difference : differences) {
+    for (const auto sign : {0U, 0x80000000U}) {
+      const auto larger = sign | (0x00801200U + difference.delta);
+      const auto smaller = (sign ^ 0x80000000U) | 0x00801200U;
+      const auto remnant = sign | difference.fraction;
+      expect_add(larger, smaller, remnant, true);
+      // An arithmetic input with that encoding is subsequently flushed; its
+      // previous U flag is history, not a cause raised by this next ADD.
+      expect_add(remnant, sign, sign);
+    }
+  }
+  expect_add(0x00803401U, 0x80803400U, 0U, true);
+  expect_add(0x80803401U, 0x00803400U, 0x80000000U, true);
+  expect_add(0x00ffffffU, 0x80800000U, 0x007ffffeU, true);
+}
+
+void test_add_sub_metamorphic_raw_domain() {
+  std::uint32_t generator = 0x18297a43U;
+  for (std::uint32_t iteration = 0U; iteration < 65536U; ++iteration) {
+    generator = generator * 1664525U + 1013904223U;
+    const auto left = generator;
+    generator = generator * 1664525U + 1013904223U;
+    const auto right = generator;
+    const auto result = openrc::dvp_vu_add_bits_v1(left, right);
+    if (result != openrc::dvp_vu_add_bits_v1(right, left) ||
+        openrc::dvp_vu_sub_bits_v1(left, right) !=
+            openrc::dvp_vu_add_bits_v1(left, right ^ 0x80000000U) ||
+        result.zero != ((result.bits & 0x7f800000U) == 0U) ||
+        result.sign != ((result.bits & 0x80000000U) != 0U) ||
+        (result.underflow && result.overflow) ||
+        (result.underflow && !result.zero)) {
+      throw std::runtime_error("VU ADD/SUB metamorphic invariant failed");
+    }
+    if ((result.bits & 0x7fffffffU) != 0U || result.underflow) {
+      auto reversed = result;
+      reversed.bits ^= 0x80000000U;
+      reversed.sign = !reversed.sign;
+      if (reversed != openrc::dvp_vu_add_bits_v1(left ^ 0x80000000U,
+                                               right ^ 0x80000000U)) {
+        throw std::runtime_error("VU ADD sign reversal invariant failed");
+      }
+    }
+  }
+}
+
 } // namespace
 
 int main() {
@@ -176,7 +307,12 @@ int main() {
     test_truncation_and_saturation_neighbors();
     test_every_exponent_and_distributed_significands();
     test_invalid_fractional_formats_rejected();
-    std::cout << "VU integer conversion tests passed\n";
+    test_add_zero_input_classes();
+    test_add_identity_cancellation_and_doubling();
+    test_add_guard_and_carry_boundaries();
+    test_add_underflow_fraction_and_following_flush();
+    test_add_sub_metamorphic_raw_domain();
+    std::cout << "VU numeric conversion/reference-model tests passed\n";
     return 0;
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';

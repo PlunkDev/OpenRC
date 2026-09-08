@@ -24,10 +24,10 @@ inline constexpr std::string_view kNativeGameCompilerIdV1 =
 // compiler semantics, not the eight-resource runtime schema.
 #ifdef OPENRC_VERSION
 inline constexpr std::string_view kNativeGameCompilerVersionV1 =
-    OPENRC_VERSION "-native-eight-resource-v5-vu-loi";
+    OPENRC_VERSION "-native-eight-resource-v6-vu-addsub";
 #else
 inline constexpr std::string_view kNativeGameCompilerVersionV1 =
-    "0.1.0-dev-native-eight-resource-v5-vu-loi";
+    "0.1.0-dev-native-eight-resource-v6-vu-addsub";
 #endif
 inline constexpr std::uint64_t kNativeGameLevelPackageMaxBytesV1 =
     UINT64_C(768) * 1024U * 1024U;

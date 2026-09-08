@@ -201,6 +201,14 @@ struct RacGameplayMobyInstanceV1 {
     std::uint32_t mode_bits = 0U;
     std::int32_t light_index = 0;
     RacGameplayMobyAdmissionV1 admission;
+    // Accepted-placement tail inputs at +64/+68/+6c. These are full words,
+    // not normalized RGB bytes: source shifts/adds them with wrap32 and
+    // retains carries. The existing light_index preserves the raw +70 word.
+    std::array<std::uint32_t, 3U> authored_color_words{};
+    // Raw +74. Only full32(-1) skips the subsequent source reference helper;
+    // all other values, including other negative words, reach its own gate.
+    // This is a source index, never a source pointer or runtime entity ID.
+    std::uint32_t authored_reference_index_bits = 0U;
 };
 
 struct RacGameplayMobyGroupMemberV1 {

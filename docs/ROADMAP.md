@@ -274,8 +274,9 @@ unconnected. A native [ordered spatial index](ORDERED_SPATIAL_INDEX_V1.md)
 now preserves dynamic cell-list order, allocation, relocation and snapshots;
 source-qualified numerical bounds and live-actor binding remain required.
 The [numerical recovery layer](SOURCE_NUMERIC_RECOVERY_V1.md) now preserves
-paired-I timing, MAC flag reads, integer-only FTOI conversion and the original
-post-conversion bounds projection. MUL/ADD/ACC qualification and the complete
+paired-I timing, MAC flag reads, integer-only FTOI conversion, an explicitly
+qualified integer ADD/SUB reference model and the original post-conversion
+bounds projection. MUL/ACC and full numerical qualification and the complete
 ordered live-loader integration remain open. The original
 [shared keyed text bank and font-metric tables](RAC_TEXT_BANK_V1.md), together
 with the [frontend texture catalog](RAC_FRONTEND_TEXTURE_V1.md), are decoded
@@ -283,8 +284,12 @@ and verified, but are not an implemented original menu or HUD.
 The [original integer layout and floating glyph/control plan](RAC_TEXT_LAYOUT_V1.md)
 now preserve source text behavior and explicit arithmetic order. The pure
 [fresh constructor](RAC_MOBY_FRESH_CONSTRUCTOR_V1.md) now matches complete
-source initial state; neither addition bypasses remaining render/numeric/ordered
-integration or advances the whole-system completion claim.
+source initial state. The [authored color tail](RAC_MOBY_AUTHORED_TAIL_V1.md)
+preserves raw record words and original ordered stores, but not the following
+live shared-reference mutation. The [quad and frontend submission scope](RAC_FRONTEND_DRAW_V1.md)
+now preserve complete packet construction and cold-upload ordering, with
+shared PACKED/REGLIST drawing-stream regression coverage. None bypasses remaining
+render/numeric/ordered integration or advances the whole-system completion claim.
 These components do not yet execute original initialization
 callbacks, supply exact range-query inputs, or enable AI in the graphical runtime.
 This does not declare Veldin finished: airborne and wrench animation, original

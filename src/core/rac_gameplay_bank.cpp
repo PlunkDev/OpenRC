@@ -834,6 +834,12 @@ void validate_semantic_anchors(const std::span<const std::byte> bytes,
         instance.occlusion = read_le_i32(bytes, record_offset + 0x5cU);
         instance.mode_bits = read_le32(bytes, record_offset + 0x60U);
         instance.light_index = read_le_i32(bytes, record_offset + 0x70U);
+        for (std::size_t component = 0U; component < 3U; ++component) {
+            instance.authored_color_words[component] = read_le32(
+                bytes, record_offset + 0x64U + component * sizeof(std::uint32_t));
+        }
+        instance.authored_reference_index_bits =
+            read_le32(bytes, record_offset + 0x74U);
         result.static_mobies.push_back(instance);
     }
     validate_zero_tail(bytes, mobies, moby_bytes, "the moby-instance list");

@@ -387,6 +387,33 @@ void test_moby_group_bounds_and_termination() {
     }
 }
 
+void test_moby_authored_tail_words_are_preserved_without_normalization() {
+    auto bytes = make_bank();
+    const auto first = kMobyInstancesOffset + 0x10U;
+    const auto second = first + openrc::kRacGameplayMobyRecordBytesV1;
+    constexpr std::array<std::uint32_t, 3U> first_color{
+        0xffffffffU, 0x80000000U, 0x7fc01234U};
+    constexpr std::array<std::uint32_t, 3U> second_color{
+        0x100U, 0x10000U, 0x12345678U};
+    for (std::size_t lane = 0U; lane < 3U; ++lane) {
+        write_le32(bytes, first + 0x64U + lane * 4U, first_color[lane]);
+        write_le32(bytes, second + 0x64U + lane * 4U, second_color[lane]);
+    }
+    write_le32(bytes, first + 0x70U, 0x87654321U);
+    write_le32(bytes, first + 0x74U, 0xffffffffU);
+    write_le32(bytes, second + 0x74U, 0xfffeffffU);
+    const auto parsed = openrc::parse_rac_gameplay_bank_v1(bytes, kLimits);
+    expect(parsed.static_mobies[0U].authored_color_words == first_color &&
+               parsed.static_mobies[1U].authored_color_words == second_color &&
+               parsed.static_mobies[0U].authored_reference_index_bits == 0xffffffffU &&
+               parsed.static_mobies[1U].authored_reference_index_bits == 0xfffeffffU &&
+               std::bit_cast<std::uint32_t>(parsed.static_mobies[0U].light_index) ==
+                   0x87654321U &&
+               parsed.static_mobies[0U].mode_bits == 0x11223344U &&
+               parsed.static_mobies[0U].occlusion == 10,
+           "Moby tail decoding normalized words, truncated its index, or changed existing fields");
+}
+
 void test_moby_admission_inputs_are_preserved_without_inventing_policy() {
     auto bytes = make_bank();
     const auto first = kMobyInstancesOffset + 0x10U;
@@ -847,6 +874,7 @@ int main() {
     try {
         test_valid_bank();
         test_moby_admission_inputs_are_preserved_without_inventing_policy();
+        test_moby_authored_tail_words_are_preserved_without_normalization();
         test_moby_groups_preserve_source_ids_order_and_ranges();
         test_moby_group_bounds_and_termination();
         test_limits();

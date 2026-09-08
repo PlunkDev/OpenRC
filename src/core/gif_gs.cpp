@@ -13,6 +13,18 @@ namespace {
 
 constexpr std::uint32_t kFullKnown = 0xffffffffU;
 
+// Natural GS register data. PACKED A+D and REGLIST share this representation;
+// neither path fabricates a PACKED-format vertex/color payload.
+struct RawRegisterData {
+    std::array<DvpVuWordV1, 2U> lanes;
+};
+
+[[nodiscard]] RawRegisterData raw_register_data(
+    const DvpVuVectorV1& qword, const std::uint8_t half = 0U) noexcept {
+    const auto lane = static_cast<std::size_t>(half) * 2U;
+    return RawRegisterData{{qword.lanes[lane], qword.lanes[lane + 1U]}};
+}
+
 [[noreturn]] void fail(const std::string& message) {
     throw GifGsDecodeError(message);
 }
@@ -129,11 +141,11 @@ public:
         if (tag.nloop == 0U) {
             return;
         }
-        if (tag.pre) {
+        if (tag.format == 0U && tag.pre) {
             apply_primitive(tag.prim);
         }
-        // GIF initializes its temporary packed-mode Q to 1.0 for every
-        // non-empty tag. RGBA copies this temporary value into RGBAQ.
+        // GIF initializes its temporary Q for each non-empty tag. This does
+        // not write GS RGBAQ.Q; only PACKED RGBA uses the temporary latch.
         temporary_q_ = 1.0F;
     }
 
@@ -181,14 +193,14 @@ public:
             result_.final_fog = extract_u8(payload.lanes[3U], 4U);
             break;
         case GifGsRegisterDescriptorV1::xyzf3:
-            process_regular_xyzf(payload,
+            process_regular_xyzf(raw_register_data(payload),
                                  write_index,
                                  descriptor,
                                  std::nullopt,
                                  true);
             break;
         case GifGsRegisterDescriptorV1::xyz3:
-            process_regular_xyz(payload,
+            process_regular_xyz(raw_register_data(payload),
                                 write_index,
                                 descriptor,
                                 std::nullopt,
@@ -200,23 +212,48 @@ public:
         case GifGsRegisterDescriptorV1::nop:
             break;
         case GifGsRegisterDescriptorV1::tex0_1:
-            result_.final_texture_contexts[0U].tex0 = decode_tex0(payload);
+            result_.final_texture_contexts[0U].tex0 =
+                decode_tex0(raw_register_data(payload));
             break;
         case GifGsRegisterDescriptorV1::tex0_2:
-            result_.final_texture_contexts[1U].tex0 = decode_tex0(payload);
+            result_.final_texture_contexts[1U].tex0 =
+                decode_tex0(raw_register_data(payload));
             break;
         case GifGsRegisterDescriptorV1::clamp_1:
             result_.final_texture_contexts[0U].clamp =
-                decode_clamp(payload);
+                decode_clamp(raw_register_data(payload));
             break;
         case GifGsRegisterDescriptorV1::clamp_2:
             result_.final_texture_contexts[1U].clamp =
-                decode_clamp(payload);
+                decode_clamp(raw_register_data(payload));
             break;
         case GifGsRegisterDescriptorV1::reserved:
             ++result_.unsupported_register_write_count;
             break;
         }
+    }
+
+    void process_reglist_write(const std::uint64_t tag_index,
+                               const std::uint64_t loop_index,
+                               const std::uint8_t register_index,
+                               const std::uint64_t packet_qword_index,
+                               const std::uint8_t half,
+                               const GifGsRegisterDescriptorV1 descriptor,
+                               const DvpVuVectorV1& qword) {
+        const auto write_index =
+            static_cast<std::uint64_t>(result_.register_writes.size());
+        result_.register_writes.push_back(GifGsRegisterWriteV1{
+            current_event_index_, tag_index, loop_index, register_index,
+            packet_qword_index, descriptor, qword, 1U, half});
+        if (descriptor == GifGsRegisterDescriptorV1::address_data ||
+            descriptor == GifGsRegisterDescriptorV1::nop) {
+            return;
+        }
+        const auto address = static_cast<std::uint8_t>(descriptor);
+        const auto data = raw_register_data(qword, half);
+        result_.addressed_writes.push_back(GifGsAddressedWriteV1{
+            write_index, address, address, data.lanes[0U], data.lanes[1U]});
+        process_register_data(data, write_index, descriptor, address);
     }
 
     [[nodiscard]] GifGsDecodeResultV1 finish() && {
@@ -457,7 +494,16 @@ private:
             return;
         }
 
-        switch (*dispatched) {
+        process_register_data(raw_register_data(payload), write_index,
+                              GifGsRegisterDescriptorV1::address_data,
+                              *dispatched);
+    }
+
+    void process_register_data(const RawRegisterData& payload,
+                               const std::uint64_t write_index,
+                               const GifGsRegisterDescriptorV1 descriptor,
+                               const std::uint8_t dispatched) {
+        switch (dispatched) {
         case 0x00U:
             apply_primitive(extract_primitive(payload.lanes[0U]));
             break;
@@ -477,26 +523,26 @@ private:
         case 0x0cU:
             process_regular_xyzf(payload,
                                  write_index,
-                                 GifGsRegisterDescriptorV1::address_data,
-                                 *dispatched,
-                                 *dispatched == 0x0cU);
+                                 descriptor,
+                                 dispatched,
+                                 dispatched == 0x0cU);
             break;
         case 0x05U:
         case 0x0dU:
             process_regular_xyz(payload,
                                 write_index,
-                                GifGsRegisterDescriptorV1::address_data,
-                                *dispatched,
-                                *dispatched == 0x0dU);
+                                descriptor,
+                                dispatched,
+                                dispatched == 0x0dU);
             break;
         case 0x06U:
         case 0x07U:
-            result_.final_texture_contexts[*dispatched - 0x06U].tex0 =
+            result_.final_texture_contexts[dispatched - 0x06U].tex0 =
                 decode_tex0(payload);
             break;
         case 0x08U:
         case 0x09U:
-            result_.final_texture_contexts[*dispatched - 0x08U].clamp =
+            result_.final_texture_contexts[dispatched - 0x08U].clamp =
                 decode_clamp(payload);
             break;
         case 0x0aU:
@@ -521,12 +567,12 @@ private:
         }
         case 0x18U:
         case 0x19U:
-            result_.final_raster_contexts[*dispatched - 0x18U].xy_offset =
+            result_.final_raster_contexts[dispatched - 0x18U].xy_offset =
                 decode_xy_offset(payload);
             break;
         case 0x40U:
         case 0x41U:
-            result_.final_raster_contexts[*dispatched - 0x40U].scissor =
+            result_.final_raster_contexts[dispatched - 0x40U].scissor =
                 decode_scissor(payload);
             break;
         default:
@@ -537,7 +583,7 @@ private:
     }
 
     [[nodiscard]] static GifGsXyOffsetStateV1
-    decode_xy_offset(const DvpVuVectorV1& payload) noexcept {
+    decode_xy_offset(const RawRegisterData& payload) noexcept {
         return GifGsXyOffsetStateV1{
             payload.lanes[0U],
             payload.lanes[1U],
@@ -547,7 +593,7 @@ private:
     }
 
     [[nodiscard]] static GifGsScissorStateV1
-    decode_scissor(const DvpVuVectorV1& payload) noexcept {
+    decode_scissor(const RawRegisterData& payload) noexcept {
         return GifGsScissorStateV1{
             payload.lanes[0U],
             payload.lanes[1U],
@@ -559,7 +605,7 @@ private:
     }
 
     [[nodiscard]] static GifGsTex0StateV1
-    decode_tex0(const DvpVuVectorV1& payload) noexcept {
+    decode_tex0(const RawRegisterData& payload) noexcept {
         const auto u8 = [](const std::optional<std::uint32_t> value)
             -> std::optional<std::uint8_t> {
             return value.has_value()
@@ -600,7 +646,7 @@ private:
     }
 
     [[nodiscard]] static GifGsClampStateV1
-    decode_clamp(const DvpVuVectorV1& payload) noexcept {
+    decode_clamp(const RawRegisterData& payload) noexcept {
         const auto u8 = [](const std::optional<std::uint32_t> value)
             -> std::optional<std::uint8_t> {
             return value.has_value()
@@ -683,7 +729,7 @@ private:
         return snapshot;
     }
 
-    void process_regular_rgbaq(const DvpVuVectorV1& payload) {
+    void process_regular_rgbaq(const RawRegisterData& payload) {
         result_.final_color.r = extract_u8(payload.lanes[0U], 0U);
         result_.final_color.g = extract_u8(payload.lanes[0U], 8U);
         result_.final_color.b = extract_u8(payload.lanes[0U], 16U);
@@ -691,7 +737,7 @@ private:
         result_.final_texture.q = extract_float(payload.lanes[1U]);
     }
 
-    void process_regular_xyzf(const DvpVuVectorV1& payload,
+    void process_regular_xyzf(const RawRegisterData& payload,
                               const std::uint64_t write_index,
                               const GifGsRegisterDescriptorV1 descriptor,
                               const std::optional<std::uint8_t> address,
@@ -718,7 +764,7 @@ private:
         result_.final_fog = fog;
     }
 
-    void process_regular_xyz(const DvpVuVectorV1& payload,
+    void process_regular_xyz(const RawRegisterData& payload,
                              const std::uint64_t write_index,
                              const GifGsRegisterDescriptorV1 descriptor,
                              const std::optional<std::uint8_t> address,
@@ -938,27 +984,31 @@ validate_packet(const DvpVuXgkickEventV1& event,
             continue;
         }
 
-        if (tag.format != 0U) {
-            fail("GIF/GS decoder currently accepts PACKED-mode tags only");
+        if (tag.format > 1U) {
+            fail("GIF/GS decoder accepts PACKED and REGLIST tags only");
         }
         if (!tag.registers_known) {
-            fail("PACKED GIFtag has indeterminate REGS descriptors");
+            fail("GIFtag has indeterminate REGS descriptors");
         }
         if (tag.register_count == 0U || tag.register_count > 16U) {
-            fail("PACKED GIFtag register count is outside 1..16");
+            fail("GIFtag register count is outside 1..16");
         }
         if (!fully_known(raw.lanes[2U]) ||
             !fully_known(raw.lanes[3U])) {
-            fail("Copied PACKED GIFtag REGS fields are indeterminate");
+            fail("Copied GIFtag REGS fields are indeterminate");
         }
 
-        const auto expected_payload = checked_multiply(
-            tag.nloop, tag.register_count, "PACKED GIFtag payload qwords");
+        const auto register_items = checked_multiply(
+            tag.nloop, tag.register_count, "GIFtag register items");
+        const auto expected_payload = tag.format == 0U
+                                          ? register_items
+                                          : checked_add(register_items, 1U,
+                                                        "REGLIST rounding") / 2U;
         if (tag.payload_qword_count != expected_payload) {
-            fail("PACKED GIFtag payload count is inconsistent");
+            fail("GIFtag payload count is inconsistent with its format");
         }
         total_register_writes = checked_add(total_register_writes,
-                                            expected_payload,
+                                            register_items,
                                             "GIF/GS register writes");
         if (total_register_writes > limits.max_register_writes) {
             fail("GIF/GS register write limit exceeded");
@@ -969,7 +1019,7 @@ validate_packet(const DvpVuXgkickEventV1& event,
             expected_payload,
             "GIFtag end");
         if (tag_end > event.packet_qwords.size()) {
-            fail("PACKED GIFtag payload exceeds the copied XGKICK packet");
+            fail("GIFtag payload exceeds the copied XGKICK packet");
         }
         const auto high64 = static_cast<std::uint64_t>(raw.lanes[2U].bits) |
                             (static_cast<std::uint64_t>(raw.lanes[3U].bits)
@@ -1062,26 +1112,32 @@ GifGsDecodeResultV1 decode_dvp_vu_xgkick_gs_stream_v1(
                     const auto payload_offset = checked_add(
                         checked_multiply(loop_index,
                                          tag.register_count,
-                                         "PACKED payload offset"),
+                                         "GIF register item offset"),
                         register_index,
-                        "PACKED payload offset");
+                        "GIF register item offset");
+                    const auto qword_offset =
+                        tag.format == 0U ? payload_offset : payload_offset / 2U;
                     const auto packet_index = checked_add(
                         checked_add(record.packet_qword_index,
                                     1U,
-                                    "PACKED payload start"),
-                        payload_offset,
-                        "PACKED payload qword index");
+                                    "GIF payload start"),
+                        qword_offset,
+                        "GIF payload qword index");
                     const auto descriptor =
                         static_cast<GifGsRegisterDescriptorV1>(
                             tag.registers[register_index]);
-                    decoder.process_write(
-                        tag_index,
-                        loop_index,
-                        register_index,
-                        packet_index,
-                        descriptor,
-                        event.packet_qwords[static_cast<std::size_t>(
-                            packet_index)]);
+                    const auto& qword = event.packet_qwords[
+                        static_cast<std::size_t>(packet_index)];
+                    if (tag.format == 0U) {
+                        decoder.process_write(tag_index, loop_index,
+                                              register_index, packet_index,
+                                              descriptor, qword);
+                    } else {
+                        decoder.process_reglist_write(
+                            tag_index, loop_index, register_index, packet_index,
+                            static_cast<std::uint8_t>(payload_offset & 1U),
+                            descriptor, qword);
+                    }
                 }
             }
         }

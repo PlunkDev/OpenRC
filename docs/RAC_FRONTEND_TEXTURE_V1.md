@@ -81,8 +81,11 @@ still pass. Original assets, hashes and detailed source traces remain in ignored
 ## Frontend status
 
 The source New Game node's font selection and the original font metrics are
-described in [shared text and metrics](RAC_TEXT_BANK_V1.md). Font atlas recovery
-does not implement the layout owner, original draw-state setup, focus/input,
-animation, audio or transitions. Those dependencies must be closed before
+described in [shared text and metrics](RAC_TEXT_BANK_V1.md). Separate
+[layout/glyph owners](RAC_TEXT_LAYOUT_V1.md) and the
+[quad/cold-upload submission scope](RAC_FRONTEND_DRAW_V1.md) now preserve their
+source component contracts. Font atlas recovery alone does not implement the
+complete inherited render state, focus/input, animation, audio or transitions.
+Those dependencies must be closed before
 defining and integrating a neutral prepared UI resource. No host font, fake
 menu button or generated replacement asset is introduced here.

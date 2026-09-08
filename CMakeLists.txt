@@ -109,6 +109,9 @@ add_library(openrc_core STATIC
     src/core/rac_font_metrics.cpp
     src/core/rac_text_layout.cpp
     src/core/rac_float_glyph.cpp
+    src/core/rac_float_quad.cpp
+    src/core/rac_frontend_gs_scope.cpp
+    src/core/rac_moby_authored_tail.cpp
     src/core/rac_frontend_texture.cpp
     src/core/rac_tie_class.cpp
     src/core/render_scene.cpp
@@ -2152,6 +2155,18 @@ if(OPENRC_BUILD_TESTS)
     target_link_libraries(openrc-rac-float-glyph-tests PRIVATE openrc_core)
     target_compile_features(openrc-rac-float-glyph-tests PRIVATE cxx_std_20)
 
+    add_executable(openrc-rac-float-quad-tests tests/rac_float_quad_tests.cpp)
+    target_link_libraries(openrc-rac-float-quad-tests PRIVATE openrc_core)
+    target_compile_features(openrc-rac-float-quad-tests PRIVATE cxx_std_20)
+
+    add_executable(openrc-rac-frontend-gs-scope-tests tests/rac_frontend_gs_scope_tests.cpp)
+    target_link_libraries(openrc-rac-frontend-gs-scope-tests PRIVATE openrc_core)
+    target_compile_features(openrc-rac-frontend-gs-scope-tests PRIVATE cxx_std_20)
+
+    add_executable(openrc-rac-moby-authored-tail-tests tests/rac_moby_authored_tail_tests.cpp)
+    target_link_libraries(openrc-rac-moby-authored-tail-tests PRIVATE openrc_core)
+    target_compile_features(openrc-rac-moby-authored-tail-tests PRIVATE cxx_std_20)
+
     add_executable(openrc-ps2-palette-tests tests/ps2_palette_tests.cpp)
     target_link_libraries(openrc-ps2-palette-tests PRIVATE openrc_core)
     target_compile_features(openrc-ps2-palette-tests PRIVATE cxx_std_20)
@@ -2258,6 +2273,9 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-rac-text-layout-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-moby-fresh-constructor-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-float-glyph-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-rac-float-quad-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-rac-frontend-gs-scope-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-rac-moby-authored-tail-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-ps2-palette-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-frontend-texture-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-gif-gs-tests PRIVATE /W4 /permissive- /utf-8)
@@ -2282,6 +2300,9 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-rac-text-layout-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-moby-fresh-constructor-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-float-glyph-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-rac-float-quad-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-rac-frontend-gs-scope-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-rac-moby-authored-tail-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-ps2-palette-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-frontend-texture-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-gif-gs-tests PRIVATE -Wall -Wextra -Wpedantic)
@@ -2307,6 +2328,9 @@ if(OPENRC_BUILD_TESTS)
     add_test(NAME rac-text-layout COMMAND openrc-rac-text-layout-tests)
     add_test(NAME rac-moby-fresh-constructor COMMAND openrc-rac-moby-fresh-constructor-tests)
     add_test(NAME rac-float-glyph COMMAND openrc-rac-float-glyph-tests)
+    add_test(NAME rac-float-quad COMMAND openrc-rac-float-quad-tests)
+    add_test(NAME rac-frontend-gs-scope COMMAND openrc-rac-frontend-gs-scope-tests)
+    add_test(NAME rac-moby-authored-tail COMMAND openrc-rac-moby-authored-tail-tests)
     add_test(NAME ps2-palette COMMAND openrc-ps2-palette-tests)
     add_test(NAME rac-frontend-texture COMMAND openrc-rac-frontend-texture-tests)
     add_test(NAME gif-gs COMMAND openrc-gif-gs-tests)

@@ -726,12 +726,14 @@ void test_pre_loi_fix_compiler_cache_is_rejected() {
   if (suffix == std::string::npos) {
     throw std::runtime_error("native compiler identity lacks its profile suffix");
   }
-  const auto previous = current.substr(0U, suffix) +
-                        "-native-eight-resource-v4-moby749-initial";
-  PublicationFixture fixture(ProfileMutation::none, previous);
-  expect_native_profile_rejected(
-      [&] { fixture.validate(); },
-      "a structurally valid pre-LOI-fix cache was accepted as current");
+  for (const auto *old_suffix : {"-native-eight-resource-v4-moby749-initial",
+                                 "-native-eight-resource-v5-vu-loi"}) {
+    const auto previous = current.substr(0U, suffix) + old_suffix;
+    PublicationFixture fixture(ProfileMutation::none, previous);
+    expect_native_profile_rejected(
+        [&] { fixture.validate(); },
+        "a structurally valid pre-numeric-fix cache was accepted as current");
+  }
 }
 
 void test_empty_crate_profile_is_rejected() {

@@ -115,6 +115,9 @@ struct TagSpec {
     std::uint16_t prim = 0U;
     std::vector<std::uint8_t> registers;
     std::vector<openrc::DvpVuVectorV1> payload;
+    // For REGLIST each input item is a natural GS value in lanes 0/1.
+    // The builder concatenates items before rounding to whole qwords.
+    std::uint8_t format = 0U;
 };
 
 [[nodiscard]] openrc::DvpVuXgkickEventV1
@@ -128,6 +131,7 @@ make_event(const std::vector<TagSpec>& specs) {
                "synthetic tag payload must contain whole loops");
         const auto nloop = spec.payload.size() / spec.registers.size();
         expect(nloop <= 0x7fffU, "synthetic tag loop count is too large");
+        expect(spec.format <= 1U, "synthetic register format is invalid");
         const bool eop = tag_index + 1U == specs.size();
         const auto raw_nreg = spec.registers.size() == 16U
                                   ? 0U
@@ -137,6 +141,7 @@ make_event(const std::vector<TagSpec>& specs) {
                            (static_cast<std::uint64_t>(spec.pre) << 46U) |
                            (static_cast<std::uint64_t>(spec.prim & 0x07ffU)
                             << 47U) |
+                           (static_cast<std::uint64_t>(spec.format) << 58U) |
                            (static_cast<std::uint64_t>(raw_nreg) << 60U);
 
         std::uint64_t high64 = 0U;
@@ -163,9 +168,11 @@ make_event(const std::vector<TagSpec>& specs) {
         tag.eop = eop;
         tag.pre = spec.pre;
         tag.prim = spec.prim;
-        tag.format = 0U;
+        tag.format = spec.format;
         tag.register_count = static_cast<std::uint8_t>(spec.registers.size());
-        tag.payload_qword_count = spec.payload.size();
+        tag.payload_qword_count = spec.format == 0U
+                                      ? spec.payload.size()
+                                      : (spec.payload.size() + 1U) / 2U;
         tag.registers = registers;
         tag.registers_known = true;
         event.tags.push_back(openrc::DvpVuXgkickTagV1{
@@ -173,9 +180,23 @@ make_event(const std::vector<TagSpec>& specs) {
             tag,
             packet_tag_index,
         });
-        event.packet_qwords.insert(event.packet_qwords.end(),
-                                   spec.payload.begin(),
-                                   spec.payload.end());
+        if (spec.format == 0U) {
+            event.packet_qwords.insert(event.packet_qwords.end(),
+                                       spec.payload.begin(),
+                                       spec.payload.end());
+        } else {
+            for (std::size_t item = 0U; item < spec.payload.size(); item += 2U) {
+                // Unused final upper64 stays indeterminate, deliberately.
+                openrc::DvpVuVectorV1 qword{};
+                qword.lanes[0U] = spec.payload[item].lanes[0U];
+                qword.lanes[1U] = spec.payload[item].lanes[1U];
+                if (item + 1U < spec.payload.size()) {
+                    qword.lanes[2U] = spec.payload[item + 1U].lanes[0U];
+                    qword.lanes[3U] = spec.payload[item + 1U].lanes[1U];
+                }
+                event.packet_qwords.push_back(qword);
+            }
+        }
     }
     event.packet_complete = true;
     return event;
@@ -861,6 +882,278 @@ void test_partial_raster_fields_and_unresolved_context() {
            "final unresolved raster selection must not imply a context");
 }
 
+void test_reglist_framing_and_half_provenance() {
+    for (std::size_t nreg = 1U; nreg <= 16U; ++nreg) {
+        for (std::size_t nloop = 1U; nloop <= 4U; ++nloop) {
+            const auto count = nreg * nloop;
+            std::vector<openrc::DvpVuVectorV1> items;
+            for (std::size_t item = 0U; item < count; ++item) {
+                items.push_back(packed_register64(
+                    (0x1234567800000000ULL + item * 0x100000001ULL)));
+            }
+            const auto event = make_event({TagSpec{
+                true, 7U, std::vector<std::uint8_t>(nreg, 0x0fU), items, 1U}});
+            const auto result = openrc::decode_dvp_vu_xgkick_gs_v1(event, kLimits);
+            expect(event.packet_qwords.size() == 1U + (count + 1U) / 2U &&
+                       result.register_writes.size() == count &&
+                       result.addressed_writes.empty() &&
+                       result.unsupported_register_write_count == 0U &&
+                       !result.final_primitive.known,
+                   "REGLIST framing, NOP or ignored PRE mismatch");
+            for (std::size_t item = 0U; item < count; ++item) {
+                const auto& write = result.register_writes[item];
+                const auto first_lane = static_cast<std::size_t>(
+                    write.packet_half_index) * 2U;
+                expect(write.event_index == 0U && write.tag_index == 0U &&
+                           write.loop_index == item / nreg &&
+                           write.register_index == item % nreg &&
+                           write.packet_qword_index == 1U + item / 2U &&
+                           write.format == 1U &&
+                           write.packet_half_index == item % 2U &&
+                           write.payload.lanes[first_lane] == items[item].lanes[0U] &&
+                           write.payload.lanes[first_lane + 1U] == items[item].lanes[1U],
+                       "REGLIST must concatenate loops, not pad each odd NREG loop");
+            }
+        }
+    }
+
+    // An odd tag discards upper64; the following tag starts on the next qword.
+    const auto mixed = make_event({
+        TagSpec{false, 0U, {1U}, {packed_register64(0x4000000080402010ULL)}, 1U},
+        TagSpec{false, 0U, {5U}, {packed_xyz(1U, 2U, 3U)}},
+        TagSpec{false, 0U, {0x0eU, 0x0fU},
+                {openrc::DvpVuVectorV1{}, openrc::DvpVuVectorV1{}}, 1U},
+    });
+    const auto result = openrc::decode_dvp_vu_xgkick_gs_v1(mixed, kLimits);
+    expect(result.register_writes.size() == 4U &&
+               result.register_writes[0U].packet_qword_index == 1U &&
+               result.register_writes[1U].packet_qword_index == 3U &&
+               result.register_writes[1U].format == 0U &&
+               result.register_writes[1U].packet_half_index == 0U &&
+               result.register_writes[2U].packet_qword_index == 5U &&
+               result.register_writes[3U].packet_qword_index == 5U &&
+               result.addressed_writes.size() == 1U &&
+               result.unresolved_addressed_write_count == 0U &&
+               result.unsupported_register_write_count == 0U &&
+               result.final_color.r == 0x10U && result.final_texture.q == 2.0F &&
+               result.vertices.size() == 1U && result.vertices[0U].color.g == 0x20U,
+           "REGLIST padding/A+D/NOP must not write or invalidate GS state");
+}
+
+void test_reglist_natural_fields_and_shared_dispatch() {
+    const std::vector<std::uint8_t> descriptors{
+        0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U, 9U, 10U, 11U, 12U, 13U};
+    const std::vector<std::uint64_t> values{
+        0U, 0x40e0000080442211ULL, // PRIM points; RGBAQ Q=7, alpha=0x80.
+        0x3f0000003e800000ULL,      // ST = (0.25,0.5), no GIF Q input.
+        0xffffffffc567c123ULL,      // UV fields are only 14 bits each.
+        0xa512345622221111ULL,      // XYZF2: raw Z24/fog in upper32.
+        0xdeadbeef44443333ULL,      // XYZ2: all 32 depth bits are data.
+        0x123456789abcdef0ULL, 0xfedcba9876543210ULL,
+        0x00000abc12345678ULL, 0x00000123456789abULL,
+        0xe100000000000000ULL,      // FOG highest byte, not PACKED lane3 bits4.
+        0xffffffffffffffffULL,     // Reserved descriptor stays unsupported.
+        0xc265432166665555ULL, 0x8000000177778888ULL,
+    };
+    std::vector<openrc::DvpVuVectorV1> raw_items;
+    std::vector<openrc::DvpVuVectorV1> addressed_items;
+    for (std::size_t item = 0U; item < values.size(); ++item) {
+        raw_items.push_back(packed_register64(values[item]));
+        addressed_items.push_back(addressed(values[item], descriptors[item]));
+    }
+    const auto reglist = make_event({TagSpec{true, 3U, descriptors, raw_items, 1U}});
+    const auto packed_ad = make_event({TagSpec{
+        false, 0U, std::vector<std::uint8_t>(descriptors.size(), 0x0eU),
+        addressed_items}});
+    const auto raw_result = openrc::decode_dvp_vu_xgkick_gs_v1(reglist, kLimits);
+    const auto ad_result = openrc::decode_dvp_vu_xgkick_gs_v1(packed_ad, kLimits);
+    expect(raw_result.vertices.size() == 4U &&
+               raw_result.emitted_primitive_count == 2U &&
+               raw_result.suppressed_primitive_count == 2U &&
+               raw_result.unsupported_register_write_count == 1U &&
+               raw_result.addressed_writes.size() == descriptors.size(),
+           "REGLIST regular XYZ2/3 kick or reserved descriptor mismatch");
+    const auto& first = raw_result.vertices[0U];
+    const auto& second = raw_result.vertices[1U];
+    const auto& third = raw_result.vertices[2U];
+    const auto& fourth = raw_result.vertices[3U];
+    expect(first.x == 0x1111U && first.y == 0x2222U &&
+               first.z == 0x123456U && first.fog == 0xa5U &&
+               first.texture.u == 0x123U && first.texture.v == 0x567U &&
+               first.texture.s == 0.25F && first.texture.t == 0.5F &&
+               first.texture.q == 7.0F && first.color.r == 0x11U &&
+               first.color.g == 0x22U && first.color.b == 0x44U &&
+               first.color.a == 0x80U && !first.adc.has_value() &&
+               second.x == 0x3333U && second.y == 0x4444U &&
+               second.z == 0xdeadbeefU && second.fog == 0xa5U &&
+               third.x == 0x5555U && third.y == 0x6666U &&
+               third.z == 0x654321U && third.fog == 0xc2U &&
+               fourth.x == 0x8888U && fourth.y == 0x7777U &&
+               fourth.z == 0x80000001U && fourth.fog == 0xc2U &&
+               third.kick == openrc::GifGsVertexKickV1::suppressed &&
+               fourth.kick == openrc::GifGsVertexKickV1::suppressed,
+           "REGLIST values must use natural GS layouts, not PACKED layouts");
+    expect(raw_result.final_texture_contexts == ad_result.final_texture_contexts &&
+               raw_result.final_fog == ad_result.final_fog &&
+               raw_result.final_texture.q == ad_result.final_texture.q &&
+               raw_result.unsupported_register_write_count ==
+                   ad_result.unsupported_register_write_count &&
+               raw_result.vertices.size() == ad_result.vertices.size(),
+           "raw REGLIST and PACKED A+D must share GS register semantics");
+    for (std::size_t item = 0U; item < values.size(); ++item) {
+        const auto& write = raw_result.addressed_writes[item];
+        const auto& other = ad_result.addressed_writes[item];
+        expect(write.address == descriptors[item] &&
+                   write.dispatched_address == descriptors[item] &&
+                   write.data_low == other.data_low && write.data_high == other.data_high,
+               "REGLIST selected raw64 trace differs from addressed register data");
+    }
+    for (std::size_t index = 0U; index < raw_result.vertices.size(); ++index) {
+        const auto& a = raw_result.vertices[index];
+        const auto& b = ad_result.vertices[index];
+        expect(a.x == b.x && a.y == b.y && a.z == b.z && a.fog == b.fog &&
+                   a.kick == b.kick && a.adc == b.adc &&
+                   a.addressed_register == b.addressed_register &&
+                   a.texture_binding == b.texture_binding &&
+                   a.source_descriptor != b.source_descriptor,
+               "shared raw64 dispatch must preserve fields but distinguish provenance");
+    }
+    // Place FOG in either half, then observe it through XYZ2 before XYZF updates it.
+    for (const bool leading_nop : {false, true}) {
+        std::vector<std::uint8_t> regs{0x0aU, 5U};
+        std::vector<openrc::DvpVuVectorV1> items{
+            packed_register64(0xe100000000000000ULL), packed_register64(0U)};
+        if (leading_nop) {
+            regs.insert(regs.begin(), 0x0fU);
+            items.insert(items.begin(), openrc::DvpVuVectorV1{});
+        }
+        const auto result = openrc::decode_dvp_vu_xgkick_gs_v1(
+            make_event({TagSpec{false, 0U, regs, items, 1U}}), kLimits);
+        expect(result.vertices[0U].fog == 0xe1U && result.final_fog == 0xe1U,
+               "REGLIST FOG must use the selected half's highest byte");
+    }
+}
+
+void test_reglist_stream_pre_and_q_state() {
+    const auto first = make_event({TagSpec{true, 4U, {5U},
+        {packed_xyz(1U, 2U, 3U), packed_xyz(4U, 5U, 6U)}}});
+    const auto second = make_event({TagSpec{true, 0U, {5U},
+        {packed_register64(0x0000000900080007ULL)}, 1U}});
+    const auto continued = openrc::decode_dvp_vu_xgkick_gs_stream_v1(
+        std::array{first, second}, kLimits);
+    expect(continued.primitives.size() == 1U &&
+               continued.primitives[0U].completion_event_index == 1U &&
+               continued.primitives[0U].vertex_indices ==
+                   std::array<std::uint64_t, 3U>{0U, 1U, 2U} &&
+               continued.final_primitive.raw == 4U,
+           "EOP and REGLIST PRE must not reset pending strip assembly");
+    const auto reset = make_event({TagSpec{false, 0U, {0U, 5U},
+        {packed_register64(4U), packed_register64(0x0000000900080007ULL)}, 1U}});
+    const auto reset_result = openrc::decode_dvp_vu_xgkick_gs_stream_v1(
+        std::array{first, reset}, kLimits);
+    expect(reset_result.primitives.empty(),
+           "a genuine REGLIST PRIM write resets assembly even for equal PRIM");
+
+    const auto q_event = make_event({
+        TagSpec{true, 0U, {2U, 1U},
+                {packed_st(0.0F, 0.0F, 9.0F), packed_rgba(1U, 2U, 3U, 4U)}},
+        TagSpec{false, 0U, {2U, 5U, 1U, 5U},
+                {packed_register64(0x3f0000003e800000ULL), packed_register64(0U),
+                 packed_register64(0x4000000080402010ULL), packed_register64(0U)}, 1U},
+        TagSpec{false, 0U, {5U, 1U, 5U},
+                {packed_xyz(0U, 0U, 0U), packed_rgba(4U, 3U, 2U, 1U),
+                 packed_xyz(0U, 0U, 0U)}},
+    });
+    const auto q_result = openrc::decode_dvp_vu_xgkick_gs_v1(q_event, kLimits);
+    expect(q_result.vertices.size() == 4U &&
+               q_result.vertices[0U].texture.q == 9.0F &&
+               q_result.vertices[1U].texture.q == 2.0F &&
+               q_result.vertices[2U].texture.q == 2.0F &&
+               q_result.vertices[3U].texture.q == 1.0F,
+           "GIFtag resets temporary Q, not GS Q; only PACKED RGBA copies the latch");
+}
+
+void test_reglist_partial_fields() {
+    auto color = packed_register64(0x4000000080442211ULL);
+    color.lanes[0U].known_mask &= ~0x0000ff00U;
+    color.lanes[1U].known_mask = 0U;
+    auto xyzf = packed_register64(0xa512345622221111ULL);
+    xyzf.lanes[0U].known_mask &= ~0xffff0000U;
+    xyzf.lanes[1U].known_mask &= ~0x00000001U;
+    auto uv = packed_register64(0xffffffffc567c123ULL);
+    uv.lanes[0U].known_mask = 0x3fff3fffU;
+    uv.lanes[1U].known_mask = 0U;
+    const auto event = make_event({TagSpec{false, 0U, {1U, 3U, 4U},
+        {color, uv, xyzf}, 1U}});
+    const auto result = openrc::decode_dvp_vu_xgkick_gs_v1(event, kLimits);
+    const auto& vertex = result.vertices[0U];
+    expect(vertex.color.r == 0x11U && !vertex.color.g.has_value() &&
+               vertex.color.b == 0x44U && vertex.color.a == 0x80U &&
+               !vertex.texture.q.has_value() && vertex.texture.u == 0x123U &&
+               vertex.texture.v == 0x567U && vertex.x == 0x1111U &&
+               !vertex.y.has_value() && !vertex.z.has_value() &&
+               vertex.fog == 0xa5U &&
+               vertex.kick == openrc::GifGsVertexKickV1::submitted &&
+               result.addressed_writes[0U].data_low == color.lanes[0U] &&
+               result.addressed_writes[1U].data_low == uv.lanes[0U] &&
+               result.addressed_writes[2U].data_high == xyzf.lanes[1U],
+           "REGLIST field knowledge must not leak across fields, halves or padding");
+}
+
+void test_reglist_limits_and_malformed_framing() {
+    const auto event = make_event({TagSpec{false, 0U, {0x0fU, 0x0fU, 0x0fU},
+        std::vector<openrc::DvpVuVectorV1>(6U), 1U}});
+    auto limits = kLimits;
+    limits.max_register_writes = 6U;
+    limits.max_packet_qwords = 4U;
+    expect(openrc::decode_dvp_vu_xgkick_gs_v1(event, limits).register_writes.size() == 6U,
+           "REGLIST exact item and qword limits should succeed");
+    limits.max_register_writes = 5U;
+    expect_decode_error([&] { (void)openrc::decode_dvp_vu_xgkick_gs_v1(event, limits); },
+                        "REGLIST write limit counts 64-bit items, not qwords");
+    limits = kLimits;
+    limits.max_packet_qwords = 3U;
+    expect_decode_error([&] { (void)openrc::decode_dvp_vu_xgkick_gs_v1(event, limits); },
+                        "REGLIST packet limit includes the tag");
+    limits = kLimits;
+    limits.max_register_writes = 11U;
+    expect_decode_error([&] { (void)openrc::decode_dvp_vu_xgkick_gs_stream_v1(
+        std::array{event, event}, limits); }, "REGLIST limits must aggregate across events");
+    const auto reject = [](const openrc::DvpVuXgkickEventV1& malformed) {
+        expect_decode_error([&] { (void)openrc::decode_dvp_vu_xgkick_gs_v1(malformed, kLimits); },
+                            "malformed REGLIST framing must fail");
+    };
+    auto malformed = event;
+    malformed.tags[0U].tag.payload_qword_count = 4U; // Wrong padding per odd loop.
+    reject(malformed);
+    malformed = event;
+    malformed.packet_qwords.pop_back();
+    reject(malformed);
+    malformed = event;
+    malformed.tags[0U].tag.format = 0U;
+    reject(malformed);
+    malformed = event;
+    malformed.tags[0U].tag.register_count = 2U;
+    reject(malformed);
+    malformed = event;
+    malformed.tags[0U].tag.eop = false;
+    reject(malformed);
+    malformed = event;
+    malformed.tags[0U].tag.registers[1U] = 0U;
+    reject(malformed);
+    malformed = event;
+    malformed.packet_qwords.push_back(openrc::DvpVuVectorV1{});
+    reject(malformed);
+    for (const auto format : std::array<std::uint8_t, 2U>{2U, 3U}) {
+        malformed = event;
+        malformed.tags[0U].tag.format = format;
+        malformed.packet_qwords[0U].lanes[1U].bits &= ~(3U << 26U);
+        malformed.packet_qwords[0U].lanes[1U].bits |=
+            static_cast<std::uint32_t>(format) << 26U;
+        reject(malformed);
+    }
+}
+
 void test_limits_and_malformed_framing() {
     const auto triangle = make_event({TagSpec{
         true,
@@ -923,7 +1216,7 @@ void test_limits_and_malformed_framing() {
     malformed.tags[0U].tag.format = 1U;
     expect_decode_error(
         [&] { (void)openrc::decode_dvp_vu_xgkick_gs_v1(malformed, kLimits); },
-        "non-PACKED tag must be rejected");
+        "format metadata must agree with raw format and payload size");
     malformed = triangle;
     malformed.tags[0U].tag.registers_known = false;
     expect_decode_error(
@@ -960,6 +1253,11 @@ int main() {
         test_zero_loop_and_special_register_semantics();
         test_raster_context_state_across_xgkick_events();
         test_partial_raster_fields_and_unresolved_context();
+        test_reglist_framing_and_half_provenance();
+        test_reglist_natural_fields_and_shared_dispatch();
+        test_reglist_stream_pre_and_q_state();
+        test_reglist_partial_fields();
+        test_reglist_limits_and_malformed_framing();
         test_limits_and_malformed_framing();
         std::cout << "gif_gs_tests: ok\n";
         return 0;

@@ -43,9 +43,16 @@ both in progress. The repository currently provides:
 - source-compared [original text layout and floating glyph/control plans](docs/RAC_TEXT_LAYOUT_V1.md),
   preserving source line breaks, color state and arithmetic order without a
   host-font replacement or a claim of completed menu rendering;
+- a source-compared [frontend quad and submission scope](docs/RAC_FRONTEND_DRAW_V1.md)
+  preserving original command bytes, cold texture binding/upload order and
+  explicit unknown incoming render state, integrated with the shared bounded
+  PACKED/REGLIST decoder without claiming a visible original menu;
 - a source-compared [fresh Moby constructor](docs/RAC_MOBY_FRESH_CONSTRUCTOR_V1.md)
   preserving complete initial named state and original frame selection; ordered
   placement/post-step integration into the live world remains incomplete;
+- the source [authored Moby color tail](docs/RAC_MOBY_AUTHORED_TAIL_V1.md), with
+  complete raw input retention, ordered stores and the exact pending reference
+  call gate; its live shared-reference mutation remains separate;
 - a strict `RacGameplayBankV1` parser for both regional gameplay payloads on
   all 19 levels, exposing 36 named block ranges plus validated RAC1 moby-class
   IDs and 0x78-byte static-instance placements, dense per-instance PVar
@@ -191,7 +198,7 @@ both in progress. The repository currently provides:
 - exact SceneBlock task initialization and record execution with carried
   BASE/OFFSET/DBF, VIF control state, both input banks, and the caller-provided
   four-qword frame transform;
-- a stateful bounded GIF/GS stream decoder with primitive assembly, vertex
+- a stateful bounded PACKED/REGLIST GIF/GS stream decoder with primitive assembly, vertex
   attributes, raster-context snapshots, and optional auto-fit wireframe TGA
   export from real XGKICK output;
 - exact entry-16 source-geometry recovery through each record's matched V4-8

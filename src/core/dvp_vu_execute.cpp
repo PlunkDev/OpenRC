@@ -132,6 +132,17 @@ enum class FloatBinaryOperation : std::uint8_t {
     multiply,
 };
 
+[[nodiscard]] FloatOutcome float_add_sub_reference(
+    const DvpVuWordV1 left, const DvpVuWordV1 right, const bool subtract) {
+    if (!fully_known(left) || !fully_known(right)) {
+        return {};
+    }
+    const auto numeric = subtract ? dvp_vu_sub_bits_v1(left.bits, right.bits)
+                                  : dvp_vu_add_bits_v1(left.bits, right.bits);
+    return {known_word(numeric.bits), true, numeric.zero, numeric.sign,
+            numeric.underflow, numeric.overflow};
+}
+
 [[nodiscard]] FloatOutcome float_binary(const DvpVuWordV1 left,
                                         const DvpVuWordV1 right,
                                         const FloatBinaryOperation operation) {
@@ -177,6 +188,8 @@ enum class FloatBinaryOperation : std::uint8_t {
                                       const DvpVuWordV1 left,
                                       const DvpVuWordV1 right,
                                       const bool subtract) {
+    // Leave the separately unqualified multiply/ACC path unchanged. Replacing
+    // its adder alone would not establish product rounding or ACC latch rules.
     const auto product =
         float_binary(left, right, FloatBinaryOperation::multiply);
     if (!fully_known(product.value)) {
@@ -815,8 +828,7 @@ void execute_upper(const DvpVuInstructionPairV1& pair,
         const auto left = before.vf[upper.fs].lanes[lane];
         const auto right = upper_operand(upper, before, lane);
         if (is_add_family(upper.opcode)) {
-            outcomes[lane] =
-                float_binary(left, right, FloatBinaryOperation::add);
+            outcomes[lane] = float_add_sub_reference(left, right, false);
         } else if (is_multiply_family(upper.opcode)) {
             outcomes[lane] =
                 float_binary(left, right, FloatBinaryOperation::multiply);
@@ -827,8 +839,7 @@ void execute_upper(const DvpVuInstructionPairV1& pair,
             outcomes[lane] =
                 float_madd(before.accumulator.lanes[lane], left, right, true);
         } else {
-            outcomes[lane] =
-                float_binary(left, right, FloatBinaryOperation::subtract);
+            outcomes[lane] = float_add_sub_reference(left, right, true);
         }
         output.lanes[lane] = outcomes[lane].value;
     }
@@ -846,7 +857,12 @@ void execute_upper(const DvpVuInstructionPairV1& pair,
         !pipelines.q.empty() && pipelines.q.front().ready_cycle > cycle) {
         add_warning(result, DvpVuExecutionWarningV1::q_read_before_ready);
     }
-    add_warning(result, DvpVuExecutionWarningV1::host_float_approximation);
+    const bool host_arithmetic = is_multiply_family(upper.opcode) ||
+                                 is_madd_family(upper.opcode) ||
+                                 is_msub_family(upper.opcode);
+    add_warning(result, host_arithmetic
+                            ? DvpVuExecutionWarningV1::host_float_approximation
+                            : DvpVuExecutionWarningV1::vu_add_sub_reference_model);
 }
 
 [[nodiscard]] bool supported_lower(const DvpVuLowerInstructionV1& lower) {
