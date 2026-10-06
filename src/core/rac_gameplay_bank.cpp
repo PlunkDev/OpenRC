@@ -1054,4 +1054,58 @@ parse_rac_gameplay_bank_v1(const std::span<const std::byte> bytes,
     return result;
 }
 
+RacGameplayEnvironmentV1 parse_rac_gameplay_environment_v1(
+    const std::span<const std::byte> bytes,
+    const RacGameplayBankLimitsV1 limits) {
+    if (bytes.size() < kRacGameplayFirstBlockOffsetV1 ||
+        bytes.size() > limits.max_input_bytes ||
+        bytes.size() > std::numeric_limits<std::uint32_t>::max() ||
+        (bytes.size() & 15U) != 0U || limits.max_tie_classes == 0U ||
+        limits.max_tie_instances == 0U || limits.max_shrub_classes == 0U ||
+        limits.max_shrub_instances == 0U) {
+        fail("RAC environment source or caller limits are invalid");
+    }
+    std::vector<std::uint32_t> boundaries;
+    for (std::size_t slot = 0U; slot < kRacGameplayDirectorySlotCountV1; ++slot) {
+        const auto at = read_le32(bytes, slot * 4U);
+        if (at == 0U) continue;
+        if (slot * 4U == kDirectoryPadOffset ||
+            at < kRacGameplayFirstBlockOffsetV1 || at >= bytes.size() ||
+            (at & 15U) != 0U) {
+            fail("RAC environment directory has an invalid source pointer");
+        }
+        boundaries.push_back(at);
+    }
+    std::sort(boundaries.begin(), boundaries.end());
+    if (std::adjacent_find(boundaries.begin(), boundaries.end()) != boundaries.end())
+        fail("RAC environment source directory aliases block owners");
+    const auto block = [&](const RacGameplayBlockKindV1 kind,
+                           const std::uint32_t field) {
+        const auto at = read_le32(bytes, field);
+        if (at == 0U) fail("RAC environment has a missing required block");
+        const auto next = std::upper_bound(boundaries.begin(), boundaries.end(), at);
+        const auto end = next == boundaries.end() ? bytes.size() : *next;
+        return RacGameplayBlockV1{kind, field, {at, end - at}};
+    };
+    auto ties = parse_class_list(bytes,
+        block(RacGameplayBlockKindV1::tie_classes, 0x30U),
+        limits.max_tie_classes, "tie", "the environment tie-class list");
+    auto shrubs = parse_class_list(bytes,
+        block(RacGameplayBlockKindV1::shrub_classes, 0x38U),
+        limits.max_shrub_classes, "shrub", "the environment shrub-class list");
+    RacGameplayEnvironmentV1 result;
+    result.input_bytes = bytes.size();
+    result.tie_instances = parse_environment_instances<RacGameplayTieInstanceV1>(
+        bytes, block(RacGameplayBlockKindV1::tie_instances, 0x34U),
+        ties.membership, limits.max_tie_instances, kRacGameplayTieRecordBytesV1,
+        "tie", "the environment tie-instance list");
+    result.shrub_instances = parse_environment_instances<RacGameplayShrubInstanceV1>(
+        bytes, block(RacGameplayBlockKindV1::shrub_instances, 0x3cU),
+        shrubs.membership, limits.max_shrub_instances, kRacGameplayShrubRecordBytesV1,
+        "shrub", "the environment shrub-instance list");
+    result.tie_class_ids = std::move(ties.ids);
+    result.shrub_class_ids = std::move(shrubs.ids);
+    return result;
+}
+
 } // namespace openrc

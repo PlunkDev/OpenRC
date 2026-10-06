@@ -868,6 +868,31 @@ void test_structural_rejections() {
         "non-zero shrub-instance padding was accepted");
 }
 
+void test_partial_frontend_environment() {
+    auto bytes = make_bank();
+    const auto full = openrc::parse_rac_gameplay_bank_v1(bytes, kLimits);
+    write_le32(bytes, 0x14U, 0U); // Unrelated frontend help bank may be absent.
+    const auto partial = openrc::parse_rac_gameplay_environment_v1(bytes, kLimits);
+    expect(partial.tie_class_ids == full.tie_class_ids &&
+           partial.shrub_class_ids == full.shrub_class_ids &&
+           partial.tie_instances.size() == full.tie_instances.size() &&
+           partial.shrub_instances.size() == full.shrub_instances.size(),
+           "Partial environment changed authored classes or instance counts");
+    expect(partial.tie_instances.front().raw_words == full.tie_instances.front().raw_words &&
+           partial.shrub_instances.front().matrix_bits == full.shrub_instances.front().matrix_bits,
+           "Partial environment changed source placement words");
+    for (const auto mutation : std::array<std::pair<std::size_t,std::uint32_t>,5U>{
+            std::pair{std::size_t{0x34U},0U}, {0x38U,kTieClassesOffset},
+            {0x3cU,0x10000U}, {kTieInstancesOffset,2U},
+            {kShrubInstancesOffset+0x10U,0x9999U}}) {
+        auto bad = bytes;write_le32(bad,mutation.first,mutation.second);
+        bool rejected = false;
+        try { (void)openrc::parse_rac_gameplay_environment_v1(bad,kLimits); }
+        catch(const openrc::RacGameplayBankError&) { rejected=true; }
+        expect(rejected,"Partial environment accepted malformed ownership or references");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -879,6 +904,7 @@ int main() {
         test_moby_group_bounds_and_termination();
         test_limits();
         test_structural_rejections();
+        test_partial_frontend_environment();
         std::cout << "OpenRC RacGameplayBankV1 tests passed\n";
         return 0;
     } catch (const std::exception& error) {

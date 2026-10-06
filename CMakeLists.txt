@@ -19,6 +19,52 @@ option(
 set(OPENRC_PUBLIC_EXECUTABLE_TARGETS)
 
 add_library(openrc_core STATIC
+    src/core/audio_clip.cpp
+    src/core/audio_stream.cpp
+    src/core/audio_program.cpp
+    src/core/audio_program_cues.cpp
+    src/core/audio_envelope.cpp
+    src/core/audio_read_ahead.cpp
+    src/core/audio_voice.cpp
+    src/core/audio_voice_mixer.cpp
+    src/core/audio_gain_table.cpp
+    src/core/audio_voice_bank.cpp
+    src/core/audio_voice_bank_player.cpp
+    src/core/media_clip.cpp
+    src/core/scene_timeline.cpp
+    src/core/image_presentation.cpp
+    src/core/screen_overlay.cpp
+    src/core/rac_frontend_numeric.cpp
+    src/core/rac_frontend_object.cpp
+    src/core/rac_frontend_title.cpp
+    src/core/rac_frontend_loading.cpp
+    src/core/rac_frontend_loading_raster.cpp
+    src/core/rac_frontend_decoration.cpp
+    src/core/rac_frontend_geometry.cpp
+    src/core/rac_shrub_class.cpp
+    src/core/rac_instance_lighting.cpp
+    src/compiler/rac_tie_lit_compile.cpp
+    src/compiler/rac_shrub_lit_compile.cpp
+    src/core/rac_frontend_state.cpp
+    src/core/frontend_input.cpp
+    src/core/frontend_menu.cpp
+    src/core/frontend_sequence.cpp
+    src/core/state_installation.cpp
+    src/compiler/rac_level_installation.cpp
+    src/core/rac_new_game_flow.cpp
+    src/core/loading_presentation.cpp
+    src/core/rac_new_game_resources.cpp
+    src/core/rac_frontend_menu_actor_compile.cpp
+    src/core/rac_frontend_main_compile.cpp
+    src/core/rac_frontend_menu_resources.cpp
+    src/core/rac_pss.cpp
+    src/core/rac_frontend_input.cpp
+    src/core/rac_frontend_list_draw.cpp
+    src/core/rac_integer_glyph.cpp
+    src/core/rac_startup.cpp
+    src/core/rac_scene_animation_compile.cpp
+    src/core/rac_frontend_scene_compile.cpp
+    src/core/rac_frontend_object_animation.cpp
     src/core/actor_behavior_scene.cpp
     src/core/actor_behavior_scene_io.cpp
     src/core/actor_animation.cpp
@@ -117,6 +163,9 @@ add_library(openrc_core STATIC
     src/core/rac_frontend_new_game.cpp
     src/core/rac_moby_allocate.cpp
     src/core/rac_moby_sequence_set.cpp
+    src/core/rac_moby_post.cpp
+    src/compiler/rac_moby_rotation.cpp
+    src/compiler/rac_moby_post_execute.cpp
     src/core/rac_moby_reference.cpp
     src/core/ee_cop1_numeric.cpp
     src/core/rac_moby_authored_tail.cpp
@@ -186,6 +235,13 @@ else()
 endif()
 
 add_library(openrc_level_scene_recovery STATIC
+    src/compiler/rac_frontend_environment_compile.cpp
+    src/compiler/rac_frontend_sound_compile.cpp
+    src/compiler/rac_frontend_sound_pcm.cpp
+    src/compiler/rac_frontend_sound_pitch.cpp
+    src/compiler/rac_frontend_sound_voice.cpp
+    src/compiler/rac_frontend_sound_bank.cpp
+    src/compiler/rac_frontend_sound_resources.cpp
     src/runtime/level_scene_recovery.cpp
     src/runtime/level_scene_render_compile.cpp
     src/runtime/moby_scene_geometry.cpp
@@ -214,6 +270,7 @@ endif()
 
 add_library(openrc_native_game_prepare STATIC
     src/compiler/native_game_prepare.cpp
+    src/compiler/native_frontend_profile.cpp
 )
 target_include_directories(openrc_native_game_prepare
     PRIVATE
@@ -325,6 +382,13 @@ if(OPENRC_BUILD_RUNTIME AND WIN32)
     add_executable(openrc-runtime WIN32
         src/runtime/windows_main.cpp
         src/runtime/windows_gamepad.cpp
+        src/runtime/windows_media_decoder.cpp
+        src/runtime/windows_media_audio.cpp
+        src/runtime/windows_audio_device.cpp
+        src/runtime/windows_audio_bank.cpp
+        src/runtime/windows_audio_program_bank.cpp
+        src/runtime/windows_pcm_stream.cpp
+        src/runtime/windows_pcm_worker.cpp
         src/runtime/d3d11_renderer.cpp
         src/runtime/openrc-runtime.manifest
     )
@@ -338,6 +402,10 @@ if(OPENRC_BUILD_RUNTIME AND WIN32)
     target_link_libraries(openrc-runtime PRIVATE
         openrc_core
         openrc_render_scene_d3d_data
+        mfplat
+        mfuuid
+        ole32
+        winmm
         d3d11
         dxgi
         shell32
@@ -356,8 +424,104 @@ if(OPENRC_BUILD_RUNTIME AND WIN32)
 endif()
 
 if(OPENRC_BUILD_TESTS)
+    add_executable(openrc-state-installation-tests tests/state_installation_tests.cpp)
+    target_link_libraries(openrc-state-installation-tests PRIVATE openrc_core)
+    target_compile_features(openrc-state-installation-tests PRIVATE cxx_std_20)
+    add_test(NAME state-installation COMMAND openrc-state-installation-tests)
+    foreach(placement_test IN ITEMS rac_moby_rotation rac_moby_post_execute)
+        string(REPLACE "_" "-" placement_test_name "${placement_test}")
+        set(placement_test_target "openrc-${placement_test_name}-tests")
+        add_executable(${placement_test_target} "tests/${placement_test}_tests.cpp")
+        target_link_libraries(${placement_test_target} PRIVATE openrc_core)
+        target_compile_features(${placement_test_target} PRIVATE cxx_std_20)
+        if(MSVC)
+            target_compile_options(${placement_test_target} PRIVATE /W4 /permissive- /utf-8)
+        else()
+            target_compile_options(${placement_test_target} PRIVATE -Wall -Wextra -Wpedantic)
+        endif()
+        add_test(NAME ${placement_test_name} COMMAND ${placement_test_target})
+    endforeach()
+    add_executable(openrc-audio-voice-bank-player-tests tests/audio_voice_bank_player_tests.cpp)
+    target_link_libraries(openrc-audio-voice-bank-player-tests PRIVATE openrc_core)
+    target_compile_features(openrc-audio-voice-bank-player-tests PRIVATE cxx_std_20)
+    add_test(NAME audio-voice-bank-player COMMAND openrc-audio-voice-bank-player-tests)
+    add_executable(openrc-audio-voice-mixer-tests tests/audio_voice_mixer_tests.cpp)
+    target_link_libraries(openrc-audio-voice-mixer-tests PRIVATE openrc_core)
+    target_compile_features(openrc-audio-voice-mixer-tests PRIVATE cxx_std_20)
+    add_test(NAME audio-voice-mixer COMMAND openrc-audio-voice-mixer-tests)
+    add_executable(openrc-audio-voice-bank-tests tests/audio_voice_bank_tests.cpp)
+    target_link_libraries(openrc-audio-voice-bank-tests PRIVATE openrc_core)
+    target_compile_features(openrc-audio-voice-bank-tests PRIVATE cxx_std_20)
+    add_test(NAME audio-voice-bank COMMAND openrc-audio-voice-bank-tests)
+    add_executable(openrc-audio-gain-table-tests tests/audio_gain_table_tests.cpp)
+    target_link_libraries(openrc-audio-gain-table-tests PRIVATE openrc_core)
+    target_compile_features(openrc-audio-gain-table-tests PRIVATE cxx_std_20)
+    add_test(NAME audio-gain-table COMMAND openrc-audio-gain-table-tests)
+    add_executable(openrc-audio-voice-tests tests/audio_voice_tests.cpp)
+    target_link_libraries(openrc-audio-voice-tests PRIVATE openrc_core)
+    target_compile_features(openrc-audio-voice-tests PRIVATE cxx_std_20)
+    add_test(NAME audio-voice COMMAND openrc-audio-voice-tests)
+    add_executable(openrc-audio-read-ahead-tests tests/audio_read_ahead_tests.cpp)
+    target_link_libraries(openrc-audio-read-ahead-tests PRIVATE openrc_core)
+    target_compile_features(openrc-audio-read-ahead-tests PRIVATE cxx_std_20)
+    add_test(NAME audio-read-ahead COMMAND openrc-audio-read-ahead-tests)
+    add_executable(openrc-audio-envelope-tests tests/audio_envelope_tests.cpp)
+    target_link_libraries(openrc-audio-envelope-tests PRIVATE openrc_core)
+    target_compile_features(openrc-audio-envelope-tests PRIVATE cxx_std_20)
+    add_test(NAME audio-envelope COMMAND openrc-audio-envelope-tests)
+    add_executable(openrc-audio-program-tests tests/audio_program_tests.cpp)
+    target_link_libraries(openrc-audio-program-tests PRIVATE openrc_core)
+    target_compile_features(openrc-audio-program-tests PRIVATE cxx_std_20)
+    add_test(NAME audio-program COMMAND openrc-audio-program-tests)
+
+    add_executable(openrc-audio-program-cues-tests tests/audio_program_cues_tests.cpp)
+    target_link_libraries(openrc-audio-program-cues-tests PRIVATE openrc_core)
+    target_compile_features(openrc-audio-program-cues-tests PRIVATE cxx_std_20)
+    add_test(NAME audio-program-cues COMMAND openrc-audio-program-cues-tests)
+    add_executable(openrc-audio-clip-tests tests/audio_clip_tests.cpp)
+    target_link_libraries(openrc-audio-clip-tests PRIVATE openrc_core)
+    target_compile_features(openrc-audio-clip-tests PRIVATE cxx_std_20)
+    add_test(NAME audio-clip COMMAND openrc-audio-clip-tests)
+    add_executable(openrc-audio-stream-tests tests/audio_stream_tests.cpp)
+    target_link_libraries(openrc-audio-stream-tests PRIVATE openrc_core)
+    target_compile_features(openrc-audio-stream-tests PRIVATE cxx_std_20)
+    add_test(NAME audio-stream COMMAND openrc-audio-stream-tests)
+    add_executable(openrc-rac-shrub-lit-compile-tests tests/rac_shrub_lit_compile_tests.cpp)
+    target_link_libraries(openrc-rac-shrub-lit-compile-tests PRIVATE openrc_core)
+    target_compile_features(openrc-rac-shrub-lit-compile-tests PRIVATE cxx_std_20)
+    add_test(NAME rac-shrub-lit-compile COMMAND openrc-rac-shrub-lit-compile-tests)
+    add_executable(openrc-rac-tie-lit-compile-tests tests/rac_tie_lit_compile_tests.cpp)
+    target_link_libraries(openrc-rac-tie-lit-compile-tests PRIVATE openrc_core)
+    target_compile_features(openrc-rac-tie-lit-compile-tests PRIVATE cxx_std_20)
+    add_test(NAME rac-tie-lit-compile COMMAND openrc-rac-tie-lit-compile-tests)
+    add_executable(openrc-rac-instance-lighting-tests tests/rac_instance_lighting_tests.cpp)
+    target_link_libraries(openrc-rac-instance-lighting-tests PRIVATE openrc_core)
+    target_compile_features(openrc-rac-instance-lighting-tests PRIVATE cxx_std_20)
+    add_test(NAME rac-instance-lighting COMMAND openrc-rac-instance-lighting-tests)
+    add_executable(openrc-rac-frontend-environment-tests tests/rac_frontend_environment_tests.cpp)
+    target_link_libraries(openrc-rac-frontend-environment-tests PRIVATE openrc_level_scene_recovery)
+    target_compile_features(openrc-rac-frontend-environment-tests PRIVATE cxx_std_20)
+    add_test(NAME rac-frontend-environment COMMAND openrc-rac-frontend-environment-tests)
+    add_executable(openrc-rac-frontend-sound-tests tests/rac_frontend_sound_tests.cpp)
+    target_link_libraries(openrc-rac-frontend-sound-tests PRIVATE openrc_level_scene_recovery)
+    target_compile_features(openrc-rac-frontend-sound-tests PRIVATE cxx_std_20)
+    add_test(NAME rac-frontend-sound COMMAND openrc-rac-frontend-sound-tests)
+    foreach(openrc_new_test frontend_input loading_presentation rac_new_game_resources frontend_sequence rac_new_game_flow rac_frontend_menu_actor_compile rac_frontend_menu_resources rac_shrub_class rac_startup rac_scene_animation_compile rac_frontend_scene_compile rac_frontend_object_animation rac_frontend_object rac_frontend_title rac_frontend_numeric rac_frontend_loading rac_frontend_loading_raster rac_frontend_decoration rac_frontend_geometry rac_frontend_main_compile media_clip rac_pss rac_frontend_input rac_integer_glyph rac_frontend_list_draw scene_timeline image_presentation screen_overlay)
+        string(REPLACE "_" "-" openrc_new_target "${openrc_new_test}")
+        add_executable(openrc-${openrc_new_target}-tests tests/${openrc_new_test}_tests.cpp)
+        target_link_libraries(openrc-${openrc_new_target}-tests PRIVATE openrc_core)
+        target_compile_features(openrc-${openrc_new_target}-tests PRIVATE cxx_std_20)
+        add_test(NAME ${openrc_new_target} COMMAND openrc-${openrc_new_target}-tests)
+    endforeach()
     include(CTest)
     if(WIN32)
+        add_executable(openrc-screen-overlay-d3d-tests
+            tests/screen_overlay_d3d_tests.cpp src/runtime/d3d11_renderer.cpp)
+        target_include_directories(openrc-screen-overlay-d3d-tests PRIVATE src/runtime)
+        target_compile_features(openrc-screen-overlay-d3d-tests PRIVATE cxx_std_20)
+        target_link_libraries(openrc-screen-overlay-d3d-tests PRIVATE
+            openrc_core openrc_render_scene_d3d_data d3d11 dxgi user32)
+        # Explicit graphical qualification; kept outside unattended CTest.
         add_executable(
             openrc-portable-executable-tests
             tests/portable_executable_tests.cpp
@@ -2195,6 +2359,10 @@ if(OPENRC_BUILD_TESTS)
     target_link_libraries(openrc-rac-moby-sequence-set-tests PRIVATE openrc_core)
     target_compile_features(openrc-rac-moby-sequence-set-tests PRIVATE cxx_std_20)
 
+    add_executable(openrc-rac-moby-post-tests tests/rac_moby_post_tests.cpp)
+    target_link_libraries(openrc-rac-moby-post-tests PRIVATE openrc_core)
+    target_compile_features(openrc-rac-moby-post-tests PRIVATE cxx_std_20)
+
     add_executable(openrc-rac-moby-reference-tests tests/rac_moby_reference_tests.cpp)
     target_link_libraries(openrc-rac-moby-reference-tests PRIVATE openrc_core)
     target_compile_features(openrc-rac-moby-reference-tests PRIVATE cxx_std_20)
@@ -2321,6 +2489,7 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-rac-frontend-new-game-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-moby-allocate-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-moby-sequence-set-tests PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(openrc-rac-moby-post-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-moby-reference-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-ee-cop1-numeric-tests PRIVATE /W4 /permissive- /utf-8)
         target_compile_options(openrc-rac-moby-authored-tail-tests PRIVATE /W4 /permissive- /utf-8)
@@ -2356,6 +2525,7 @@ if(OPENRC_BUILD_TESTS)
         target_compile_options(openrc-rac-frontend-new-game-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-moby-allocate-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-moby-sequence-set-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(openrc-rac-moby-post-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-moby-reference-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-ee-cop1-numeric-tests PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(openrc-rac-moby-authored-tail-tests PRIVATE -Wall -Wextra -Wpedantic)
@@ -2392,6 +2562,7 @@ if(OPENRC_BUILD_TESTS)
     add_test(NAME rac-frontend-new-game COMMAND openrc-rac-frontend-new-game-tests)
     add_test(NAME rac-moby-allocate COMMAND openrc-rac-moby-allocate-tests)
     add_test(NAME rac-moby-sequence-set COMMAND openrc-rac-moby-sequence-set-tests)
+    add_test(NAME rac-moby-post COMMAND openrc-rac-moby-post-tests)
     add_test(NAME rac-moby-reference COMMAND openrc-rac-moby-reference-tests)
     add_test(NAME ee-cop1-numeric COMMAND openrc-ee-cop1-numeric-tests)
     add_test(NAME rac-moby-authored-tail COMMAND openrc-rac-moby-authored-tail-tests)

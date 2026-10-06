@@ -53,6 +53,11 @@ load_prepared_game_level_package_v1(const PreparedGameV2RootV1 &prepared,
                                     std::uint32_t level_id,
                                     PreparedGameV2FilesystemLimitsV1 limits);
 
+// Uses the same no-follow, exact-size and content-hash checks as level files.
+[[nodiscard]] LevelPackageV1 load_prepared_game_shared_package_v1(
+    const PreparedGameV2RootV1 &prepared,
+    PreparedGameV2FilesystemLimitsV1 limits);
+
 // Loads the immutable base from prepared.root and resolves only the overlay
 // package bytes present in explicit_overlays. Manifest overlay references are
 // metadata for a future mod-manifest loader and are never auto-discovered.

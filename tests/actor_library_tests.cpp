@@ -521,6 +521,81 @@ void test_library_composition_for_multiple_runtime_actors() {
       "actor-library composition ignored aggregate caller limits");
 }
 
+void test_encoded_material_extension() {
+  using namespace openrc;
+  const auto legacy=canonicalize_actor_library_v1(make_library(false),kLimits.library);
+  const auto old_bytes=encode_actor_library_v1(legacy,kLimits);
+  auto changed=legacy;changed.models[0U].materials[0U].depth_write=false;
+  expect_io_error([&]{(void)encode_actor_library_v1(changed,kLimits);},
+      "Actor codec accepted a stale model digest after a new render policy changed");
+  changed.models[0U].content_sha256={};
+  changed=canonicalize_actor_library_v1(changed,kLimits.library);
+  expect(changed.models[0U].content_sha256!=legacy.models[0U].content_sha256,
+      "Actor model hash omitted the material extension");
+  expect(decode_actor_library_v1(encode_actor_library_v1(changed,kLimits),kLimits)==changed,
+      "Actor depth-write extension did not round-trip");
+  changed.models[0U].materials[0U].depth_write=true;changed.models[0U].content_sha256={};
+  expect(encode_actor_library_v1(changed,kLimits)==old_bytes,
+      "Default render extension changed legacy actor payload or content digests");
+  auto source=make_library(false);auto &model=source.models[0U];auto &m=model.materials[0U];
+  model.textures[0U].color_space=RenderSceneTextureColorSpaceV1::linear;
+  m.mipmap_filter=RenderSceneMipmapFilterV1::none;m.color_math=RenderSceneColorMathV1::encoded_integer;
+  m.blend_mode=RenderSceneBlendModeV1::source_over;m.interpolation=RenderSceneInterpolationV1::affine;
+  m.depth_test=RenderSceneDepthTestV1::always;m.depth_write=false;
+  m.texture_modulation_denominator=128U;m.blend_denominator=128U;
+  m.alpha_mode=RenderSceneAlphaModeV1::mask;m.alpha_cutoff_rgba8=96U;
+  m.alpha_failure=RenderSceneAlphaFailureV1::rgb_only;
+  const auto encoded=canonicalize_actor_library_v1(source,kLimits.library);
+  const auto bytes=encode_actor_library_v1(encoded,kLimits);
+  expect(decode_actor_library_v1(bytes,kLimits)==encoded,"Actor encoded color fields did not round-trip");
+  // Locate the first material by the original sequential envelope, independent
+  // of the new material decoder. Rig/key/mip lengths determine this position.
+  std::size_t at=0xa0U;
+  for(const auto &rig:encoded.rigs)at+=48U+rig.semantic_key.size()+104U*rig.rig.joints.size();
+  const auto &first=encoded.models[0U];at+=112U+first.semantic_key.size()+first.rig_key.size();
+  for(const auto &texture:first.textures) {
+    at+=16U;for(const auto &mip:texture.mips)at+=24U+mip.rgba8.size();
+  }
+  constexpr std::array<std::uint8_t,9U> expected{1U,1U,1U,1U,1U,128U,128U,1U,0U};
+  for(std::size_t i=0U;i<expected.size();++i)
+    expect(byte_value(bytes[at+23U+i])==expected[i],"Actor material extension differs from static scene wire layout");
+  for(const auto [offset,value]:std::array{
+      std::pair{23U,2U},std::pair{24U,2U},std::pair{25U,2U},std::pair{26U,2U},
+      std::pair{27U,2U},std::pair{28U,255U},std::pair{29U,255U},std::pair{30U,2U},std::pair{31U,1U}}) {
+    auto corrupt=bytes;corrupt[at+offset]=static_cast<std::byte>(value);
+    expect_io_error([&]{(void)decode_actor_library_v1(corrupt,kLimits);},"Actor codec accepted noncanonical extended material bytes");
+  }
+  for(unsigned field=0U;field<8U;++field) {
+    auto altered=encoded.models[0U];auto &policy=altered.materials[0U];
+    switch(field) {
+    case 0U:policy.color_math=RenderSceneColorMathV1::linear;break;
+    case 1U:policy.blend_mode=RenderSceneBlendModeV1::opaque;break;
+    case 2U:policy.interpolation=RenderSceneInterpolationV1::perspective;break;
+    case 3U:policy.depth_test=RenderSceneDepthTestV1::less_equal;break;
+    case 4U:policy.depth_write=true;break;
+    case 5U:policy.texture_modulation_denominator=127U;break;
+    case 6U:policy.blend_denominator=127U;break;
+    default:policy.alpha_failure=RenderSceneAlphaFailureV1::discard;break;
+    }
+    expect(actor_model_content_sha256_v1(altered,encoded.rigs[0U].content_sha256)!=encoded.models[0U].content_sha256,
+        "An actor material extension field is absent from its content address");
+  }
+  auto invalid=source;invalid.models[0U].textures[0U].color_space=RenderSceneTextureColorSpaceV1::srgb;
+  expect_io_error([&]{(void)encode_actor_library_v1(invalid,kLimits);},"Actor validator admitted sRGB transfer for encoded integer math");
+  invalid=source;invalid.models[0U].materials[0U].mag_filter=RenderSceneFilterV1::nearest;
+  expect_io_error([&]{(void)encode_actor_library_v1(invalid,kLimits);},"Actor validator admitted different encoded min/mag filtering");
+  invalid=source;invalid.models[0U].materials[0U].alpha_mode=RenderSceneAlphaModeV1::opaque;
+  invalid.models[0U].materials[0U].alpha_cutoff_rgba8=0U;
+  expect_io_error([&]{(void)encode_actor_library_v1(invalid,kLimits);},"Actor validator admitted RGB-only failure without a masked alpha test");
+  invalid=source;invalid.models[0U].meshes[0U].vertices[0U].u=std::nextafter(8388608.0F,INFINITY);
+  expect_io_error([&]{(void)encode_actor_library_v1(invalid,kLimits);},"Actor validator missed dimension-scaled encoded UV overflow");
+  invalid=source;invalid.models[0U].meshes[0U].vertices[0U].v=std::nextafter(-8388608.0F,-INFINITY);
+  expect_io_error([&]{(void)encode_actor_library_v1(invalid,kLimits);},"Actor validator missed negative encoded UV overflow");
+  auto boundary=source;boundary.models[0U].meshes[0U].vertices[0U].u=8388608.0F;
+  boundary.models[0U].meshes[0U].vertices[0U].v=-8388608.0F;
+  (void)decode_actor_library_v1(encode_actor_library_v1(boundary,kLimits),kLimits);
+}
+
 void test_explicit_limits() {
   auto too_small = kLimits;
   too_small.library.max_vertices = 5U;
@@ -548,6 +623,7 @@ int main() {
     test_content_addresses_keys_and_rig_validation();
     test_skin_geometry_material_and_float_validation();
     test_library_composition_for_multiple_runtime_actors();
+    test_encoded_material_extension();
     test_explicit_limits();
     std::cout << "ActorLibraryV1 tests passed\n";
     return 0;

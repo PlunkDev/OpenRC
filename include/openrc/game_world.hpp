@@ -3,6 +3,7 @@
 #include "openrc/game_input.hpp"
 #include "openrc/placement_admission.hpp"
 #include "openrc/session_state.hpp"
+#include "openrc/state_installation.hpp"
 
 #include <array>
 #include <cstddef>
@@ -95,6 +96,12 @@ public:
   apply_placement_admission(const PlacementAdmissionPlanV1 &plan,
                             std::uint64_t expected_revision,
                             PlacementAdmissionLimitsV1 limits);
+  // Install into the existing persistent owner without entering a level or
+  // replacing the session. Failure preserves all state and session metadata.
+  void apply_state_installation(const StateInstallationV1 &installation,
+                                std::uint32_t expected_level,
+                                std::uint64_t expected_revision,
+                                StateInstallationLimitsV1 limits = {});
   [[nodiscard]] std::uint64_t deterministic_seed() const noexcept;
   [[nodiscard]] std::uint64_t next_tick_index() const noexcept;
   [[nodiscard]] std::uint64_t level_instance_sequence() const noexcept;

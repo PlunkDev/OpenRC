@@ -143,7 +143,8 @@ constexpr std::uint64_t kMaximumCliPreparedFoundationBytes =
     512U * 1024U * 1024U;
 constexpr std::uint64_t kMaximumCliPreparedNativeBytes =
     kMaximumCliNativeLevelPackageBytes *
-    static_cast<std::uint64_t>(openrc::kDiscTocLevelCount);
+    static_cast<std::uint64_t>(openrc::kDiscTocLevelCount) +
+    openrc::kNativeGameSharedPackageMaxBytesV1;
 constexpr std::string_view kSupportedRacBuildIdV1 =
     "SCES-50916-PAL-v2.00";
 constexpr std::size_t kMaximumCliDvpVuListItems = 128U;
@@ -268,9 +269,9 @@ make_cli_level_foundation_package_limits() {
 [[nodiscard]] constexpr openrc::LevelPackageV1Limits
 make_cli_native_level_package_limits() {
     return openrc::LevelPackageV1Limits{kMaximumCliNativeLevelPackageBytes,
+                                        64U,
                                         32U,
-                                        16U,
-                                        256U,
+                                        512U,
                                         1024U,
                                         kMaximumCliRenderScenePayloadBytes,
                                         kMaximumCliNativeLevelPackageBytes -
@@ -487,6 +488,9 @@ void require_publication_root_outside_source(
         case openrc::NativeGamePreparationPhaseV1::compiling_player_actor:
             std::cout << level_prefix()
                       << "compiling the reusable player actor...\n";
+            break;
+        case openrc::NativeGamePreparationPhaseV1::compiling_startup_media:
+            std::cout << "Preparing the original intro...\n";
             break;
         case openrc::NativeGamePreparationPhaseV1::compiling_player_animation:
             std::cout << level_prefix()
@@ -976,6 +980,12 @@ parse_decimal_u16_list(
         return "host-float-approximation";
     case openrc::DvpVuExecutionWarningV1::vu_add_sub_reference_model:
         return "vu-add-sub-reference-model";
+    case openrc::DvpVuExecutionWarningV1::vu_mul_reference_model:
+        return "vu-mul-reference-model";
+    case openrc::DvpVuExecutionWarningV1::vu_madd_reference_model:
+        return "vu-madd-reference-model";
+    case openrc::DvpVuExecutionWarningV1::vu_div_reference_model:
+        return "vu-div-reference-model";
     case openrc::DvpVuExecutionWarningV1::q_read_before_ready:
         return "q-read-before-ready";
     case openrc::DvpVuExecutionWarningV1::

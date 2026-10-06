@@ -1,6 +1,7 @@
 #include "openrc/dvp_vu_execute.hpp"
 
 #include "openrc/dvp_vu.hpp"
+#include "openrc/dvp_vu_numeric.hpp"
 #include "openrc/elf.hpp"
 #include "openrc/scene_block_vif.hpp"
 #include "openrc/scene_block_vu.hpp"
@@ -535,8 +536,8 @@ void test_add_sub_remnant_mac_latency_and_vf0() {
            "reference arithmetic must not alter architectural VF0");
 }
 
-void test_add_reference_does_not_qualify_other_arithmetic() {
-    constexpr std::array legacy_opcodes{0x2aU, 0x29U, 0x2dU};
+void test_distinct_arithmetic_reference_qualifications() {
+    constexpr std::array legacy_opcodes{0x29U, 0x2dU};
     for (const auto opcode : legacy_opcodes) {
         const auto legacy = upper_fields(0x08U, 2U, 1U, 3U) | opcode;
         const auto program = decode_words(
@@ -545,26 +546,120 @@ void test_add_reference_does_not_qualify_other_arithmetic() {
         state.vf[1U] = known_float_vector({2.0F, 0.0F, 0.0F, 0.0F});
         state.vf[2U] = known_float_vector({3.0F, 0.0F, 0.0F, 0.0F});
         state.accumulator = known_float_vector({4.0F, 0.0F, 0.0F, 0.0F});
+        state.accumulator_overflow.fill({0U,1U});
         const auto result = execute(program, std::move(state));
         expect(has_warning(result,
-                           openrc::DvpVuExecutionWarningV1::host_float_approximation) &&
+                           openrc::DvpVuExecutionWarningV1::vu_madd_reference_model) &&
                    !has_warning(result,
                                 openrc::DvpVuExecutionWarningV1::
                                     vu_add_sub_reference_model),
-               "MUL/MADD/MSUB remain separately host-approximate");
+               "MADD/MSUB must retain their separate compound reference qualification");
     }
     const auto add = upper_fields(0x08U, 2U, 1U, 3U) | 0x28U;
     const auto mul = upper_fields(0x08U, 2U, 1U, 4U) | 0x2aU;
+    const auto madd = upper_fields(0x08U, 2U, 1U, 5U) | 0x29U;
     const auto mixed = decode_words(
-        {kLowerNop, kLowerNop, kLowerNop, kLowerNop},
-        {add, add, mul | kUpperEnd, kUpperNop});
+        {kLowerNop, kLowerNop, kLowerNop, kLowerNop, kLowerNop},
+        {add, add, mul, madd | kUpperEnd, kUpperNop});
     const auto result = execute(mixed, openrc::make_dvp_vu_execution_state_v1());
-    expect(result.warnings.size() == 2U &&
+    expect(result.warnings.size() == 3U &&
                has_warning(result,
-                           openrc::DvpVuExecutionWarningV1::host_float_approximation) &&
+                           openrc::DvpVuExecutionWarningV1::vu_madd_reference_model) &&
                has_warning(result,
-                           openrc::DvpVuExecutionWarningV1::vu_add_sub_reference_model),
-           "mixed programs must retain both deduplicated qualification warnings");
+                           openrc::DvpVuExecutionWarningV1::vu_add_sub_reference_model) &&
+               has_warning(result,
+                           openrc::DvpVuExecutionWarningV1::vu_mul_reference_model),
+           "mixed programs must retain all three deduplicated qualifications");
+}
+
+void test_mul_reference_all_operand_families() {
+    struct Family { std::uint32_t opcode; int component; bool accumulator; };
+    // All fourteen supported variants: vector, each broadcast lane, I and Q,
+    // for both vector and ACC destinations. OPMULA remains unsupported.
+    constexpr std::array families{
+        Family{0x2aU, -1, false}, Family{0x18U, 0, false},
+        Family{0x19U, 1, false}, Family{0x1aU, 2, false}, Family{0x1bU, 3, false},
+        Family{0x1eU, -2, false}, Family{0x1cU, -3, false},
+        Family{0x2beU, -1, true}, Family{0x1bcU, 0, true},
+        Family{0x1bdU, 1, true}, Family{0x1beU, 2, true}, Family{0x1bfU, 3, true},
+        Family{0x1feU, -2, true}, Family{0x1fcU, -3, true},
+    };
+    for (const auto &family : families) {
+        const bool scalar = family.component <= -2;
+        const auto instruction = upper_fields(0x08U, scalar ? 0U : 2U,
+                                              1U, family.accumulator ? 0U : 3U) |
+                                 family.opcode;
+        const auto program = decode_words({kLowerNop, kLowerNop},
+                                          {instruction | kUpperEnd, kUpperNop});
+        for (std::uint32_t fraction = 0U; fraction < 64U; ++fraction) {
+            auto state = openrc::make_dvp_vu_execution_state_v1();
+            const auto a = 0x41000000U + ((fraction & 1U) << 10U);
+            const auto b = 0x40a02000U + fraction;
+            state.vf[1U] = known_vector({a, 11U, 12U, 13U});
+            state.vf[2U] = known_vector({21U, 22U, 23U, 24U});
+            if (!scalar) state.vf[2U].lanes[family.component < 0 ? 0U :
+                    static_cast<std::size_t>(family.component)] = known_word(b);
+            state.scalar_i = known_word(family.component == -2 ? b : 0U);
+            state.scalar_q = known_word(family.component == -3 ? b : 0U);
+            const auto sentinel = known_vector({31U, 32U, 33U, 34U});
+            state.vf[3U] = sentinel;
+            state.accumulator = sentinel;
+            const auto result = execute(program, std::move(state));
+            auto expected = sentinel;
+            expected.lanes[0U] = known_word(openrc::dvp_vu_mul_bits_v1(a, b).bits);
+            expect(result.termination == openrc::DvpVuTerminationV1::program_end &&
+                       (family.accumulator ? result.final_state.accumulator :
+                                             result.final_state.vf[3U]) == expected,
+                   "MUL family must use ordered reference values and exact destination mask");
+            expect((family.accumulator ? result.final_state.vf[3U] :
+                                         result.final_state.accumulator) == sentinel,
+                   "MULA value must not write VF or qualify a hidden ACC latch");
+            expect(result.warnings.size() == 1U &&
+                       has_warning(result, openrc::DvpVuExecutionWarningV1::vu_mul_reference_model),
+                   "standalone MUL/MULA must retain their separate reference qualification");
+        }
+    }
+}
+
+void test_mul_reference_alias_unknown_and_mac_latency() {
+    const auto mul = upper_fields(0x0bU, 2U, 1U, 1U) | 0x2aU;
+    const auto program = decode_words(
+        {kLowerNop, kLowerNop, kLowerNop, kLowerNop, kLowerNop, kLowerNop},
+        {mul, kUpperNop, kUpperNop, kUpperNop, kUpperNop | kUpperEnd, kUpperNop});
+    auto state = openrc::make_dvp_vu_execution_state_v1();
+    state.vf[1U] = known_vector({0x00810001U, 0x12345678U, 0xffffffffU, 0x3f800000U});
+    state.vf[2U] = known_vector({0x3f000000U, 0U, 0x40000000U, 0x3f800000U});
+    state.vf[2U].lanes[1U].known_mask = 0U;
+    state.vf[2U].lanes[3U].known_mask = 0xfffffffeU;
+    const auto result = execute(program, std::move(state));
+    expect(result.final_state.vf[1U].lanes[0U] == known_word(0U) &&
+               result.final_state.vf[1U].lanes[1U] == known_word(0x12345678U) &&
+               result.final_state.vf[1U].lanes[2U] == known_word(0xffffffffU) &&
+               result.final_state.vf[1U].lanes[3U].known_mask == 0U,
+           "MUL snapshot alias, inactive lane, extended exponent or unknown input differs");
+    expect((result.final_state.mac_flags.known_mask & 0xffffU) == 0xeeeeU &&
+               (result.final_state.mac_flags.bits & 0xeeeeU) == 0x2828U,
+           "MUL must retain Z+U and signed O while propagating active unknown flags");
+
+    const auto fmor = [](const std::uint8_t destination) {
+        return 0x36000000U | lower_fields(0U, destination, 0U);
+    };
+    const auto discard = upper_fields(0x08U, 2U, 1U, 0U) | 0x2aU;
+    const auto delayed = decode_words(
+        {fmor(1U), kLowerNop, kLowerNop, fmor(2U), fmor(3U), kLowerNop},
+        {discard, kUpperNop, kUpperNop, kUpperNop, kUpperNop | kUpperEnd, kUpperNop});
+    auto initial = openrc::make_dvp_vu_execution_state_v1();
+    initial.mac_flags = known_word(0U);
+    initial.status_flags = known_word(0U);
+    initial.vf[1U].lanes[0U] = known_word(0x00805407U);
+    initial.vf[2U].lanes[0U] = known_word(0x3f000000U);
+    const auto timing = execute(delayed, std::move(initial));
+    expect_known_u16(timing.final_state.vi[1U], 0U, "MUL same-pair MAC read must see old flags");
+    expect_known_u16(timing.final_state.vi[2U], 0U, "MUL MAC flags must not publish one pair early");
+    expect_known_u16(timing.final_state.vi[3U], 0x0808U, "MUL Z+U must publish after four pairs");
+    expect(timing.final_state.status_flags.bits == 0x145U &&
+               timing.final_state.vf[0U] == known_vector({0U, 0U, 0U, 0x3f800000U}),
+           "MUL must retain Z/U sticky state even with protected VF0 destination");
 }
 
 void test_loi_reads_previous_i_then_publishes_literal() {
@@ -906,6 +1001,87 @@ void test_partial_address_knownness_and_malformed_registers() {
         "out-of-range public VF operand should be rejected before execution");
 }
 
+void test_indeterminate_loads_join_possible_memory_values() {
+    const std::array loads{
+        lower_fields(0x0bU, 2U, 1U) | 1U,                  // LQ.xzw +1
+        0x8000037cU | lower_fields(0x0bU, 2U, 1U),       // LQI.xzw
+        0x8000037eU | lower_fields(0x0bU, 2U, 1U),       // LQD.xzw
+        0x08000000U | lower_fields(0x08U, 2U, 1U) | 1U, // ILW.x +1
+        0x800003feU | lower_fields(0x08U, 2U, 1U),       // ILWR.x
+    };
+    for (std::size_t kind = 0U; kind < loads.size(); ++kind) {
+        const auto program = decode_words(
+            {loads[kind], kLowerNop},
+            {kUpperNop | kUpperEnd, kUpperNop});
+        auto state = openrc::make_dvp_vu_execution_state_v1();
+        state.vi[1] = {1022U, 0xfffeU}; // Exactly 1022 or 1023.
+        state.vf[2] = known_vector({0x55U, 0x66U, 0x77U, 0x88U});
+        state.data_memory[1021U] = known_vector({0xabc0U, 3U, 0x1234U, 9U});
+        state.data_memory[1022U] = known_vector({0xabc2U, 4U, 0x1234U, 9U});
+        state.data_memory[1023U] = known_vector({0xabcaU, 5U, 0x1234U, 9U});
+        state.data_memory[0U] = known_vector({0xabceU, 6U, 0x1234U, 9U});
+        // One possible lane is already unknown, even though its stored bits
+        // happen to agree. The join must preserve that missing information.
+        state.data_memory[1023U].lanes[2U].known_mask = 0xffffffefU;
+        const auto abstract = execute(program, state);
+        expect(abstract.termination == openrc::DvpVuTerminationV1::program_end,
+               "a speculative unknown-address read must be allowed to end");
+        state.vi[1] = {1022U, 0xffffU};
+        const auto left = execute(program, state);
+        state.vi[1] = {1023U, 0xffffU};
+        const auto right = execute(program, state);
+        const auto check_join = [](const openrc::DvpVuWordV1 actual,
+                                   const openrc::DvpVuWordV1 a,
+                                   const openrc::DvpVuWordV1 b) {
+            const auto known = a.known_mask & b.known_mask & ~(a.bits ^ b.bits);
+            expect(actual.known_mask == known &&
+                       ((actual.bits ^ a.bits) & known) == 0U,
+                   "unknown load invented or discarded a provable result bit");
+        };
+        if (kind < 3U) {
+            for (std::size_t lane = 0U; lane < 4U; ++lane)
+                check_join(abstract.final_state.vf[2].lanes[lane],
+                           left.final_state.vf[2].lanes[lane],
+                           right.final_state.vf[2].lanes[lane]);
+            check_join(abstract.final_state.vi[1], left.final_state.vi[1],
+                       right.final_state.vi[1]);
+        } else {
+            check_join(abstract.final_state.vi[2], left.final_state.vi[2],
+                       right.final_state.vi[2]);
+        }
+    }
+    // A completely unknown address and unwritten memory must remain unknown;
+    // neither the architectural VF0 nor an E termination supplies zero data.
+    const auto lq = lower_fields(0x0fU, 2U, 1U);
+    const auto unloaded = execute(
+        decode_words({lq, kLowerNop}, {kUpperNop | kUpperEnd, kUpperNop}),
+        openrc::make_dvp_vu_execution_state_v1());
+    expect(unloaded.termination == openrc::DvpVuTerminationV1::program_end &&
+               unloaded.final_state.vf[2] == openrc::DvpVuVectorV1{},
+           "unknown memory load was filled with a known value");
+    for (const auto operation : {
+             0x02000000U | lower_fields(0x0fU, 1U, 2U), // SQ
+             0x0a000000U | lower_fields(0x08U, 2U, 1U), // ISW
+             0x800006fcU | lower_fields(0U, 0U, 1U)}) { // XGKICK
+        const auto result = execute(
+            decode_words({operation, kLowerNop},
+                         {kUpperNop | kUpperEnd, kUpperNop}),
+            openrc::make_dvp_vu_execution_state_v1());
+        expect(result.termination ==
+                   openrc::DvpVuTerminationV1::indeterminate_memory_address,
+               "unknown write or packet address stopped being strict");
+    }
+    const auto ilw = 0x08000000U | lower_fields(0x08U, 2U, 1U);
+    const auto branch = 0x50000000U | lower_fields(0U, 0U, 2U) | 1U;
+    const auto controlled = execute(
+        decode_words({ilw, branch, kLowerNop, kLowerNop, kLowerNop},
+                     {kUpperNop, kUpperNop, kUpperNop,
+                      kUpperNop | kUpperEnd, kUpperNop}),
+        openrc::make_dvp_vu_execution_state_v1());
+    expect(controlled.termination == openrc::DvpVuTerminationV1::indeterminate_control,
+           "live unknown load must still stop an unresolved branch");
+}
+
 [[nodiscard]] openrc::DvpVuVectorV1 gif_tag(const std::uint16_t nloop,
                                             const bool eop,
                                             const std::uint8_t format,
@@ -1017,6 +1193,91 @@ void test_execution_and_xgkick_limits_are_independent() {
            "fifth copied packet qword should trip the per-event qword cap");
 }
 
+void test_compound_latch_lifetime_and_intermediate_events() {
+    const auto mula=upper_fields(0xcU,2U,1U,0U)|0x2beU;
+    const auto madd=upper_fields(0xcU,5U,4U,3U)|0x29U;
+    auto state=openrc::make_dvp_vu_execution_state_v1();
+    state.vf[1]=known_vector({0x7fffffffU,0x7fffffffU,0,0});
+    state.vf[2]=known_vector({0x40000000U,0x3f800000U,0,0});
+    state.vf[4]=known_vector({0xffffffffU,0xffffffffU,0,0});
+    state.vf[5]=known_vector({0x3f800000U,0x3f800000U,0,0});
+    state.accumulator_overflow[2]={1U,1U};
+    const auto result=execute(decode_words({kLowerNop,kLowerNop,kLowerNop},
+        {mula,madd|kUpperEnd,kUpperNop}),state);
+    expect(result.final_state.vf[3].lanes[0]==known_word(0x7fffffffU)&&
+        result.final_state.vf[3].lanes[1]==known_word(0U),
+        "identical ACC bits with different real overflow histories collapsed");
+    expect(result.final_state.accumulator_overflow[0]==openrc::DvpVuWordV1{1U,1U}&&
+        result.final_state.accumulator_overflow[1]==openrc::DvpVuWordV1{0U,1U}&&
+        result.final_state.accumulator_overflow[2]==openrc::DvpVuWordV1{1U,1U}&&
+        result.final_state.accumulator_overflow[3].known_mask==0U,
+        "masked MULA writes or following VF MADD changed hidden ACC history");
+    // ADDA overwrites the latch instead of retaining a prior overflow.
+    const auto adda=upper_fields(0x8U,0U,0U,0U)|0x2bcU;
+    const auto cleared=execute(decode_words({kLowerNop,kLowerNop},{adda|kUpperEnd,kUpperNop}),result.final_state);
+    expect(cleared.final_state.accumulator_overflow[0]==openrc::DvpVuWordV1{0U,1U}&&
+        cleared.final_state.accumulator.lanes[0]==known_word(0U),"ADDA did not replace hidden overflow");
+    const auto instruction=upper_fields(0x8U,2U,1U,3U)|0x29U;
+    state=openrc::make_dvp_vu_execution_state_v1();
+    state.accumulator.lanes[0]=known_word(0x3f800000U);
+    state.accumulator_overflow[0]={0U,1U};
+    state.vf[1].lanes[0]=known_word(0x80800000U);
+    state.vf[2].lanes[0]=known_word(0x3f000000U);
+    state.mac_flags=known_word(0);state.status_flags=known_word(0);
+    auto underflow=execute(decode_words({kLowerNop,kLowerNop},
+        {instruction|kUpperEnd,kUpperNop}),state);
+    expect(underflow.final_state.vf[3].lanes[0]==known_word(0x3f800000U)&&
+        underflow.final_state.mac_flags.bits==0U&&underflow.final_state.status_flags.bits==0x1c0U,
+        "MADD lost intermediate negative/zero/underflow sticky events or polluted final MAC");
+    // MSUB reverses the product at the adder; the original product sign still
+    // contributes to sticky STATUS even when the final result is positive.
+    state.accumulator.lanes[0]=known_word(0xbf800000U);
+    state.vf[1].lanes[0]=known_word(0xbf800000U);state.vf[2].lanes[0]=known_word(0x40000000U);
+    const auto sub=execute(decode_words({kLowerNop,kLowerNop},
+        {(upper_fields(0x8U,2U,1U,3U)|0x2dU)|kUpperEnd,kUpperNop}),state);
+    expect(sub.final_state.vf[3].lanes[0]==known_word(0x3f800000U)&&
+        sub.final_state.mac_flags.bits==0U&&sub.final_state.status_flags.bits==0x80U,
+        "MSUB sticky events used the sign-reversed product");
+    state.accumulator_overflow[0]={};state.vf[1].lanes[0]=known_word(0U);
+    const auto unknown=execute(decode_words({kLowerNop,kLowerNop},
+        {instruction|kUpperEnd,kUpperNop}),state);
+    expect(unknown.final_state.vf[3].lanes[0].known_mask==0U&&
+        (unknown.final_state.status_flags.bits&unknown.final_state.status_flags.known_mask&0x40U)!=0,
+        "unknown ACC history silently became false or lost a known intermediate sticky event");
+}
+
+void test_all_compound_operand_families() {
+    struct Family {std::uint32_t add,sub;int component;bool acc;};
+    constexpr std::array families{
+        Family{0x29,0x2d,-1,false},Family{0x08,0x0c,0,false},Family{0x09,0x0d,1,false},
+        Family{0x0a,0x0e,2,false},Family{0x0b,0x0f,3,false},Family{0x23,0x27,-2,false},Family{0x21,0x25,-3,false},
+        Family{0x2bd,0x2fd,-1,true},Family{0xbc,0xfc,0,true},Family{0xbd,0xfd,1,true},
+        Family{0xbe,0xfe,2,true},Family{0xbf,0xff,3,true},Family{0x23f,0x27f,-2,true},Family{0x23d,0x27d,-3,true}};
+    for(const auto& family:families) for(bool subtract:{false,true}) {
+        auto state=openrc::make_dvp_vu_execution_state_v1();
+        state.vf[1]=known_float_vector({2,3,4,5});state.vf[2]=known_float_vector({6,7,8,9});
+        state.scalar_i=known_float(10);state.scalar_q=known_float(11);
+        state.accumulator=known_float_vector({20,21,22,23});state.accumulator_overflow.fill({0U,1U});
+        const auto original=state.accumulator;
+        const auto instruction=upper_fields(0xbU,family.component<-1?0U:2U,1U,family.acc?0U:3U)|(subtract?family.sub:family.add);
+        const auto result=execute(decode_words({kLowerNop,kLowerNop},{instruction|kUpperEnd,kUpperNop}),state);
+        expect(result.termination==openrc::DvpVuTerminationV1::program_end,"compound operand family did not execute");
+        const auto& destination=family.acc?result.final_state.accumulator:result.final_state.vf[3];
+        for(unsigned lane=0;lane<4;++lane) {
+            if(lane==1U) {
+                expect(destination.lanes[lane]==(family.acc?original.lanes[lane]:openrc::DvpVuWordV1{}),"inactive compound lane changed");
+                continue;
+            }
+            const unsigned right=family.component==-1?6U+lane:family.component==-2?10U:
+                family.component==-3?11U:6U+static_cast<unsigned>(family.component);
+            const int product=static_cast<int>((2U+lane)*right);
+            expect_known_float(destination.lanes[lane],static_cast<float>(20+static_cast<int>(lane)+(subtract?-product:product)),
+                "compound operand family selected wrong source or ACC lane");
+        }
+        if(!family.acc) expect(result.final_state.accumulator==original,"VF compound wrote ACC");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -1029,7 +1290,11 @@ int main() {
         test_add_sub_reference_operand_families();
         test_add_reference_unknown_lanes_and_alias();
         test_add_sub_remnant_mac_latency_and_vf0();
-        test_add_reference_does_not_qualify_other_arithmetic();
+        test_distinct_arithmetic_reference_qualifications();
+        test_compound_latch_lifetime_and_intermediate_events();
+        test_all_compound_operand_families();
+        test_mul_reference_all_operand_families();
+        test_mul_reference_alias_unknown_and_mac_latency();
         test_loi_reads_previous_i_then_publishes_literal();
         test_ftoi_instruction_masks_flags_and_knownness();
         test_mac_flag_reads_and_partial_information();
@@ -1040,6 +1305,7 @@ int main() {
         test_div_q_latency_six_and_seven_pairs();
         test_data_memory_address_wraps();
         test_partial_address_knownness_and_malformed_registers();
+        test_indeterminate_loads_join_possible_memory_values();
         test_xgkick_copies_multitag_packet();
         test_execution_and_xgkick_limits_are_independent();
         std::cout << "dvp vu execute tests passed\n";

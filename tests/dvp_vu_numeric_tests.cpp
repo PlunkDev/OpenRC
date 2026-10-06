@@ -1,4 +1,6 @@
+#include "../src/core/ps2_fmac_mul_reference.hpp"
 #include "openrc/dvp_vu_numeric.hpp"
+#include "ps2_mul_reference_oracle.hpp"
 
 #include <array>
 #include <cstddef>
@@ -170,9 +172,9 @@ void test_invalid_fractional_formats_rejected() {
 void expect_add(const std::uint32_t left, const std::uint32_t right,
                 const std::uint32_t bits, const bool underflow = false,
                 const bool overflow = false) {
-  const openrc::DvpVuAddResultV1 expected{
-      bits, (bits & 0x7f800000U) == 0U, (bits & 0x80000000U) != 0U,
-      underflow, overflow};
+  const openrc::DvpVuAddResultV1 expected{bits, (bits & 0x7f800000U) == 0U,
+                                          (bits & 0x80000000U) != 0U, underflow,
+                                          overflow};
   const auto actual = openrc::dvp_vu_add_bits_v1(left, right);
   if (actual != expected) {
     std::cerr << "ADD left=" << std::hex << left << " right=" << right
@@ -205,9 +207,8 @@ void test_add_identity_cancellation_and_doubling() {
         expect_add(value, 0U, value);
         expect_add(0x80000000U, value, value);
         expect_add(value, value ^ 0x80000000U, 0U);
-        const auto doubled = exponent == 255U
-                                 ? sign | 0x7fffffffU
-                                 : value + 0x00800000U;
+        const auto doubled =
+            exponent == 255U ? sign | 0x7fffffffU : value + 0x00800000U;
         expect_add(value, value, doubled, false, exponent == 255U);
       }
     }
@@ -227,8 +228,7 @@ void test_add_guard_and_carry_boundaries() {
       expect_add(base | sign, ulp | sign, (base + 1U) | sign);
       expect_add(base | sign, half_ulp | sign, base | sign);
       expect_add(base | sign, quarter_ulp | sign, base | sign);
-      expect_add(base | sign, ulp | (sign ^ 0x80000000U),
-                 (base - 2U) | sign);
+      expect_add(base | sign, ulp | (sign ^ 0x80000000U), (base - 2U) | sign);
       expect_add(base | sign, half_ulp | (sign ^ 0x80000000U),
                  (base - 1U) | sign);
       expect_add(base | sign, quarter_ulp | (sign ^ 0x80000000U), base | sign);
@@ -250,8 +250,10 @@ void test_add_underflow_fraction_and_following_flush() {
     std::uint32_t fraction;
   };
   constexpr std::array differences{
-      Difference{3U, 0x00400000U}, Difference{5U, 0x00200000U},
-      Difference{7U, 0x00600000U}, Difference{9U, 0x00100000U},
+      Difference{3U, 0x00400000U},
+      Difference{5U, 0x00200000U},
+      Difference{7U, 0x00600000U},
+      Difference{9U, 0x00100000U},
   };
   for (const auto &difference : differences) {
     for (const auto sign : {0U, 0x80000000U}) {
@@ -290,11 +292,180 @@ void test_add_sub_metamorphic_raw_domain() {
       auto reversed = result;
       reversed.bits ^= 0x80000000U;
       reversed.sign = !reversed.sign;
-      if (reversed != openrc::dvp_vu_add_bits_v1(left ^ 0x80000000U,
-                                               right ^ 0x80000000U)) {
+      if (reversed !=
+          openrc::dvp_vu_add_bits_v1(left ^ 0x80000000U, right ^ 0x80000000U)) {
         throw std::runtime_error("VU ADD sign reversal invariant failed");
       }
     }
+  }
+}
+
+void expect_mul(const std::uint32_t left, const std::uint32_t right) {
+  const auto reference = openrc_test::mul_oracle(left, right);
+  const openrc::DvpVuMulResultV1 expected{
+      reference.bits, (reference.bits & 0x7f800000U) == 0U,
+      (reference.bits & 0x80000000U) != 0U, reference.underflow,
+      reference.overflow};
+  if (openrc::dvp_vu_mul_bits_v1(left, right) != expected)
+    throw std::runtime_error(
+        "VU MUL differs from independent bit-column oracle");
+}
+
+void test_mul_column_network_and_ordered_raw_domain() {
+  // Every low16 pattern on each input, with a separately generated partner.
+  // Compare unnormalized products too: differences hidden by final result
+  // truncation must not conceal a wrong carry predicate.
+  std::uint32_t random = 0x72549a31U;
+  for (std::uint32_t i = 0U; i < 65536U; ++i) {
+    random = random * 1664525U + 1013904223U;
+    const auto a = 0x800000U | (random & 0x7f0000U) | i;
+    const auto b = 0x800000U | (random & 0x7fffffU);
+    for (const bool swap : {false, true}) {
+      const auto left = swap ? b : a;
+      const auto right = swap ? a : b;
+      const auto product = openrc::detail::ps2_mul_significands_v1(left, right);
+      if (product != openrc_test::mul_significand_oracle(left, right) ||
+          (std::uint64_t{left} * right - product != 0U &&
+           std::uint64_t{left} * right - product != 32768U))
+        throw std::runtime_error(
+            "MUL low-column reduction or correction differs");
+      const auto ea = (i % 255U) + 1U;
+      const auto eb = ((i / 255U) % 255U) + 1U;
+      expect_mul((ea << 23U) | (left & 0x7fffffU),
+                 (eb << 23U) | (right & 0x7fffffU));
+    }
+    expect_mul(random, i * 0x1020305U);
+  }
+  // Generated overlapping Booth groups and their neighbors, including
+  // selector7 zero and sign correction carries at each relevant column.
+  for (unsigned shift = 0U; shift <= 20U; ++shift) {
+    for (std::uint32_t selector = 0U; selector < 8U; ++selector) {
+      for (std::uint32_t neighbor = 0U; neighbor < 5U; ++neighbor) {
+        const auto a =
+            0x3f800000U | (((selector << shift) + neighbor) & 0x7fffffU);
+        const auto b =
+            0x3f800000U | (((7U - selector) * 0x12491U + neighbor) & 0x7fffffU);
+        expect_mul(a, b);
+        expect_mul(b, a);
+      }
+    }
+  }
+}
+
+void test_mul_sign_flush_and_exponent_boundaries() {
+  for (std::uint32_t exponent = 0U; exponent < 256U; ++exponent) {
+    for (const auto fraction : {0U, 1U, 0x155555U, 0x400000U, 0x7fffffU}) {
+      const auto a = (exponent << 23U) | fraction;
+      for (const auto b : {0U, 0x7fffffU, 0x800000U, 0x3f000000U, 0x3f800000U,
+                           0x40000000U, 0x7f800000U, 0x7fffffffU}) {
+        for (const auto sa : {0U, 0x80000000U})
+          for (const auto sb : {0U, 0x80000000U})
+            expect_mul(a | sa, b | sb);
+      }
+    }
+  }
+  // Products on both sides of significand normalization and exponent-range
+  // boundaries, generated from all neighbors of several dyadic products.
+  for (const auto a : {0x00800000U, 0x00ffffffU, 0x3f800000U, 0x3fb504f3U,
+                       0x3fffffffU, 0x7fffffffU})
+    for (std::uint32_t delta = 0U; delta < 65U; ++delta) {
+      expect_mul(a, 0x3f800020U - delta);
+      expect_mul(a, 0x3fb50513U - delta);
+    }
+}
+
+void test_mul_right_power_of_two_and_byte_half_domain() {
+  for (std::uint32_t exponent = 1U; exponent < 256U; ++exponent) {
+    for (std::uint32_t sample = 0U; sample < 256U; ++sample) {
+      const auto fraction = (sample * 0x7fffffU) / 255U;
+      const auto a = (exponent << 23U) | fraction;
+      const auto r = openrc::dvp_vu_mul_bits_v1(a, 0x3f800000U);
+      if (r.bits != a || r.underflow || r.overflow)
+        throw std::runtime_error("right identity must not lose a Booth carry");
+    }
+  }
+  for (std::uint32_t value = 0U; value < 256U; ++value) {
+    const auto e = value == 0U ? 0U : std::bit_width(value) - 1U;
+    const auto input =
+        value == 0U ? 0U
+                    : ((127U + e) << 23U) | ((value << (23U - e)) & 0x7fffffU);
+    const auto expected = value == 0U ? 0U : input - 0x800000U;
+    const auto result = openrc::dvp_vu_mul_bits_v1(input, 0x3f000000U);
+    if (result.bits != expected || result.underflow || result.overflow)
+      throw std::runtime_error(
+          "original byte-color half product must be exact");
+  }
+}
+
+std::uint32_t integer_square_root(const std::uint64_t value) {
+  // Binary search on exact squares is independent of the FDIV/SQRT carry
+  // network. Values here are below 2^48, so candidate squares fit uint64.
+  std::uint64_t low=0,high=UINT64_C(1)<<25U;
+  while(low+1U<high) {
+    const auto middle=(low+high)/2U;
+    if(middle*middle<=value) low=middle;else high=middle;
+  }
+  return static_cast<std::uint32_t>(low);
+}
+void test_square_root_exact_and_integer_enclosure() {
+  for(std::uint32_t exponent=1;exponent<256;++exponent) {
+    for(std::uint32_t sample=0;sample<256;++sample) {
+      const auto fraction=sample*0x7fffffU/255U;
+      const auto input=(exponent<<23U)|fraction;
+      const auto radicand=std::uint64_t(0x800000U|fraction)<<((exponent&1U)?23U:24U);
+      const auto root=integer_square_root(radicand);
+      const auto exact_floor=(((exponent+127U)/2U)<<23U)|(root&0x7fffffU);
+      const auto actual=openrc::dvp_vu_sqrt_bits_v1(input);
+      // Redundant-root rounding is separately qualified against published
+      // authored values. This independent enclosure is not a claim that
+      // IEEE truncation is the PS2 rounding algorithm.
+      if(actual+1U<exact_floor||actual>exact_floor+1U)
+        throw std::runtime_error("VSQRT leaves the exact integer one-ULP enclosure");
+      if(std::uint64_t(root)*root==radicand&&actual!=exact_floor)
+        throw std::runtime_error("VSQRT changed an exactly representable square root");
+      if(openrc::dvp_vu_sqrt_bits_v1(input|0x80000000U)!=actual)
+        throw std::runtime_error("VSQRT value must ignore source sign independently from invalid flags");
+    }
+  }
+  for(std::uint32_t integer=1;integer<=4095;++integer) {
+    const auto square=integer*integer;
+    const auto exponent=std::bit_width(square)-1U;
+    const auto encoded=((127U+exponent)<<23U)|((square<<(23U-exponent))&0x7fffffU);
+    const auto root_exponent=std::bit_width(integer)-1U;
+    const auto expected=((127U+root_exponent)<<23U)|((integer<<(23U-root_exponent))&0x7fffffU);
+    if(openrc::dvp_vu_sqrt_bits_v1(encoded)!=expected)
+      throw std::runtime_error("VSQRT integer perfect-square identity failed");
+  }
+  for(const auto zero:std::array{0U,1U,0x007fffffU,0x80000000U,0x807fffffU})
+    if(openrc::dvp_vu_sqrt_bits_v1(zero)!=0U)
+      throw std::runtime_error("VSQRT exponent-zero input did not become positive zero");
+}
+
+void test_reciprocal_root_exact_powers_and_signs() {
+  // Independent exact-power algebra across the full extended exponent range.
+  // Even unbiased radicand exponents have an exact root. No host arithmetic
+  // or composed reference helper supplies these expected result words.
+  for (int radicand_exponent = -126; radicand_exponent <= 128; radicand_exponent += 2) {
+    const auto radicand = static_cast<std::uint32_t>(radicand_exponent + 127) << 23U;
+    for (int numerator_exponent = -126; numerator_exponent <= 128; ++numerator_exponent) {
+      const auto numerator = static_cast<std::uint32_t>(numerator_exponent + 127) << 23U;
+      const auto result_exponent = numerator_exponent - radicand_exponent / 2 + 127;
+      const auto magnitude = result_exponent <= 0 ? 0U : result_exponent > 255
+          ? 0x7fffffffU : static_cast<std::uint32_t>(result_exponent) << 23U;
+      for (const auto numerator_sign : {0U, 0x80000000U})
+        for (const auto radicand_sign : {0U, 0x80000000U})
+          if (openrc::dvp_vu_rsqrt_bits_v1(numerator | numerator_sign,
+                                         radicand | radicand_sign) != (magnitude | numerator_sign))
+            throw std::runtime_error("VRSQRT exact-power/sign/range mismatch");
+    }
+  }
+  for (const auto zero : {0U, 1U, 0x007fffffU, 0x80000000U, 0x807fffffU}) {
+    for (const auto numerator : {0U, 0x80000000U, 0x3f800000U, 0xbf800000U}) {
+      if (openrc::dvp_vu_rsqrt_bits_v1(numerator, zero) != ((numerator & 0x80000000U) | 0x7fffffffU))
+        throw std::runtime_error("VRSQRT zero-radicand result sign mismatch");
+    }
+    if (openrc::dvp_vu_rsqrt_bits_v1(zero, 0x40800000U) != (zero & 0x80000000U))
+      throw std::runtime_error("VRSQRT zero numerator did not retain sign");
   }
 }
 
@@ -312,6 +483,11 @@ int main() {
     test_add_guard_and_carry_boundaries();
     test_add_underflow_fraction_and_following_flush();
     test_add_sub_metamorphic_raw_domain();
+    test_mul_column_network_and_ordered_raw_domain();
+    test_mul_sign_flush_and_exponent_boundaries();
+    test_mul_right_power_of_two_and_byte_half_domain();
+    test_square_root_exact_and_integer_enclosure();
+    test_reciprocal_root_exact_powers_and_signs();
     std::cout << "VU numeric conversion/reference-model tests passed\n";
     return 0;
   } catch (const std::exception &error) {

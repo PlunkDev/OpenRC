@@ -4,6 +4,13 @@ These compiler/diagnostic changes support exact original actor initialization;
 they are not a runtime PS2 interpreter or a completed initialization callback.
 Original source bytes and diagnostic traces remain under ignored `local`.
 
+Current compound-arithmetic update: [SOURCE_DIV_ACC_REFERENCE_V1.md](SOURCE_DIV_ACC_REFERENCE_V1.md)
+supersedes the historical limitations below for DIV, SQRT values, ordered
+MADD/MSUB, the shared executor's per-lane ACC overflow latch, PAL timers,
+non-dyadic timed colors and the executable frontend camera/projector helpers.
+These now have integer reference implementations and explicit qualification;
+other unit timing, forwarding and physical-console coverage remain separate.
+
 ## VU instruction semantics
 
 The existing DVP decoder/executor now supports FMAND, FMEQ and FMOR. They read
@@ -24,8 +31,10 @@ truncation toward zero and sign-directed saturation. It does not create host
 floats, depend on their rounding mode, or interpret exponent 255 as IEEE NaN.
 The executor uses the shared helper while preserving lane masks, VF0, unknown
 inputs and unchanged flags. FTOI needs no arithmetic warning. ADD/SUB now use
-the separately qualified integer reference model described below; ITOF,
-MUL/MADD/MSUB and the remaining host-based arithmetic retain their warning.
+the integer reference model described below. Standalone MUL/MULA now use the
+ordered multiplier reference model. Compound MADD/MSUB and DIV use the newer
+integer references linked above; ITOF and remaining host arithmetic retain
+their approximation warning.
 The 524,288 rational-reference cases are specification-derived, **not newly
 captured hardware measurements**.
 
@@ -100,8 +109,9 @@ mask/alias/unknown lanes, U+Z timing/VF0, and separate mixed-program warnings.
 The focused numeric and executor tests passed. These are contract/integration
 tests, not copied public fixtures or newly measured PS2 results.
 
-MUL's low-bit carry correction and the complete MADD/MSUB/ACC transition and
-flag rules remain unresolved. The separate host-based MADD/MSUB path,
+MUL's ordered low-bit carry correction now has a separate integer reference
+model. Complete MADD/MSUB/ACC transition and flag rules remain unresolved.
+The separate host-based MADD/MSUB path,
 including its internal adder, was deliberately left unchanged; replacing
 only that adder would not qualify the compound operation. ITOF and the other
 host-based paths retain `host_float_approximation`. This VU model also does not
@@ -137,8 +147,9 @@ precision boundaries, 65,536 generated raw values and all 512 writable FCSR
 combinations. An audited original-ELF probe verifies both complete conversion
 leaves, the actual startup CTC1 and **131,088 source-routing cases** with
 poisoned unrelated state. The probe validates binding/control flow against the
-original instructions, not a physical numerical oracle. General EE MUL,
-frontend projection and VU MUL/ACC remain separate incomplete dependencies.
+original instructions, not a physical numerical oracle. EE MUL now has the
+reference helper below; frontend projection and compound VU ACC behavior
+remain separate incomplete dependencies.
 
 ## EE COP1 ADD/SUB reference values and flags
 
@@ -167,10 +178,35 @@ guard boundaries, underflow reuse, 917,504 exact integer-domain operations,
 65,536 raw-pair identities and 512 writable FCSR combinations. The audited
 native EE and VU test executables pass with the shared helper.
 
-This does not complete timer `1f98c0`, color interpolation `1fa8a8` or timed
-color `21c6c0`: those depend on MUL/ACC or DIV as well. No ideal-product
-approximation, fitted exceptional operands or host-float replacement was
-added for the unresolved multiplication network.
+This does not complete timer `1f98c0` or timed color `21c6c0`: compound ACC and
+DIV remain separate dependencies. The actual text-node call to `1fa8a8` with
+factor `.5` now executes in its proven exact byte/half-unit value domain; this
+does not implement arbitrary-factor interpolation or its architectural flags.
+
+## Ordered MUL reference values and flags
+
+The [multiplier reference](SOURCE_MULTIPLIER_REFERENCE_V1.md) implements
+source-ordered significand multiplication and its low-column carry correction
+using bounded integer operations. EE COP1 and VU expose separate raw-result
+and flag contracts; standalone VU MUL/MULA execution now uses this helper.
+Operands must not be commuted. Exponent-zero inputs flush without an input
+underflow event; actual product underflow produces signed zero, and exponent
+255 remains finite. No blanket one-ULP adjustment is substituted.
+
+An independently structured bit-column oracle exercises generated operands,
+and finite public author-results comparisons corroborate values and flags.
+These are not new physical-console captures; `physical_console_qualified`
+remains false and the executor reports `vu_mul_reference_model` (CLI:
+`vu-mul-reference-model`). No external implementation or result table is
+included. The derivation and evidence provenance are recorded in the linked
+note rather than described as clean-room work.
+
+The half-color frontend call can now compute its result without an opaque
+observation. The complete scalar [Moby post-step](RAC_MOBY_POST_V1.md) also
+executes its seven ordered header/radius/position scale products through this
+helper. General rotation, blend, derived-center ACC and spatial publication
+remain explicit incomplete boundaries; neither reference helper is a claim
+that the full actor initialization or frontend is live and faithful.
 
 ## Source integer spatial projection
 
@@ -181,8 +217,9 @@ order, low-64-bit comparison against sign-extended old LW, and the following
 minimum-only mask gate. Output is a raw source projection and a gate result,
 not an automatically validated rectangle or a successful spatial update.
 
-The preceding spatial-pointer check, earlier cache/vector/counter writes, and
-the later spatial helper's bounds store/signed-maxY behavior remain separate.
+The enclosing post-step now represents the preceding spatial-pointer check
+and earlier ordered cache/vector/counter writes. The later spatial helper's
+bounds store/signed-maxY behavior remains a separate pending continuation.
 This adapter does not attach a raw source structure to the native runtime or
 bypass the ordered spatial index's supported-domain validation.
 
@@ -200,20 +237,20 @@ An ignored source probe completed 18 bounded executions (six rotations and
 three unknown/poisoned scratch states), checking exact initialized identity
 for zero rotations and source helper/control-flow selection for nonzero axes.
 That finite source probe does not certify nonzero numerical results. With the
-new ADD/SUB integration, the chunk combines the integer reference model with
-the remaining host-based MUL/ACC path and retains both qualifications. Full
-FMAC forwarding, stalls, multiplier rounding and ACC behavior are not certified
-by the probe or by the focused ADD/SUB tests.
+ADD/SUB and ordered MUL integration, the chunk combines integer reference
+models with the remaining host-based compound ACC path and retains those
+qualifications. Full FMAC forwarding, stalls and compound ACC behavior are
+not certified by that probe or by the focused primitive arithmetic tests.
 
 The pure [fresh constructor](RAC_MOBY_FRESH_CONSTRUCTOR_V1.md) has now been
 implemented and source-compared independently: it contains raw FP transfers
 but no FP arithmetic. This does not qualify the later placement/post-step.
 
-Next: qualify those remaining arithmetic operations, finish the complete
+Next: qualify the remaining compound arithmetic operations, integrate the
 source-ordered placement/post-step and bind live-order tokens to native
 entities. Neither the published resource count nor actual AI has been expanded
 by these diagnostic/numerical components. The native compiler identity advances
-to `native-eight-resource-v6-vu-addsub`: the ADD/SUB reference semantics affect
+to `native-eight-resource-v7-vu-mul`: the ordered MUL reference semantics affect
 existing source-program execution during preparation, so a previously prepared
 cache cannot silently certify the new compiler. The normal launcher Prepare path
 rebuilds it; the runtime schemas, launcher count and save directories do not

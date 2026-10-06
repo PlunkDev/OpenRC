@@ -65,9 +65,9 @@ struct EntityGameplayPlayerCapsuleV1 {
 // Applies the complete authored scale-then-rotate-then-translate transform to
 // a collectible's local center. EntitySceneV1 guarantees a canonical unit
 // X/Y/Z/W quaternion, so this conversion is deterministic and non-throwing.
-[[nodiscard]] CollisionVectorV1 world_collectible_center_v1(
-    const WorldTransformV1 &transform,
-    const GameplayCollectibleV1 &collectible) noexcept;
+[[nodiscard]] CollisionVectorV1
+world_collectible_center_v1(const WorldTransformV1 &transform,
+                            const GameplayCollectibleV1 &collectible) noexcept;
 
 [[nodiscard]] CollisionVectorV1 world_destructible_center_v1(
     const WorldTransformV1 &transform,
@@ -156,20 +156,32 @@ public:
   // Both scenes must already be canonical and describe the same level. A load
   // or reload is transactional: the previous world remains intact if any
   // validation, materialization, or allocation step fails.
-  void load_scene(const EntitySceneV1 &entity_scene,
-                  const GameplaySceneV1 &gameplay_scene,
-                  EntityGameplayRuntimeLimitsV1 limits,
-                  std::uint64_t first_tick_index = 0U,
-                  std::optional<std::uint64_t>
-                      required_level_instance_sequence = std::nullopt);
+  void load_scene(
+      const EntitySceneV1 &entity_scene, const GameplaySceneV1 &gameplay_scene,
+      EntityGameplayRuntimeLimitsV1 limits, std::uint64_t first_tick_index = 0U,
+      std::optional<std::uint64_t> required_level_instance_sequence =
+          std::nullopt);
 
+  void load_scene(
+      const EntitySceneV1 &entity_scene, const GameplaySceneV1 &gameplay_scene,
+      const DestructibleSceneV1 &destructible_scene,
+      EntityGameplayRuntimeLimitsV1 limits, std::uint64_t first_tick_index = 0U,
+      std::optional<std::uint64_t> required_level_instance_sequence =
+          std::nullopt);
+
+  // Materialize into the empty world already loaded by the owning session.
+  // No second level request, session copy, or reconstructed spawn identity is
+  // made. The by-value world is staged; callers retain their world on failure
+  // when passing a copy, or may transfer an independently staged world.
+  void load_scene(const EntitySceneV1 &entity_scene,
+                  const GameplaySceneV1 &gameplay_scene, WorldV1 loaded_world,
+                  EntityGameplayRuntimeLimitsV1 limits,
+                  std::uint64_t first_tick_index = 0U);
   void load_scene(const EntitySceneV1 &entity_scene,
                   const GameplaySceneV1 &gameplay_scene,
                   const DestructibleSceneV1 &destructible_scene,
-                  EntityGameplayRuntimeLimitsV1 limits,
-                  std::uint64_t first_tick_index = 0U,
-                  std::optional<std::uint64_t>
-                      required_level_instance_sequence = std::nullopt);
+                  WorldV1 loaded_world, EntityGameplayRuntimeLimitsV1 limits,
+                  std::uint64_t first_tick_index = 0U);
 
   // Processes collectibles against one externally simulated player capsule.
   // Overflow and invalid tick/input errors leave gameplay state unchanged.
@@ -215,12 +227,10 @@ private:
     bool collected = false;
     bool destroyed = false;
     std::uint32_t health = 0U;
-    std::vector<EntityGameplayDamageSourceSequenceV1>
-        damage_source_sequences;
+    std::vector<EntityGameplayDamageSourceSequenceV1> damage_source_sequences;
   };
 
   struct LoadedStateV1 {
-    GameSessionV1 session;
     WorldV1 world;
     LevelIdV1 level_id = 0U;
     std::uint64_t next_tick_index = 0U;
@@ -228,6 +238,13 @@ private:
     std::uint32_t max_damage_sources_per_destructible = 0U;
     std::vector<EntityRecordV1> entities;
   };
+
+  void load_scene_impl(
+      const EntitySceneV1 &entity_scene, const GameplaySceneV1 &gameplay_scene,
+      const DestructibleSceneV1 &destructible_scene,
+      EntityGameplayRuntimeLimitsV1 limits, std::uint64_t first_tick_index,
+      std::optional<std::uint64_t> required_level_instance_sequence,
+      std::optional<WorldV1> loaded_world);
 
   [[nodiscard]] const EntityRecordV1 *
   find_record(std::uint32_t authored_id) const noexcept;

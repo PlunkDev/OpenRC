@@ -1,4 +1,5 @@
 #include "openrc/native_game_prepare.hpp"
+#include "openrc/native_frontend_profile.hpp"
 
 #include "level_scene_recovery.hpp"
 #include "level_scene_render_compile.hpp"
@@ -12,6 +13,7 @@
 #include "openrc/level_entity_scene_compile.hpp"
 #include "openrc/level_gameplay_scene_compile.hpp"
 #include "openrc/level_render_scene_compile.hpp"
+#include "openrc/media_clip.hpp"
 #include "openrc/rac_actor_library_compile.hpp"
 #include "openrc/rac_collectible_scene_compile.hpp"
 #include "openrc/rac_destructible_scene_compile.hpp"
@@ -20,16 +22,29 @@
 #include "openrc/rac_moby_actor_scene_compile.hpp"
 #include "openrc/rac_moby_animation_compile.hpp"
 #include "openrc/rac_ratchet_animation_compile.hpp"
+#include "openrc/rac_pss.hpp"
+#include "openrc/rac_startup.hpp"
+#include "openrc/rac_frontend_scene_compile.hpp"
+#include "openrc/rac_frontend_numeric.hpp"
+#include "openrc/rac_frontend_title.hpp"
+#include "openrc/rac_frontend_environment_compile.hpp"
+#include "openrc/rac_frontend_menu_resources.hpp"
+#include "openrc/rac_frontend_sound_resources.hpp"
+#include "openrc/rac_frontend_state.hpp"
+#include "openrc/rac_level_installation.hpp"
+#include "openrc/rac_new_game_resources.hpp"
 #include "openrc/runtime_level_content.hpp"
 #include "openrc/scene_block_geometry.hpp"
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <climits>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <limits>
 #include <optional>
@@ -73,6 +88,11 @@ constexpr std::uint64_t kMaximumGameplayScenePayloadBytes =
 constexpr std::uint64_t kMaximumDestructibleScenePayloadBytes =
     64U * 1024U * 1024U;
 constexpr std::uint64_t kMaximumTwoFipPixels = 16U * 1024U * 1024U;
+constexpr std::uint64_t kMaximumStartupMovieBytes = 32U * 1024U * 1024U;
+constexpr std::string_view kStartupMediaType = "openrc.media-clip";
+constexpr std::string_view kStartupMovieSource = "rac1/global-toc/1800";
+constexpr std::string_view kStartupImagePass = "openrc.rac-startup-image-compile.v1";
+constexpr std::string_view kFrontendScenePass = "openrc.rac-frontend-scene-compile.v1";
 constexpr std::string_view kPlayerRigKey = "actors/ratchet/rig";
 constexpr std::string_view kPlayerHighModelKey = "actors/ratchet/high";
 constexpr std::string_view kPlayerSourceSequenceKeyPrefix =
@@ -266,6 +286,16 @@ make_actor_animation_io_limits() {
   auto limits = game::make_runtime_level_content_limits_v1().actor_animation;
   limits.max_encoded_bytes = kMaximumActorAnimationPayloadBytes;
   return limits;
+}
+
+[[nodiscard]] RacFrontendSceneCompileLimitsV1 make_frontend_scene_limits() {
+  constexpr auto bytes=kMaximumDecodedWadBytes;
+  return {bytes,4096U,4096U,bytes,
+      {bytes,false},make_single_moby_bind_pose_limits(),
+      {bytes,bytes,bytes,255U,4096U,4096U,16000000U,16000000U,bytes},
+      make_actor_io_limits().library,
+      {{bytes,1024U,100000U,4096U,bytes},{bytes,bytes,255U,255U},
+       {255U,bytes,65535U,65535U,1.e-8},make_actor_animation_io_limits().bank}};
 }
 
 [[nodiscard]] constexpr RacRatchetAnimationCompileLimitsV1
@@ -1675,6 +1705,348 @@ native_boot_artifact_identity(const LevelPackageV1 &package) {
       resource->payload_sha256};
 }
 
+[[nodiscard]] bool exact_native_frontend_profile(
+    const LevelPackageV1& package,std::uint64_t source_image_bytes,
+    const PreparedContentDigestV1& source_image_sha256,std::uint64_t boot_executable_bytes,
+    const PreparedContentDigestV1& boot_executable_sha256) {
+  const auto* actors=find_unique_resource(package,"frontend/background/actors");
+  const auto* animation=find_unique_resource(package,"frontend/background/animation");
+  const auto* timeline=find_unique_resource(package,"frontend/background/timeline");
+  const auto* title=find_unique_resource(package,"frontend/title");
+  const auto* geometry=find_unique_resource(package,"frontend/background/geometry");
+  if(!exact_upsert_resource_contract(actors,"openrc.actor-library",1U)||
+      !exact_upsert_resource_contract(animation,"openrc.actor-animation-bank",1U)||
+      !exact_upsert_resource_contract(timeline,"openrc.scene-timeline",1U)||
+      !exact_upsert_resource_contract(title,"openrc.screen-overlay",1U)||
+      !exact_upsert_resource_contract(geometry,"openrc.render-scene",1U)) return false;
+  const LevelPackageProvenanceV1* shared_source=nullptr;
+  for(const auto* resource:{actors,animation,timeline,title,geometry}) {
+    if(resource->provenance.size()!=(resource==timeline?6U:4U)) return false;
+    bool image=false,boot=false,source=false,pass=false;
+    bool actor_reference=false,animation_reference=false;
+    for(const auto& p:resource->provenance) {
+      image|=exact_provenance(p,LevelPackageProvenanceKindV1::iso_range,"rac1/disc-image",source_image_bytes,source_image_sha256);
+      boot|=exact_provenance(p,LevelPackageProvenanceKindV1::prepared_resource,"rac1/boot-executable",boot_executable_bytes,boot_executable_sha256);
+      pass|=exact_provenance(p,LevelPackageProvenanceKindV1::generated,kFrontendScenePass,0U,{});
+      actor_reference|=exact_provenance(p,LevelPackageProvenanceKindV1::prepared_resource,actors->resource_id,actors->payload.size(),actors->payload_sha256);
+      animation_reference|=exact_provenance(p,LevelPackageProvenanceKindV1::prepared_resource,animation->resource_id,animation->payload.size(),animation->payload_sha256);
+      if(p.kind==LevelPackageProvenanceKindV1::iso_range&&p.source_locator=="rac1/global-toc/14e8"&&
+          p.source_offset>=UINT64_C(1506)*kDiscTocSectorSize&&p.source_offset%kDiscTocSectorSize==0U&&
+          p.source_offset<=source_image_bytes&&p.source_bytes>0U&&p.source_bytes<=kMaximumDecodedWadBytes&&
+          p.source_bytes%kDiscTocSectorSize==0U&&p.source_bytes<=source_image_bytes-p.source_offset&&
+          !is_zero_prepared_digest_v1(p.source_sha256)) {
+        source=true;
+        if(shared_source&&(p.source_offset!=shared_source->source_offset||p.source_bytes!=shared_source->source_bytes||
+            p.source_sha256!=shared_source->source_sha256)) return false;
+        shared_source=&p;
+      }
+    }
+    if(!image||!boot||!source||!pass||(resource==timeline&&(!actor_reference||!animation_reference))) return false;
+  }
+  try {
+    const auto library=decode_actor_library_v1(actors->payload,make_actor_io_limits());
+    const auto bank=decode_actor_animation_bank_v1(animation->payload,make_actor_animation_io_limits());
+    const auto sequence=decode_scene_timeline_v1(timeline->payload);
+    const auto overlay=decode_screen_overlay_v1(title->payload);
+    const auto environment=decode_render_scene_v1(geometry->payload,game::make_runtime_level_content_limits_v1().render_scene);
+    if(environment.meshes.empty()||environment.instances.empty()) return false;
+    if(overlay.canvas_width!=512U||overlay.canvas_height!=448U||overlay.updates_per_second!=50U||
+        overlay.coverage_denominator!=128U||overlay.loop_begin!=100U||overlay.images.size()!=192U||overlay.frames.size()!=160U)
+      return false;
+    if(library.models.size()!=5U||library.rigs.size()!=5U||bank.clips.size()!=75U||
+        sequence.actors.size()!=5U||sequence.samples.size()!=1398U||sequence.updates_per_second!=50U||
+        !sequence.loop||sequence.display_aspect_numerator!=512U||sequence.display_aspect_denominator!=512U||
+        sequence.actor_library_sha256!=actors->payload_sha256||sequence.actor_animation_sha256!=animation->payload_sha256)
+      return false;
+    for(std::uint32_t i=0;i<5U;++i) {
+      const auto key="frontend/background/actor/"+std::to_string(i);
+      const auto& binding=sequence.actors[i];
+      if(binding.rig_index>=library.rigs.size()||binding.model_index>=library.models.size()||
+          library.rigs[binding.rig_index].semantic_key!=key+"/rig"||
+          library.models[binding.model_index].semantic_key!=key+"/model") return false;
+    }
+    for(std::uint32_t i=0;i<75U;++i) {
+      const auto& clip=bank.clips[i];
+      if(clip.semantic_key!="frontend/background/chunk/"+std::to_string(i/5U)+"/actor/"+std::to_string(i%5U)||
+          clip.source_updates_per_second!=50U||clip.wrap_mode!=ActorAnimationWrapModeV1::clamp||
+          clip.frames.size()!=(i<70U?49U:29U)) return false;
+    }
+    validate_scene_timeline_bindings_v1(sequence,library,bank);
+    return true;
+  } catch(const ActorLibraryIoError&) {return false;}
+    catch(const ActorAnimationIoError&) {return false;}
+    catch(const SceneTimelineError&) {return false;}
+    catch(const ScreenOverlayError&) {return false;}
+    catch(const RenderSceneIoError&) {return false;}
+}
+
+[[nodiscard]] bool exact_native_startup_media_profile(
+    const LevelPackageV1 &package, const std::uint64_t source_image_bytes,
+    const PreparedContentDigestV1 &source_image_sha256,
+    const std::uint64_t boot_executable_bytes,
+    const PreparedContentDigestV1 &boot_executable_sha256) {
+  const auto *const resource =
+      find_unique_resource(package, kNativeGameStartupIntroResourceIdV1);
+  if (package.level_id != kPreparedGameSharedPackageIdV2 ||
+      package.resources.size() != 58U ||
+      !exact_upsert_resource_contract(resource, kStartupMediaType, 1U) ||
+      resource->provenance.size() != 4U) {
+    return false;
+  }
+  bool found_image = false;
+  bool found_boot = false;
+  bool found_movie = false;
+  bool found_compiler = false;
+  for (const auto &provenance : resource->provenance) {
+    found_image |= exact_provenance(
+        provenance, LevelPackageProvenanceKindV1::iso_range, "rac1/disc-image",
+        source_image_bytes, source_image_sha256);
+    found_boot |= exact_provenance(
+        provenance, LevelPackageProvenanceKindV1::prepared_resource,
+        "rac1/boot-executable", boot_executable_bytes, boot_executable_sha256);
+    found_compiler |= exact_provenance(
+        provenance, LevelPackageProvenanceKindV1::generated,
+        kNativeGameStartupMediaCompilePassV1, 0U, PreparedContentDigestV1{});
+    found_movie |=
+        provenance.kind == LevelPackageProvenanceKindV1::iso_range &&
+        provenance.source_locator == kStartupMovieSource &&
+        provenance.source_offset >= UINT64_C(1506) * kDiscTocSectorSize &&
+        provenance.source_offset % kDiscTocSectorSize == 0U &&
+        provenance.source_offset <= source_image_bytes &&
+        provenance.source_bytes > 0U &&
+        provenance.source_bytes <= kMaximumStartupMovieBytes &&
+        provenance.source_bytes <= source_image_bytes - provenance.source_offset &&
+        !is_zero_prepared_digest_v1(provenance.source_sha256);
+  }
+  if (!found_image || !found_boot || !found_movie || !found_compiler ||
+      !exact_native_frontend_profile(package,source_image_bytes,source_image_sha256,
+          boot_executable_bytes,boot_executable_sha256)||
+      !exact_native_menu_flow_profile_v1(package,source_image_bytes,source_image_sha256,
+          boot_executable_bytes,boot_executable_sha256)) {
+    return false;
+  }
+  const auto* bitmap=find_unique_resource(package,"startup/post-intro");
+  if(!exact_upsert_resource_contract(bitmap,"openrc.image-presentation",1U)||bitmap->provenance.size()!=4U)
+    return false;
+  bool bitmap_image=false,bitmap_boot=false,bitmap_source=false,bitmap_pass=false;
+  for(const auto& p:bitmap->provenance) {
+    bitmap_image|=exact_provenance(p,LevelPackageProvenanceKindV1::iso_range,"rac1/disc-image",source_image_bytes,source_image_sha256);
+    bitmap_boot|=exact_provenance(p,LevelPackageProvenanceKindV1::prepared_resource,"rac1/boot-executable",boot_executable_bytes,boot_executable_sha256);
+    bitmap_pass|=exact_provenance(p,LevelPackageProvenanceKindV1::generated,kStartupImagePass,0U,{});
+    bitmap_source|=p.kind==LevelPackageProvenanceKindV1::iso_range&&p.source_locator=="rac1/global-toc/12c0"&&
+        p.source_offset>=UINT64_C(1506)*kDiscTocSectorSize&&p.source_offset%kDiscTocSectorSize==0&&
+        p.source_offset<=source_image_bytes&&p.source_bytes>0&&p.source_bytes<=kMaximumDecodedWadBytes&&
+        p.source_bytes%kDiscTocSectorSize==0&&p.source_bytes<=source_image_bytes-p.source_offset&&!is_zero_prepared_digest_v1(p.source_sha256);
+  }
+  if(!bitmap_image||!bitmap_boot||!bitmap_source||!bitmap_pass) return false;
+  try {
+    const auto image=decode_image_presentation_v1(bitmap->payload);
+    if(image.width!=512U||image.height!=448U||image.display_aspect_numerator!=1U||image.display_aspect_denominator!=1U||
+        image.updates_per_second!=50U||image.transfer_lead_updates!=1U||image.transfer_tail_updates!=1U||
+        image.color_transfers.size()!=12U||image.initialization_clock_hz!=15625U||image.initialization_clock_modulus!=65536U||
+        image.initialization_credit_divisor!=265U||image.minimum_initialization_updates!=150U) return false;
+    for(std::uint32_t step=0;step<12U;++step) {
+      const auto remaining=12U-step;
+      const auto factor=(remaining-1U)*128U/remaining;
+      for(std::uint32_t c=0;c<256;++c)
+        if(image.color_transfers[step][c]!=static_cast<std::byte>(c*factor/128U)) return false;
+    }
+    const auto clip = decode_media_clip_v1(resource->payload);
+    // Original PAL entry chooses TOC+1800. Its MPEG picture is 512x416
+    // at 25 Hz; 1fac30/1fad10 and 1fb040..d0 stretch it to the logical
+    // 512x512 movie raster. This records source raster geometry, without
+    // claiming a measurement of the analogue display or physical overscan.
+    return clip.width == 512U && clip.height == 416U &&
+           clip.frame_rate_numerator == 25U &&
+           clip.frame_rate_denominator == 1U &&
+           clip.display_aspect_numerator == 1U &&
+           clip.display_aspect_denominator == 1U &&
+           clip.audio_sample_rate == 44100U && clip.audio_channels == 2U &&
+           !clip.audio.empty();
+  } catch (const MediaClipError &) {
+    return false;
+  } catch (const ImagePresentationError &) {
+    return false;
+  }
+}
+
+[[nodiscard]] std::vector<std::byte> compile_native_startup_media_package(
+    const NativeGamePreparationRequestV1 &request,
+    const std::uint64_t source_image_bytes,
+    const PreparedContentDigestV1 &source_image_sha256,
+    const std::uint64_t boot_executable_bytes,
+    const PreparedContentDigestV1 &boot_executable_sha256,
+    const LevelPackageV1Limits package_limits) {
+  const auto catalog = read_rac_startup_catalog_v1(
+      request.disc_image,
+      RacStartupLimitsV1{kMaximumStartupMovieBytes, 2U * kMaximumStartupMovieBytes});
+  if (catalog.image_bytes != source_image_bytes || catalog.initial_selector != 1U) {
+    fail("The supported PAL startup entry does not select the expected source movie");
+  }
+  const auto &movie = select_rac_startup_movie_v1(catalog, catalog.initial_selector);
+  const auto source = read_rac_startup_movie_v1(
+      request.disc_image, movie, kMaximumStartupMovieBytes);
+  const auto clip = compile_rac_pss_v1(source, 1U, 1U);
+  LevelPackageResourceV1 resource;
+  resource.resource_id = kNativeGameStartupIntroResourceIdV1;
+  resource.type_id = kStartupMediaType;
+  resource.schema_version = 1U;
+  resource.flags = kLevelPackageResourceOverlayReplaceableV1;
+  resource.provenance = {
+      {LevelPackageProvenanceKindV1::iso_range, "rac1/disc-image", 0U,
+       source_image_bytes, source_image_sha256},
+      {LevelPackageProvenanceKindV1::prepared_resource, "rac1/boot-executable",
+       0U, boot_executable_bytes, boot_executable_sha256},
+      {LevelPackageProvenanceKindV1::iso_range, std::string(kStartupMovieSource),
+       movie.source_byte_offset, static_cast<std::uint64_t>(source.size()),
+       prepared_content_sha256_v1(source)},
+      {LevelPackageProvenanceKindV1::generated,
+       std::string(kNativeGameStartupMediaCompilePassV1), 0U, 0U, {}}};
+  resource.payload = encode_media_clip_v1(clip);
+  resource.payload_sha256 = prepared_content_sha256_v1(resource.payload);
+  LevelPackageV1 package;
+  package.level_id = kPreparedGameSharedPackageIdV2;
+  package.content_api_version = kOpenRcContentApiVersionV1;
+  package.build_id = kNativeGameBuildIdV1;
+  package.resources.push_back(std::move(resource));
+  const auto bitmap_source=read_rac_startup_wad_v1(request.disc_image,0x12c0U,
+      kMaximumDecodedWadBytes,kMaximumDecodedWadBytes);
+  const auto bitmap=compile_rac_startup_image_v1(bitmap_source.decoded_bytes,catalog.initial_selector);
+  LevelPackageResourceV1 image;
+  image.resource_id="startup/post-intro";image.type_id="openrc.image-presentation";image.schema_version=1;
+  image.flags=kLevelPackageResourceOverlayReplaceableV1;
+  image.provenance={
+      {LevelPackageProvenanceKindV1::iso_range,"rac1/disc-image",0U,source_image_bytes,source_image_sha256},
+      {LevelPackageProvenanceKindV1::prepared_resource,"rac1/boot-executable",0U,boot_executable_bytes,boot_executable_sha256},
+      {LevelPackageProvenanceKindV1::iso_range,"rac1/global-toc/12c0",bitmap_source.source_byte_offset,
+        static_cast<std::uint64_t>(bitmap_source.source_bytes.size()),prepared_content_sha256_v1(bitmap_source.source_bytes)},
+      {LevelPackageProvenanceKindV1::generated,std::string(kStartupImagePass),0U,0U,{}}};
+  image.payload=encode_image_presentation_v1(bitmap);image.payload_sha256=prepared_content_sha256_v1(image.payload);
+  package.resources.push_back(std::move(image));
+  const auto frontend_source=read_rac_startup_wad_v1(request.disc_image,0x14e8U,
+      kMaximumDecodedWadBytes,kMaximumDecodedWadBytes);
+  const auto frontend_limits=make_frontend_scene_limits();
+  const auto frontend=compile_rac_frontend_scene_v1(frontend_source.decoded_bytes,50U,frontend_limits);
+  const auto first=sample_rac_frontend_background_tick_v1(frontend.source_background.decoded_chunks.front(),0U,
+      frontend_limits.animation.scene);
+  const auto camera=execute_rac_frontend_camera_v1(
+      std::bit_cast<std::array<std::uint32_t,3U>>(first.camera.position),
+      std::bit_cast<std::array<std::uint32_t,3U>>(first.camera.rotation_xyz_radians));
+  const auto timeline=compile_rac_frontend_timeline_v1(frontend,camera.camera,camera.display_width,camera.display_height,
+      {make_actor_io_limits(),make_actor_animation_io_limits(),frontend_limits.animation.scene,{}});
+  const std::vector<LevelPackageProvenanceV1> frontend_provenance{
+      {LevelPackageProvenanceKindV1::iso_range,"rac1/disc-image",0U,source_image_bytes,source_image_sha256},
+      {LevelPackageProvenanceKindV1::prepared_resource,"rac1/boot-executable",0U,boot_executable_bytes,boot_executable_sha256},
+      {LevelPackageProvenanceKindV1::iso_range,"rac1/global-toc/14e8",frontend_source.source_byte_offset,
+        frontend_source.source_bytes.size(),prepared_content_sha256_v1(frontend_source.source_bytes)},
+      {LevelPackageProvenanceKindV1::generated,std::string(kFrontendScenePass),0U,0U,{}}};
+  const auto append_frontend=[&](std::string id,std::string type,std::vector<std::byte> payload) {
+    LevelPackageResourceV1 resource;
+    resource.resource_id=std::move(id);resource.type_id=std::move(type);resource.schema_version=1U;
+    resource.flags=kLevelPackageResourceOverlayReplaceableV1;resource.provenance=frontend_provenance;
+    resource.payload=std::move(payload);resource.payload_sha256=prepared_content_sha256_v1(resource.payload);
+    package.resources.push_back(std::move(resource));
+  };
+  append_frontend("frontend/background/actors","openrc.actor-library",
+      encode_actor_library_v1(frontend.actor_library,make_actor_io_limits()));
+  append_frontend("frontend/background/animation","openrc.actor-animation-bank",
+      encode_actor_animation_bank_v1(frontend.actor_animation,make_actor_animation_io_limits()));
+  append_frontend("frontend/background/timeline","openrc.scene-timeline",encode_scene_timeline_v1(timeline));
+  for(const auto id:{"frontend/background/actors","frontend/background/animation"}) {
+    const auto* resource=find_unique_resource(package,id);
+    package.resources.back().provenance.push_back({LevelPackageProvenanceKindV1::prepared_resource,id,0U,
+        resource->payload.size(),resource->payload_sha256});
+  }
+  constexpr auto frontend_bytes=kMaximumDecodedWadBytes;
+  const auto title_assets=compile_rac_frontend_title_assets_v1(frontend_source.decoded_bytes,0U,
+      {frontend_bytes,1024U,4096U,4096U,16000000U,16000000U,frontend_bytes});
+  const auto title=compile_rac_frontend_title_overlay_v1(title_assets,camera.render_width,camera.render_height,50U,0x3f555555U);
+  append_frontend("frontend/title","openrc.screen-overlay",encode_screen_overlay_v1(title));
+  if(boot_executable_bytes==0U||boot_executable_bytes>kMaximumElfBytes)
+    fail("Frontend environment boot input exceeds its bounded envelope");
+  std::ifstream boot_file(request.prepared_boot_executable,std::ios::binary);
+  std::vector<std::byte> boot_bytes(static_cast<std::size_t>(boot_executable_bytes));
+  boot_file.read(reinterpret_cast<char*>(boot_bytes.data()),static_cast<std::streamsize>(boot_bytes.size()));
+  if(!boot_file||prepared_content_sha256_v1(boot_bytes)!=boot_executable_sha256)
+    fail("Frontend environment boot input changed while preparing");
+  const auto environment_assets=decode_rac_frontend_environment_assets_v1(frontend_source.decoded_bytes);
+  const auto environment_limits=game::make_runtime_level_content_limits_v1().render_scene;
+  auto environment=compile_rac_frontend_sky_shells_v1(environment_assets.sky_source,environment_limits.scene).render_scene;
+  auto terrain=compile_rac_frontend_terrain_v1(environment_assets,boot_bytes,environment_limits.scene).render_scene;
+  const auto texture_base=static_cast<std::uint32_t>(environment.textures.size());
+  const auto material_base=static_cast<std::uint32_t>(environment.materials.size());
+  const auto mesh_base=static_cast<std::uint32_t>(environment.meshes.size());
+  const auto instance_base=static_cast<std::uint32_t>(environment.instances.size());
+  for(auto& t:terrain.textures) {t.id+=texture_base;environment.textures.push_back(std::move(t));}
+  for(auto& m:terrain.materials) {m.id+=material_base;if(m.base_color_texture_id)*m.base_color_texture_id+=texture_base;environment.materials.push_back(std::move(m));}
+  for(auto& m:terrain.meshes) {m.id+=mesh_base;for(auto& d:m.draw_ranges)d.material_id+=material_base;environment.meshes.push_back(std::move(m));}
+  for(auto& i:terrain.instances) {i.id+=instance_base;i.mesh_id+=mesh_base;environment.instances.push_back(i);}
+  append_frontend("frontend/background/geometry","openrc.render-scene",encode_render_scene_v1(environment,environment_limits));
+  auto menu=compile_rac_frontend_menu_resources_v1(request.disc_image,boot_bytes,frontend_source.decoded_bytes);
+  auto new_game=compile_rac_new_game_resources_v1(request.disc_image,boot_bytes,0U,1U,50U);
+  auto session=compile_rac_frontend_state_v1(request.disc_image,boot_bytes,{},new_game.sequence_bindings);
+  auto audio=compile_rac_frontend_sound_resources_v1(request.disc_image,boot_bytes);
+  auto ambient=compile_rac_frontend_ambient_resources_v1(request.disc_image,boot_bytes);
+  for(auto& resource:ambient)audio.push_back(std::move(resource));
+  const auto append_bound=[&](LevelPackageResourceV1 resource) {
+    resource.flags=kLevelPackageResourceOverlayReplaceableV1;
+    resource.provenance.insert(resource.provenance.begin(),frontend_provenance.begin(),frontend_provenance.begin()+2);
+    package.resources.push_back(std::move(resource));
+  };
+  for(auto& resource:menu.resources) {
+    resource.provenance.push_back(frontend_provenance[2]);
+    append_bound(std::move(resource));
+  }
+  for(auto& resource:new_game.resources) append_bound(std::move(resource));
+  for(auto& resource:audio) {
+    // This helper already binds the admitted boot executable. Add the full
+    // image identity once, retaining its precise bank/module source extents.
+    resource.flags=kLevelPackageResourceOverlayReplaceableV1;
+    resource.provenance.insert(resource.provenance.begin(),frontend_provenance.front());
+    package.resources.push_back(std::move(resource));
+  }
+  for(auto& resource:session.resources) {
+    resource.provenance.push_back({LevelPackageProvenanceKindV1::generated,"openrc.rac-frontend-state-compile.v1",0U,0U,{}});
+    append_bound(std::move(resource));
+  }
+  append_bound(compile_rac_initial_level_installation_v1(request.disc_image,boot_bytes,
+      session.initial.schema,session.state_limits));
+  const auto reference=[&](std::string_view owner,std::string_view target) {
+    const auto* source=find_unique_resource(package,target);
+    if(!source)fail("Frontend prepared dependency is absent");
+    const LevelPackageProvenanceV1 p{LevelPackageProvenanceKindV1::prepared_resource,
+        std::string(target),0U,source->payload.size(),source->payload_sha256};
+    const auto found=std::find_if(package.resources.begin(),package.resources.end(),
+        [&](const auto& resource){return resource.resource_id==owner;});
+    if(found==package.resources.end())fail("Frontend prepared dependency owner is absent");
+    found->provenance.push_back(p);
+  };
+  reference("frontend/menu/timeline","frontend/menu/actors");
+  reference("frontend/menu/timeline","frontend/menu/animation");
+  reference("frontend/audio/ambient-bank","frontend/audio/ambient-program");
+  for(unsigned i=0;i<13;++i)
+    reference("frontend/audio/ambient-bank","frontend/audio/ambient-stream-"+std::to_string(i));
+  for(unsigned i=0;i<4;++i)
+    reference("frontend/audio/ambient-bank","frontend/audio/ambient-gain-"+std::to_string(i));
+  reference("frontend/audio/ambient-cues","frontend/audio/ambient-bank");
+  reference("frontend/audio/ambient-cues","frontend/background/timeline");
+  reference("frontend/no-save-input","frontend/session-state");
+  reference("frontend/new-game-sequence","frontend/session-state");
+  reference("new-game/level-installation","frontend/session-state");
+  for(const auto& resource:session.new_game_continuation.resources)
+    reference("frontend/new-game-sequence",resource.resource_id);
+  if (!exact_native_startup_media_profile(
+          package, source_image_bytes, source_image_sha256,
+          boot_executable_bytes, boot_executable_sha256)) {
+    fail("The compiled original startup/frontend does not satisfy the native profile");
+  }
+  auto bytes = encode_level_package_v1(package, package_limits);
+  if (bytes.size() > kNativeGameSharedPackageMaxBytesV1) {
+    fail("The shared startup package exceeds the native byte budget");
+  }
+  return bytes;
+}
+
 [[nodiscard]] std::optional<PublishedPreparedGameV2V1>
 load_matching_publication(const NativeGamePreparationRequestV1 &request,
                           const std::uint64_t source_image_bytes,
@@ -1724,6 +2096,33 @@ load_matching_publication(const NativeGamePreparationRequestV1 &request,
 
   std::uint64_t total_package_bytes = 0U;
   try {
+    if (manifest.shared_package) {
+      const auto &shared = *manifest.shared_package;
+      const auto package = load_prepared_game_shared_package_v1(prepared, limits);
+      matches = matches && shared.package_path == kNativeGameSharedPackagePathV1 &&
+                shared.package_bytes <= kNativeGameSharedPackageMaxBytesV1 &&
+                exact_native_startup_media_profile(
+                    package, source_image_bytes, source_image_sha256,
+                    boot_executable_bytes, boot_executable_sha256);
+      if (matches) {
+        // Offline profile checks cannot prove that a claimed ISO range is
+        // the selected movie. Prepare has the source: reproduce this small
+        // shared package and compare its complete canonical bytes by digest.
+        // This binds TOC selection, offset, size, source hash and media payload,
+        // including when someone recomputed all container hashes after editing.
+        const auto expected = compile_native_startup_media_package(
+            request, source_image_bytes, source_image_sha256,
+            boot_executable_bytes, boot_executable_sha256, limits.level_package);
+        if (expected.size() != shared.package_bytes ||
+            prepared_content_sha256_v1(expected) != shared.package_sha256) {
+          fail("The existing startup media does not match the selected source "
+               "movie and will not be reused or overwritten");
+        }
+      }
+      total_package_bytes = shared.package_bytes;
+    } else {
+      matches = false;
+    }
     for (std::size_t index = 0U; index < manifest.levels.size(); ++index) {
       const auto &reference = manifest.levels[index];
       report_progress(
@@ -1836,11 +2235,16 @@ void validate_current_native_game_publication_v1(
           manifest.provenance.source_image_sha256) ||
       manifest.provenance.prepared_game_v1_manifest_sha256.has_value() ||
       !manifest.overlays.empty() ||
+      !manifest.shared_package.has_value() ||
       manifest.levels.size() != kDiscTocLevelCount) {
     fail("The prepared game does not match the current native OpenRC profile");
   }
 
-  std::uint64_t total_package_bytes = 0U;
+  if (manifest.shared_package->package_path != kNativeGameSharedPackagePathV1 ||
+      manifest.shared_package->package_bytes > kNativeGameSharedPackageMaxBytesV1) {
+    fail("The prepared game does not contain the canonical bounded shared package");
+  }
+  std::uint64_t total_package_bytes = manifest.shared_package->package_bytes;
   for (std::size_t index = 0U; index < manifest.levels.size(); ++index) {
     const auto &reference = manifest.levels[index];
     const auto level_id = static_cast<std::uint32_t>(index);
@@ -1857,6 +2261,12 @@ void validate_current_native_game_publication_v1(
   try {
     auto package = load_prepared_game_level_package_v1(prepared, 0U, limits);
     const auto boot = native_boot_artifact_identity(package);
+    const auto shared = load_prepared_game_shared_package_v1(prepared, limits);
+    if (!exact_native_startup_media_profile(
+            shared, manifest.provenance.source_image_bytes,
+            manifest.provenance.source_image_sha256, boot.bytes, boot.sha256)) {
+      fail("The prepared shared package does not contain the original startup media profile");
+    }
     for (std::uint32_t level_id = 0U; level_id < kDiscTocLevelCount;
          ++level_id) {
       if (level_id != 0U) {
@@ -2005,10 +2415,25 @@ prepare_native_game_v1(const NativeGamePreparationRequestV1 &request,
   manifest.provenance.source_image_bytes = source_image_bytes;
   manifest.provenance.source_image_sha256 = source_image_sha256;
 
+  report_progress(control, NativeGamePreparationPhaseV1::compiling_startup_media,
+                  kNativeGamePreparationNoLevelV1, 0U);
+  std::vector<std::byte> shared_package_bytes;
+  try {
+    shared_package_bytes = compile_native_startup_media_package(
+        request, source_image_bytes, source_image_sha256,
+        boot_executable_bytes, boot_executable_sha256, package_limits);
+  } catch (const std::exception &error) {
+    fail("Cannot compile the original startup media: " + std::string(error.what()));
+  }
+  manifest.shared_package = PreparedGameSharedReferenceV2{
+      std::string(kNativeGameSharedPackagePathV1),
+      static_cast<std::uint64_t>(shared_package_bytes.size()),
+      prepared_content_sha256_v1(shared_package_bytes)};
+
   std::vector<std::vector<std::byte>> package_storage;
   package_storage.reserve(kDiscTocLevelCount);
   manifest.levels.reserve(kDiscTocLevelCount);
-  std::uint64_t total_package_bytes = 0U;
+  std::uint64_t total_package_bytes = manifest.shared_package->package_bytes;
 
   for (std::uint32_t level_id = 0U; level_id < kDiscTocLevelCount; ++level_id) {
     std::string stage = "loading source assets";
@@ -2269,7 +2694,8 @@ prepare_native_game_v1(const NativeGamePreparationRequestV1 &request,
   PublishedPreparedGameV2V1 publication;
   try {
     publication = publish_prepared_game_v2_v1(
-        request.destination_root, manifest, package_inputs, prepared_limits,
+        request.destination_root, manifest, package_inputs, shared_package_bytes,
+        prepared_limits,
         PreparedGameV2PublishControlV1{publish_cancellation_requested,
                                        &publish_context});
   } catch (const PreparedGameV2PublishError &error) {

@@ -237,6 +237,23 @@ PlacementAdmissionResultV1 GameSessionV1::apply_placement_admission(
   }
 }
 
+void GameSessionV1::apply_state_installation(
+    const StateInstallationV1 &installation,
+    const std::uint32_t expected_level,
+    const std::uint64_t expected_revision,
+    const StateInstallationLimitsV1 limits) {
+  if (!persistent_state_) {
+    throw GameWorldError("State installation requires prepared session state");
+  }
+  try {
+    execute_state_installation_v1(installation, expected_level,
+                                   *persistent_state_, expected_revision, limits);
+  } catch (const StateInstallationError &error) {
+    throw GameWorldError("Cannot apply state installation: " +
+                         std::string(error.what()));
+  }
+}
+
 std::uint64_t GameSessionV1::next_tick_index() const noexcept {
   return next_tick_index_;
 }

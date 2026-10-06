@@ -135,6 +135,10 @@ build_render_scene_d3d_data_v1(const RenderSceneV1& scene,
             material.alpha_mode == RenderSceneAlphaModeV1::mask
                 ? static_cast<float>(material.alpha_cutoff_rgba8) / 255.0F
                 : -1.0F,
+            material.color_math,material.blend_mode,material.interpolation,
+            material.depth_test,material.depth_write,
+            material.texture_modulation_denominator,material.blend_denominator,
+            material.alpha_failure,
         });
     }
     if (scene.instances.empty()) {
@@ -178,6 +182,7 @@ build_render_scene_d3d_data_v1(const RenderSceneV1& scene,
     }
 
     result.vertices.reserve(static_cast<std::size_t>(vertex_count));
+    result.vertex_projection_flags.reserve(static_cast<std::size_t>(vertex_count));
     result.triangle_indices.reserve(static_cast<std::size_t>(index_count));
     result.draws.reserve(static_cast<std::size_t>(draw_count));
 
@@ -199,6 +204,8 @@ build_render_scene_d3d_data_v1(const RenderSceneV1& scene,
                 vertex.rgba8,
             };
             result.vertices.push_back(flattened);
+            result.vertex_projection_flags.push_back(static_cast<std::uint8_t>(
+                (instance.camera_relative?1U:0U)|(instance.project_to_far_plane?2U:0U)));
 
             if (!has_bounds) {
                 result.minimum_x = flattened.x;

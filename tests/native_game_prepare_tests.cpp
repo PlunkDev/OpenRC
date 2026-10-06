@@ -12,12 +12,26 @@
 #include "openrc/level_entity_scene_compile.hpp"
 #include "openrc/level_gameplay_scene_compile.hpp"
 #include "openrc/level_render_scene_compile.hpp"
+#include "openrc/media_clip.hpp"
+#include "openrc/image_presentation.hpp"
+#include "openrc/scene_timeline.hpp"
+#include "openrc/screen_overlay.hpp"
 #include "openrc/native_game_prepare.hpp"
+#include "openrc/native_frontend_profile.hpp"
+#include "openrc/rac_frontend_menu_resources.hpp"
+#include "openrc/rac_frontend_state.hpp"
+#include "openrc/rac_startup.hpp"
+#include "openrc/audio_clip.hpp"
+#include "openrc/audio_program_cues.hpp"
+#include "openrc/audio_voice_bank_player.hpp"
+#include "openrc/state_installation.hpp"
+#include "openrc/loading_presentation.hpp"
 #include "openrc/prepared_game_v2_fs.hpp"
 #include "openrc/rac_level_foundation_compile.hpp"
 #include "openrc/render_scene_io.hpp"
 #include "openrc/runtime_level_content.hpp"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -27,6 +41,7 @@
 #include <functional>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <span>
 #include <sstream>
 #include <stdexcept>
@@ -87,6 +102,34 @@ enum class ProfileMutation {
   animation_stale_rig_digest,
   animation_wrong_joint_count,
   animation_missing_source_clip,
+};
+
+enum class SharedMutation {
+  none,
+  missing_reference,
+  missing_file,
+  wrong_path,
+  missing_intro,
+  wrong_type,
+  bad_media,
+  wrong_aspect,
+  wrong_cadence,
+  missing_audio,
+  stale_image,
+  stale_boot,
+  wrong_movie,
+  out_of_image,
+  stale_compiler,
+  missing_bitmap,
+  bitmap_wrong_timing,
+  bitmap_wrong_transfer,
+  bitmap_wrong_source,
+  missing_frontend,
+  frontend_wrong_source,
+  frontend_wrong_timing,
+  frontend_stale_actors,
+  missing_geometry,
+  bad_geometry,
 };
 
 [[nodiscard]] std::vector<std::byte> bytes_of(const std::string_view value) {
@@ -653,12 +696,159 @@ make_level_package(const std::uint32_t level_id,
   return result;
 }
 
+#include "native_frontend_profile_fixture.hpp"
+
+[[nodiscard]] openrc::LevelPackageV1 make_shared_package(
+    const SharedMutation mutation) {
+  openrc::MediaClipV1 clip;
+  clip.width = 512U;
+  clip.height = 416U;
+  clip.frame_rate_numerator = mutation == SharedMutation::wrong_cadence ? 30U : 25U;
+  clip.frame_rate_denominator = 1U;
+  clip.display_aspect_numerator = mutation == SharedMutation::wrong_aspect ? 4U : 1U;
+  clip.display_aspect_denominator = mutation == SharedMutation::wrong_aspect ? 3U : 1U;
+  clip.video = {{0, 0, {std::byte{0}, std::byte{0}, std::byte{1}, std::byte{0xb3},
+                        std::byte{0x20}, std::byte{1}, std::byte{0xa0}, std::byte{0x13}}}};
+  if (mutation != SharedMutation::missing_audio) {
+    clip.audio_sample_rate = 44100U;
+    clip.audio_channels = 2U;
+    clip.audio_start_time = 0;
+    clip.audio = {0, 0};
+  }
+  openrc::LevelPackageResourceV1 resource;
+  resource.resource_id = mutation == SharedMutation::missing_intro ?
+      "startup/unrelated" : openrc::kNativeGameStartupIntroResourceIdV1;
+  resource.type_id = mutation == SharedMutation::wrong_type ? "openrc.unknown" :
+                                                            "openrc.media-clip";
+  resource.schema_version = 1U;
+  resource.flags = openrc::kLevelPackageResourceOverlayReplaceableV1;
+  resource.payload = openrc::encode_media_clip_v1(clip);
+  if (mutation == SharedMutation::bad_media) {
+    resource.payload.front() ^= std::byte{1};
+  }
+  resource.provenance = {
+      source_provenance(openrc::LevelPackageProvenanceKindV1::iso_range,
+                        "rac1/disc-image", kSourceImageBytes,
+                        mutation == SharedMutation::stale_image ? digest_of("wrong-image") :
+                                                                 kSourceImageSha256),
+      source_provenance(openrc::LevelPackageProvenanceKindV1::prepared_resource,
+                        "rac1/boot-executable", kBootExecutableBytes,
+                        mutation == SharedMutation::stale_boot ? digest_of("wrong-boot") :
+                                                                kBootExecutableSha256),
+      {openrc::LevelPackageProvenanceKindV1::iso_range,
+       mutation == SharedMutation::wrong_movie ? "rac1/global-toc/17f8" :
+                                                "rac1/global-toc/1800",
+       mutation == SharedMutation::out_of_image ? kSourceImageBytes :
+                                                 UINT64_C(44148) * 2048U,
+       9879556U, digest_of("synthetic-startup-movie-range")},
+      generated_provenance(mutation == SharedMutation::stale_compiler ?
+                              "openrc.previous-startup-pass" :
+                              openrc::kNativeGameStartupMediaCompilePassV1)};
+  openrc::LevelPackageV1 package;
+  package.level_id = openrc::kPreparedGameSharedPackageIdV2;
+  package.content_api_version = openrc::kOpenRcContentApiVersionV1;
+  package.build_id = openrc::kNativeGameBuildIdV1;
+  package.resources.push_back(std::move(resource));
+  if(mutation!=SharedMutation::missing_bitmap) {
+    openrc::ImagePresentationV1 image;
+    image.width=512;image.height=448;image.display_aspect_numerator=1;image.display_aspect_denominator=1;
+    image.updates_per_second=50;image.transfer_lead_updates=1;image.transfer_tail_updates=1;
+    image.initialization_clock_hz=15625;image.initialization_clock_modulus=65536;image.initialization_credit_divisor=265;
+    image.minimum_initialization_updates=mutation==SharedMutation::bitmap_wrong_timing?180:150;
+    image.rgba.resize(512U*448U*4U,std::byte{255});image.color_transfers.resize(12);
+    for(unsigned i=0;i<12;++i) for(unsigned c=0;c<256;++c)
+      image.color_transfers[i][c]=static_cast<std::byte>(c*((11U-i)*128U/(12U-i))/128U);
+    if(mutation==SharedMutation::bitmap_wrong_transfer) image.color_transfers[0][200]^=std::byte{1};
+    package.resources.push_back(make_resource("startup/post-intro","openrc.image-presentation",1,
+        openrc::encode_image_presentation_v1(image),{
+          source_provenance(openrc::LevelPackageProvenanceKindV1::iso_range,"rac1/disc-image",kSourceImageBytes,kSourceImageSha256),
+          source_provenance(openrc::LevelPackageProvenanceKindV1::prepared_resource,"rac1/boot-executable",kBootExecutableBytes,kBootExecutableSha256),
+          {openrc::LevelPackageProvenanceKindV1::iso_range,
+           mutation==SharedMutation::bitmap_wrong_source?"rac1/global-toc/14e8":"rac1/global-toc/12c0",
+           UINT64_C(14365)*2048U,162U*2048U,digest_of("synthetic-boot-bitmap-wad")},
+          generated_provenance("openrc.rac-startup-image-compile.v1")}));
+  }
+  if(mutation!=SharedMutation::missing_frontend) {
+    const auto prototype=make_actor_library(1U);
+    openrc::ActorLibraryV1 library;
+    for(std::uint32_t i=0;i<5U;++i) {
+      const auto key="frontend/background/actor/"+std::to_string(i);
+      auto rig=prototype.rigs.front();rig.id=i;rig.semantic_key=key+"/rig";
+      auto model=prototype.models.front();model.id=i;model.semantic_key=key+"/model";model.rig_key=rig.semantic_key;
+      library.rigs.push_back(std::move(rig));library.models.push_back(std::move(model));
+    }
+    auto actor_bytes=openrc::encode_actor_library_v1(library,kRuntimeLimits.actor_library);
+    library=openrc::decode_actor_library_v1(actor_bytes,kRuntimeLimits.actor_library);
+    openrc::ActorAnimationBankV1 bank;
+    for(std::uint32_t i=0;i<75U;++i) {
+      openrc::ActorAnimationClipV1 clip;clip.id=i;
+      clip.semantic_key="frontend/background/chunk/"+std::to_string(i/5U)+"/actor/"+std::to_string(i%5U);
+      clip.rig_key=library.rigs[i%5U].semantic_key;clip.rig_content_sha256=library.rigs[i%5U].content_sha256;
+      clip.source_updates_per_second=50;clip.frames.resize(i<70U?49U:29U);
+      for(auto& frame:clip.frames) {frame.phase_rate=0.5F;frame.joint_poses.resize(1);}
+      bank.clips.push_back(std::move(clip));
+    }
+    auto animation_bytes=openrc::encode_actor_animation_bank_v1(bank,kRuntimeLimits.actor_animation);
+    openrc::SceneTimelineV1 timeline;
+    timeline.actor_library_sha256=openrc::prepared_content_sha256_v1(actor_bytes);
+    timeline.actor_animation_sha256=openrc::prepared_content_sha256_v1(animation_bytes);
+    if(mutation==SharedMutation::frontend_stale_actors) timeline.actor_library_sha256[0]^=std::byte{1};
+    timeline.updates_per_second=mutation==SharedMutation::frontend_wrong_timing?60U:50U;
+    timeline.display_aspect_numerator=512U;timeline.display_aspect_denominator=512U;timeline.loop=true;
+    for(std::uint32_t i=0;i<5U;++i) timeline.actors.push_back({i,i,{}});
+    timeline.samples.resize(1398U);
+    for(auto& sample:timeline.samples) {
+      sample.camera.tangent_half_horizontal=0.63F;sample.camera.tangent_half_vertical=0.48F;
+      sample.camera.near_plane=0.1F;sample.camera.far_plane=1000;
+      sample.actors.resize(5U);
+      for(std::uint32_t i=0;i<5U;++i) sample.actors[i].clip_index=i;
+    }
+    const std::vector<openrc::LevelPackageProvenanceV1> provenance{
+        source_provenance(openrc::LevelPackageProvenanceKindV1::iso_range,"rac1/disc-image",kSourceImageBytes,kSourceImageSha256),
+        source_provenance(openrc::LevelPackageProvenanceKindV1::prepared_resource,"rac1/boot-executable",kBootExecutableBytes,kBootExecutableSha256),
+        {openrc::LevelPackageProvenanceKindV1::iso_range,
+          mutation==SharedMutation::frontend_wrong_source?"rac1/global-toc/12c0":"rac1/global-toc/14e8",
+          UINT64_C(14602)*2048U,2101U*2048U,digest_of("synthetic-frontend-wad")},
+        generated_provenance("openrc.rac-frontend-scene-compile.v1")};
+    package.resources.push_back(make_resource("frontend/background/actors","openrc.actor-library",1,
+        std::move(actor_bytes),provenance));
+    const auto actor_provenance=prepared_resource_provenance(package.resources.back());
+    package.resources.push_back(make_resource("frontend/background/animation","openrc.actor-animation-bank",1,
+        std::move(animation_bytes),provenance));
+    const auto animation_provenance=prepared_resource_provenance(package.resources.back());
+    package.resources.push_back(make_resource("frontend/background/timeline","openrc.scene-timeline",1,
+        openrc::encode_scene_timeline_v1(timeline),provenance));
+    package.resources.back().provenance.push_back(actor_provenance);
+    package.resources.back().provenance.push_back(animation_provenance);
+    openrc::ScreenOverlayV1 overlay;
+    overlay.canvas_width=512U;overlay.canvas_height=448U;overlay.updates_per_second=50U;
+    overlay.coverage_denominator=128U;overlay.loop_begin=100U;
+    overlay.images.resize(192U);
+    for(auto& image:overlay.images) {image.width=1U;image.height=1U;image.rgb_coverage.resize(4U);}
+    overlay.frames.resize(160U);
+    package.resources.push_back(make_resource("frontend/title","openrc.screen-overlay",1,
+        openrc::encode_screen_overlay_v1(overlay),provenance));
+    package.resources.push_back(make_resource("frontend/background/geometry","openrc.render-scene",1,
+        openrc::encode_render_scene_v1(make_render_scene(ProfileMutation::none),kRuntimeLimits.render_scene),provenance));
+    if(mutation==SharedMutation::missing_geometry) package.resources.pop_back();
+    else if(mutation==SharedMutation::bad_geometry) {
+      package.resources.back().payload={std::byte{1}};
+      package.resources.back().payload_sha256=openrc::prepared_content_sha256_v1(package.resources.back().payload);
+    }
+  }
+  const auto &flow=frontend_flow_fixture();
+  package.resources.insert(package.resources.end(),flow.begin(),flow.end());
+  append_frontend_ambient_fixture(package);
+  return package;
+}
+
 class PublicationFixture final {
 public:
   explicit PublicationFixture(
       const ProfileMutation mutation,
       const std::string_view compiler_version =
-          openrc::kNativeGameCompilerVersionV1) {
+          openrc::kNativeGameCompilerVersionV1,
+      const SharedMutation shared_mutation = SharedMutation::none) {
     openrc::PreparedGameV2 manifest;
     manifest.content_api_version = openrc::kOpenRcContentApiVersionV1;
     manifest.provenance.game_id = std::string(openrc::kNativeGameIdV1);
@@ -687,6 +877,20 @@ public:
       });
     }
 
+    if (shared_mutation != SharedMutation::missing_reference) {
+      const auto bytes = openrc::encode_level_package_v1(
+          make_shared_package(shared_mutation), kPackageLimits.level_package);
+      const auto path = shared_mutation == SharedMutation::wrong_path ?
+          std::string("other.orlevel") :
+          std::string(openrc::kNativeGameSharedPackagePathV1);
+      if (shared_mutation != SharedMutation::missing_file) {
+        write_bytes(tree_.root / path, bytes);
+      }
+      manifest.shared_package = openrc::PreparedGameSharedReferenceV2{
+          path, static_cast<std::uint64_t>(bytes.size()),
+          openrc::prepared_content_sha256_v1(bytes)};
+    }
+
     const auto manifest_bytes =
         openrc::encode_prepared_game_v2(manifest, kPackageLimits.manifest);
     write_bytes(tree_.root / openrc::kPreparedGameV2ManifestFileName,
@@ -703,6 +907,103 @@ private:
   TemporaryPublicationTree tree_;
   openrc::PreparedGameV2RootV1 prepared_;
 };
+
+void test_menu_flow_resource_profile() {
+  using namespace openrc;
+  const auto original=make_shared_package(SharedMutation::none);
+  const auto accepted=[](const LevelPackageV1 &package) {
+    return exact_native_menu_flow_profile_v1(package,kSourceImageBytes,kSourceImageSha256,kBootExecutableBytes,kBootExecutableSha256);
+  };
+  if(original.resources.size()!=58||!accepted(original))throw std::runtime_error("Complete synthetic51-resource menu flow profile was rejected");
+  unsigned rejected=0;
+  const auto rejects=[&](LevelPackageV1 package) {
+    if(accepted(package))throw std::runtime_error("Native menu profile accepted an altered frontend resource");++rejected;
+  };
+  for(std::size_t i=7;i<original.resources.size();++i) {
+    auto copy=original;copy.resources.erase(copy.resources.begin()+i);rejects(std::move(copy));
+  }
+  const auto mutate=[&](const char *id,const std::function<void(LevelPackageResourceV1&)> &change,bool repair_hash=true) {
+    auto copy=original;auto found=std::find_if(copy.resources.begin(),copy.resources.end(),[&](const auto &r){return r.resource_id==id;});
+    if(found==copy.resources.end())throw std::runtime_error("Mutation target absent");change(*found);
+    if(repair_hash)found->payload_sha256=prepared_content_sha256_v1(found->payload);
+    // Repair dependent provenance to exercise payload/semantic checks too.
+    const auto link=prepared_resource_provenance(*found);
+    for(auto &r:copy.resources)for(auto &p:r.provenance)
+      if(p.kind==LevelPackageProvenanceKindV1::prepared_resource&&p.source_locator==found->resource_id)p=link;
+    rejects(std::move(copy));
+  };
+  mutate("frontend/menu/actors",[](auto &r){r.flags=0;});
+  mutate("frontend/menu/actors",[](auto &r){r.payload[0]^=std::byte{1};},false);
+  mutate("frontend/menu/animation",[](auto &r){r.provenance.pop_back();});
+  mutate("frontend/menu/timeline",[](auto &r){r.provenance.back().source_sha256[0]^=std::byte{1};});
+  mutate("frontend/dialog/backdrop",[](auto &r){r.provenance[0].source_sha256[0]^=std::byte{1};});
+  mutate("frontend/menu/timeline",[](auto &r){auto p=decode_scene_timeline_v1(r.payload);p.samples.pop_back();r.payload=encode_scene_timeline_v1(p);});
+  mutate("frontend/menu/timeline",[](auto &r){auto p=decode_scene_timeline_v1(r.payload);p.samples[0].actors[6].enabled=true;r.payload=encode_scene_timeline_v1(p);});
+  mutate("frontend/menu/lists",[](auto &r){auto p=decode_screen_overlay_v1(r.payload);p.frames[11]=p.frames[12];r.payload=encode_screen_overlay_v1(p);});
+  mutate("frontend/dialog/backdrop",[](auto &r){auto p=decode_screen_overlay_v1(r.payload);p.images[0].rgb_coverage[3]=std::byte{49};r.payload=encode_screen_overlay_v1(p);});
+  mutate("frontend/dialog/body/absent",[](auto &r){auto p=decode_screen_overlay_v1(r.payload);p.frames[25]=p.frames[0];r.payload=encode_screen_overlay_v1(p);});
+  mutate("frontend/dialog/prompts/new",[](auto &r){auto p=decode_screen_overlay_v1(r.payload);p.frames.pop_back();r.payload=encode_screen_overlay_v1(p);});
+  mutate("frontend/audio/variant-0",[](auto &r){auto p=decode_audio_clip_v1(r.payload);p.sample_rate=44100;r.payload=encode_audio_clip_v1(p);});
+  mutate("frontend/audio/variant-1",[](auto &r){auto p=decode_audio_clip_v1(r.payload);p.channels=1;r.payload=encode_audio_clip_v1(p);});
+  mutate("frontend/audio/variant-2",[](auto &r){r.provenance.pop_back();});
+  mutate("frontend/audio/variant-3",[](auto &r){for(auto &p:r.provenance)if(p.source_locator=="rac1/frontend-sound-bank")p.source_sha256[0]^=std::byte{1};});
+  mutate("frontend/audio/variant-4",[](auto &r){for(auto &p:r.provenance)if(p.source_locator=="rac1/iop-module-bundle")p.source_offset+=2048;});
+  mutate("frontend/audio/ambient-program",[](auto &r){auto p=decode_audio_program_bank_v1(r.payload);
+      p.ticks_per_second=239;r.payload=encode_audio_program_bank_v1(p);});
+  mutate("frontend/audio/ambient-program",[](auto &r){auto p=decode_audio_program_bank_v1(r.payload);
+      p.random.forward_tap=104;r.payload=encode_audio_program_bank_v1(p);});
+  mutate("frontend/audio/ambient-program",[](auto &r){auto p=decode_audio_program_bank_v1(r.payload);
+      auto marker=std::find_if(p.programs[0].nodes.begin(),p.programs[0].nodes.end(),[](const auto& n){
+        return std::holds_alternative<AudioProgramStopSectionV1>(n.action);});
+      p.programs[0].nodes[marker->next].delay_ticks=1;r.payload=encode_audio_program_bank_v1(p);});
+  mutate("frontend/audio/ambient-bank",[](auto &r){r.provenance.pop_back();});
+  mutate("frontend/audio/ambient-bank",[](auto &r){auto p=decode_audio_voice_bank_v1(r.payload);
+      p.program_resource_id="frontend/audio/variant-0";r.payload=encode_audio_voice_bank_v1(p);});
+  mutate("frontend/audio/ambient-bank",[](auto &r){auto p=decode_audio_voice_bank_v1(r.payload);
+      p.observation.zero_observations_before_completion=3;r.payload=encode_audio_voice_bank_v1(p);});
+  mutate("frontend/audio/ambient-bank",[](auto &r){auto p=decode_audio_voice_bank_v1(r.payload);
+      p.bindings[0].read_ahead.reset();r.payload=encode_audio_voice_bank_v1(p);});
+  mutate("frontend/audio/ambient-bank",[](auto &r){auto p=decode_audio_voice_bank_v1(r.payload);
+      p.phase_curves[0].increments[0]=20000;r.payload=encode_audio_voice_bank_v1(p);});
+  mutate("frontend/audio/ambient-stream-0",[](auto &r){auto p=decode_audio_stream_v1(r.payload);
+      p.output_sample_rate=44100;r.payload=encode_audio_stream_v1(p);});
+  mutate("frontend/audio/ambient-stream-3",[](auto &r){auto p=decode_audio_stream_v1(r.payload);
+      p.repeat_begin=p.repeat_end=0;r.payload=encode_audio_stream_v1(p);});
+  mutate("frontend/audio/ambient-gain-0",[](auto &r){for(auto &p:r.provenance)
+      if(p.source_locator=="rac1/frontend-sound-bank")p.source_sha256[0]^=std::byte{1};});
+  mutate("frontend/audio/ambient-gain-1",[](auto &r){auto p=decode_audio_gain_table_v1(r.payload);
+      p.gain_denominator=65536;r.payload=encode_audio_gain_table_v1(p);});
+  mutate("frontend/audio/ambient-cues",[](auto &r){auto p=decode_audio_program_cues_v1(r.payload);
+      ++p.cues[4].first_scene_sample;r.payload=encode_audio_program_cues_v1(p);});
+  mutate("frontend/audio/ambient-cues",[](auto &r){auto p=decode_audio_program_cues_v1(r.payload);
+      p.timeline_resource_id="frontend/menu/timeline";r.payload=encode_audio_program_cues_v1(p);});
+  mutate("frontend/audio/ambient-cues",[](auto &r){auto p=decode_audio_program_cues_v1(r.payload);
+      p.cues[0].program_key=9;r.payload=encode_audio_program_cues_v1(p);});
+  mutate("new-game/loading-1",[](auto &r){auto p=decode_loading_presentation_v1(r.payload);p.bands[0].y=178;r.payload=encode_loading_presentation_v1(p);});
+  mutate("new-game/loading-2",[](auto &r){auto p=decode_loading_presentation_v1(r.payload);p.library.frames.pop_back();r.payload=encode_loading_presentation_v1(p);});
+  mutate("new-game/movie-0",[](auto &r){auto p=decode_media_clip_v1(r.payload);p.audio_sample_rate=44100;r.payload=encode_media_clip_v1(p);});
+  mutate("new-game/movie-1",[](auto &r){for(auto &p:r.provenance)if(p.source_locator=="disc/new-game-movies")p.source_offset=30000ULL*2048;});
+  mutate("new-game/fade-5",[](auto &r){auto p=decode_frame_color_transfer_sequence_v1(r.payload);p.lead_updates=0;r.payload=encode_frame_color_transfer_sequence_v1(p);});
+  mutate("new-game/fade-2",[](auto &r){auto p=decode_frame_color_transfer_sequence_v1(r.payload);p.transfers[0][127]^=std::byte{1};r.payload=encode_frame_color_transfer_sequence_v1(p);});
+  mutate("new-game/fade-4",[](auto &r){auto p=decode_frame_color_transfer_sequence_v1(r.payload);p.tail_updates=0;r.payload=encode_frame_color_transfer_sequence_v1(p);});
+  mutate("frontend/no-save-input",[](auto &r){auto p=decode_frontend_no_save_plan_v1(r.payload);p.reset_writes.pop_back();r.payload=encode_frontend_no_save_plan_v1(p);});
+  mutate("frontend/no-save-input",[](auto &r){auto p=decode_frontend_no_save_plan_v1(r.payload);p.fields[0]=p.fields[1];r.payload=encode_frontend_no_save_plan_v1(p);});
+  mutate("frontend/new-game-sequence",[](auto &r){auto p=decode_frontend_sequence_v1(r.payload);
+      auto fade=std::find_if(p.cues.begin(),p.cues.end(),[](const auto &c){return c.kind==FrontendSequenceCueKindV1::fade;});
+      if(fade==p.cues.end())throw std::runtime_error("Fixture lost fade");++fade->updates;r.payload=encode_frontend_sequence_v1(p);});
+  mutate("frontend/new-game-sequence",[](auto &r){auto p=decode_frontend_sequence_v1(r.payload);p.cues.pop_back();r.payload=encode_frontend_sequence_v1(p);});
+  mutate("frontend/session-state",[](auto &r){const auto limits=frontend_session_state_limits_v1();auto p=decode_session_state_initial_v1(r.payload,{4U*1024U*1024U,limits});
+      for(auto &b:p.buffers)if(b.buffer_key=="frontend/config/title-fade-counter")b.bytes[0]=std::byte{51};
+      r.payload=encode_session_state_initial_v1(p,{4U*1024U*1024U,limits});});
+  auto duplicate=original;duplicate.resources.push_back(duplicate.resources[7]);rejects(std::move(duplicate));
+  mutate("new-game/level-installation",[](auto& r){auto p=decode_state_installation_v1(r.payload);p.level_id=1U;r.payload=encode_state_installation_v1(p);});
+  mutate("new-game/level-installation",[](auto& r){auto p=decode_state_installation_v1(r.payload);p.writes.pop_back();r.payload=encode_state_installation_v1(p);});
+  mutate("new-game/level-installation",[](auto& r){auto p=decode_state_installation_v1(r.payload);p.writes.back().value_bits=1U;r.payload=encode_state_installation_v1(p);});
+  mutate("new-game/level-installation",[](auto& r){auto p=decode_state_installation_v1(r.payload);std::swap(p.writes.front(),p.writes.back());r.payload=encode_state_installation_v1(p);});
+  std::cout<<"Native menu flow: "<<(original.resources.size()-7U)
+      <<" continuation resources accepted in "<<original.resources.size()
+      <<" shared resources, "<<rejected<<" missing/tampered profiles rejected\n";
+}
 
 template <typename Callback>
 void expect_native_profile_rejected(Callback &&callback,
@@ -727,13 +1028,45 @@ void test_pre_loi_fix_compiler_cache_is_rejected() {
     throw std::runtime_error("native compiler identity lacks its profile suffix");
   }
   for (const auto *old_suffix : {"-native-eight-resource-v4-moby749-initial",
-                                 "-native-eight-resource-v5-vu-loi"}) {
+                                 "-native-eight-resource-v5-vu-loi",
+                                 "-native-eight-resource-v6-vu-addsub",
+                                 "-native-eight-resource-v7-vu-mul",
+                                 "-native-eight-resource-v12-frontend-transition"}) {
     const auto previous = current.substr(0U, suffix) + old_suffix;
     PublicationFixture fixture(ProfileMutation::none, previous);
     expect_native_profile_rejected(
         [&] { fixture.validate(); },
         "a structurally valid pre-numeric-fix cache was accepted as current");
   }
+}
+
+void test_shared_startup_profile_is_required() {
+  constexpr std::array mutations{
+      SharedMutation::missing_reference, SharedMutation::missing_file,
+      SharedMutation::wrong_path, SharedMutation::missing_intro,
+      SharedMutation::wrong_type, SharedMutation::bad_media,
+      SharedMutation::wrong_aspect, SharedMutation::wrong_cadence,
+      SharedMutation::missing_audio, SharedMutation::stale_image,
+      SharedMutation::stale_boot, SharedMutation::wrong_movie,
+      SharedMutation::out_of_image, SharedMutation::stale_compiler,
+      SharedMutation::missing_bitmap, SharedMutation::bitmap_wrong_timing,
+      SharedMutation::bitmap_wrong_transfer, SharedMutation::bitmap_wrong_source,
+      SharedMutation::missing_frontend,SharedMutation::frontend_wrong_source,
+      SharedMutation::frontend_wrong_timing,SharedMutation::frontend_stale_actors,
+      SharedMutation::missing_geometry,SharedMutation::bad_geometry};
+  for (const auto mutation : mutations) {
+    PublicationFixture fixture(ProfileMutation::none,
+                               openrc::kNativeGameCompilerVersionV1, mutation);
+    expect_native_profile_rejected(
+        [&] { fixture.validate(); },
+        "the current profile accepted invalid/missing original startup resources");
+  }
+  PublicationFixture v7(ProfileMutation::none,
+                         OPENRC_VERSION "-native-eight-resource-v7-vu-mul",
+                         SharedMutation::missing_reference);
+  expect_native_profile_rejected(
+      [&] { v7.validate(); },
+      "a former v7 level-only cache was accepted as complete current content");
 }
 
 void test_empty_crate_profile_is_rejected() {
@@ -816,8 +1149,10 @@ void test_player_animation_profile_is_exact() {
 
 int main() {
   try {
+    test_menu_flow_resource_profile();
     test_complete_prepared_only_profile_is_accepted();
     test_pre_loi_fix_compiler_cache_is_rejected();
+    test_shared_startup_profile_is_required();
     test_empty_crate_profile_is_rejected();
     test_crate_binding_chain_is_rejected_when_broken();
     test_crates_must_share_one_render_mesh();

@@ -14,9 +14,9 @@
 namespace openrc::game {
 namespace {
 
-[[nodiscard]] CollisionVectorV1 world_local_center(
-    const WorldTransformV1 &transform,
-    const std::array<float, 3U> &local_center) noexcept {
+[[nodiscard]] CollisionVectorV1
+world_local_center(const WorldTransformV1 &transform,
+                   const std::array<float, 3U> &local_center) noexcept {
   const auto local_x = static_cast<double>(local_center[0U]) *
                        static_cast<double>(transform.scale[0U]);
   const auto local_y = static_cast<double>(local_center[1U]) *
@@ -43,9 +43,9 @@ namespace {
 
 } // namespace
 
-CollisionVectorV1 world_collectible_center_v1(
-    const WorldTransformV1 &transform,
-    const GameplayCollectibleV1 &collectible) noexcept {
+CollisionVectorV1
+world_collectible_center_v1(const WorldTransformV1 &transform,
+                            const GameplayCollectibleV1 &collectible) noexcept {
   return world_local_center(transform, collectible.local_center);
 }
 
@@ -151,8 +151,7 @@ void validate_inventory_key_union(
 
 void validate_inventory_union(
     const std::vector<EntityGameplayItemTotalV1> &totals,
-    const GameplaySceneV1 &scene,
-    const DestructibleSceneV1 &destructible_scene,
+    const GameplaySceneV1 &scene, const DestructibleSceneV1 &destructible_scene,
     const EntityGameplayInventoryLimitsV1 &limits) {
   std::vector<std::string_view> keys;
   std::uint64_t drop_count = 0U;
@@ -165,8 +164,8 @@ void validate_inventory_union(
   }
   if (drop_count > keys.max_size() || totals.size() > keys.max_size() ||
       scene.collectibles.size() > keys.max_size() - totals.size() ||
-      drop_count > keys.max_size() - totals.size() -
-                       scene.collectibles.size()) {
+      drop_count >
+          keys.max_size() - totals.size() - scene.collectibles.size()) {
     fail("Entity-gameplay inventory key union exceeds its host container");
   }
   keys.reserve(totals.size() + scene.collectibles.size() +
@@ -275,8 +274,8 @@ struct WorldSphereV1 {
   double radius = 0.0;
 };
 
-[[nodiscard]] double maximum_absolute_scale(
-    const WorldTransformV1 &transform) noexcept {
+[[nodiscard]] double
+maximum_absolute_scale(const WorldTransformV1 &transform) noexcept {
   return std::max({std::abs(static_cast<double>(transform.scale[0U])),
                    std::abs(static_cast<double>(transform.scale[1U])),
                    std::abs(static_cast<double>(transform.scale[2U]))});
@@ -290,22 +289,18 @@ world_collectible_sphere(const WorldTransformV1 &transform,
   // non-uniformly scaled sphere is conservatively represented by its largest
   // absolute scale so collection never misses the authored ellipsoid.
   const auto center = world_collectible_center_v1(transform, collectible);
-  return WorldSphereV1{
-      center.x,
-      center.y,
-      center.z,
-      static_cast<double>(collectible.collection_radius) *
-          maximum_absolute_scale(transform)};
+  return WorldSphereV1{center.x, center.y, center.z,
+                       static_cast<double>(collectible.collection_radius) *
+                           maximum_absolute_scale(transform)};
 }
 
 [[nodiscard]] WorldSphereV1 world_destructible_sphere(
     const WorldTransformV1 &transform,
     const DestructibleDefinitionV1 &destructible) noexcept {
   const auto center = world_destructible_center_v1(transform, destructible);
-  return WorldSphereV1{
-      center.x, center.y, center.z,
-      static_cast<double>(destructible.hit_radius) *
-          static_cast<double>(transform.scale[0U])};
+  return WorldSphereV1{center.x, center.y, center.z,
+                       static_cast<double>(destructible.hit_radius) *
+                           static_cast<double>(transform.scale[0U])};
 }
 
 [[nodiscard]] bool overlaps(const EntityGameplayPlayerCapsuleV1 &player,
@@ -343,9 +338,9 @@ void validate_damage_pulses(
   }
 }
 
-[[nodiscard]] bool overlaps(
-    const GameplayDamagePulseV1 &pulse, const WorldTransformV1 &transform,
-    const DestructibleDefinitionV1 &destructible) noexcept {
+[[nodiscard]] bool
+overlaps(const GameplayDamagePulseV1 &pulse, const WorldTransformV1 &transform,
+         const DestructibleDefinitionV1 &destructible) noexcept {
   const auto sphere = world_destructible_sphere(transform, destructible);
   const auto segment_x = pulse.capsule_end.x - pulse.capsule_start.x;
   const auto segment_y = pulse.capsule_end.y - pulse.capsule_start.y;
@@ -376,12 +371,12 @@ void validate_damage_pulses(
   // The perpendicular distance to the segment's interior is |v x d| / |d|.
   // Comparing the products avoids constructing start + t*d, whose low bits
   // disappear for a small target inside a very long, boundary-valid segment.
-  const auto cross_x = start_to_center_y * segment_z -
-                       start_to_center_z * segment_y;
-  const auto cross_y = start_to_center_z * segment_x -
-                       start_to_center_x * segment_z;
-  const auto cross_z = start_to_center_x * segment_y -
-                       start_to_center_y * segment_x;
+  const auto cross_x =
+      start_to_center_y * segment_z - start_to_center_z * segment_y;
+  const auto cross_y =
+      start_to_center_z * segment_x - start_to_center_x * segment_z;
+  const auto cross_z =
+      start_to_center_x * segment_y - start_to_center_y * segment_x;
   return std::hypot(cross_x, cross_y, cross_z) <=
          radius * std::hypot(segment_x, segment_y, segment_z);
 }
@@ -405,6 +400,37 @@ void EntityGameplayRuntimeV1::load_scene(
     const EntityGameplayRuntimeLimitsV1 limits,
     const std::uint64_t first_tick_index,
     const std::optional<std::uint64_t> required_level_instance_sequence) {
+  load_scene_impl(entity_scene, gameplay_scene, destructible_scene, limits,
+                  first_tick_index, required_level_instance_sequence,
+                  std::nullopt);
+}
+
+void EntityGameplayRuntimeV1::load_scene(
+    const EntitySceneV1 &entity_scene, const GameplaySceneV1 &gameplay_scene,
+    WorldV1 loaded_world, const EntityGameplayRuntimeLimitsV1 limits,
+    const std::uint64_t first_tick_index) {
+  DestructibleSceneV1 empty_destructibles;
+  empty_destructibles.level_id = entity_scene.level_id;
+  load_scene(entity_scene, gameplay_scene, empty_destructibles,
+             std::move(loaded_world), limits, first_tick_index);
+}
+
+void EntityGameplayRuntimeV1::load_scene(
+    const EntitySceneV1 &entity_scene, const GameplaySceneV1 &gameplay_scene,
+    const DestructibleSceneV1 &destructible_scene, WorldV1 loaded_world,
+    const EntityGameplayRuntimeLimitsV1 limits,
+    const std::uint64_t first_tick_index) {
+  load_scene_impl(entity_scene, gameplay_scene, destructible_scene, limits,
+                  first_tick_index, std::nullopt, std::move(loaded_world));
+}
+
+void EntityGameplayRuntimeV1::load_scene_impl(
+    const EntitySceneV1 &entity_scene, const GameplaySceneV1 &gameplay_scene,
+    const DestructibleSceneV1 &destructible_scene,
+    const EntityGameplayRuntimeLimitsV1 limits,
+    const std::uint64_t first_tick_index,
+    const std::optional<std::uint64_t> required_level_instance_sequence,
+    std::optional<WorldV1> loaded_world) {
   try {
     validate_entity_scene_v1(entity_scene, limits.entity_scene);
   } catch (const EntitySceneError &error) {
@@ -476,8 +502,8 @@ void EntityGameplayRuntimeV1::load_scene(
            "damage geometry domain");
     }
     const auto collectible = std::lower_bound(
-        gameplay_scene.collectibles.begin(),
-        gameplay_scene.collectibles.end(), destructible.authored_id,
+        gameplay_scene.collectibles.begin(), gameplay_scene.collectibles.end(),
+        destructible.authored_id,
         [](const GameplayCollectibleV1 &candidate, const std::uint32_t id) {
           return candidate.authored_id < id;
         });
@@ -489,42 +515,54 @@ void EntityGameplayRuntimeV1::load_scene(
   }
 
   LoadedStateV1 staged;
-  if (state_) {
-    staged.session = GameSessionV1(state_->session.snapshot());
-  } else if (required_level_instance_sequence &&
-             *required_level_instance_sequence > 1U) {
-    const auto previous_sequence = *required_level_instance_sequence - 1U;
-    GameSessionSnapshotV1 seed;
-    seed.next_level_request_sequence = previous_sequence;
-    seed.next_level_commit_sequence = previous_sequence;
-    seed.level_instance_sequence = previous_sequence;
-    seed.active_level_id = entity_scene.level_id;
-    staged.session = GameSessionV1(seed);
-  }
   staged.level_id = entity_scene.level_id;
   staged.next_tick_index = first_tick_index;
   staged.inventory_limits = limits.inventory;
   staged.max_damage_sources_per_destructible =
       limits.max_damage_sources_per_destructible;
 
-  const auto reason =
-      state_ || (required_level_instance_sequence &&
-                 *required_level_instance_sequence > 1U)
-          ? LevelRequestReasonV1::transition
-          : LevelRequestReasonV1::new_game;
-  try {
-    const auto request = staged.session.request_level(entity_scene.level_id,
-                                                      std::nullopt, reason);
-    staged.world.load_level(staged.session, request);
-  } catch (const GameWorldError &error) {
-    fail("Cannot create the entity-gameplay WorldV1 level: " +
-         std::string(error.what()));
+  if (loaded_world) {
+    const auto &identity = loaded_world->active_level();
+    if (!identity || identity->level_id != entity_scene.level_id ||
+        identity->instance_sequence == 0U || loaded_world->slot_count() != 0U ||
+        loaded_world->entity_count() != 0U ||
+        (state_ && identity->instance_sequence <=
+                       state_->world.active_level()->instance_sequence)) {
+      fail("Entity gameplay requires a fresh empty world for the requested "
+           "level, newer than the previous loaded instance");
+    }
+    staged.world = std::move(*loaded_world);
+  } else {
+    // Standalone diagnostic use has no owning runtime session. Retain its
+    // established monotonic identities, but never keep a shadow session in
+    // the loaded state. The normal runtime transfers its real world above.
+    const auto previous_sequence =
+        state_ ? state_->world.active_level()->instance_sequence
+               : required_level_instance_sequence.value_or(1U) - 1U;
+    GameSessionSnapshotV1 seed;
+    if (previous_sequence != 0U) {
+      seed.next_level_request_sequence = previous_sequence;
+      seed.next_level_commit_sequence = previous_sequence;
+      seed.level_instance_sequence = previous_sequence;
+      seed.active_level_id = state_ ? state_->level_id : entity_scene.level_id;
+    }
+    try {
+      GameSessionV1 standalone_session(seed);
+      const auto reason = previous_sequence != 0U
+                              ? LevelRequestReasonV1::transition
+                              : LevelRequestReasonV1::new_game;
+      const auto request = standalone_session.request_level(
+          entity_scene.level_id, std::nullopt, reason);
+      staged.world.load_level(standalone_session, request);
+    } catch (const GameWorldError &error) {
+      fail("Cannot create the entity-gameplay WorldV1 level: " +
+           std::string(error.what()));
+    }
   }
   const auto &active_level = staged.world.active_level();
   if (!active_level ||
       (required_level_instance_sequence &&
-       active_level->instance_sequence !=
-           *required_level_instance_sequence)) {
+       active_level->instance_sequence != *required_level_instance_sequence)) {
     fail("Entity gameplay materialized the wrong level-instance sequence");
   }
 
@@ -607,8 +645,7 @@ std::vector<EntityGameplayEventV1> EntityGameplayRuntimeV1::fixed_tick(
 }
 
 std::vector<EntityGameplayEventV1> EntityGameplayRuntimeV1::fixed_tick(
-    const std::uint64_t tick_index,
-    const EntityGameplayPlayerCapsuleV1 &player,
+    const std::uint64_t tick_index, const EntityGameplayPlayerCapsuleV1 &player,
     const std::span<const GameplayDamagePulseV1> damage_pulses) {
   if (!state_) {
     fail("Entity gameplay cannot tick before a level is loaded");
@@ -680,8 +717,7 @@ std::vector<EntityGameplayEventV1> EntityGameplayRuntimeV1::fixed_tick(
     for (const auto &pulse : damage_pulses) {
       if ((entity.destructible->accepted_damage_channels &
            pulse.damage_channel) == 0U ||
-          !overlaps(pulse, *entity.authored_transform,
-                    *entity.destructible)) {
+          !overlaps(pulse, *entity.authored_transform, *entity.destructible)) {
         continue;
       }
 
@@ -711,7 +747,7 @@ std::vector<EntityGameplayEventV1> EntityGameplayRuntimeV1::fixed_tick(
         entity.damage_source_sequences.insert(
             source_sequence,
             EntityGameplayDamageSourceSequenceV1{pulse.source_authored_id,
-                                                  pulse.attack_sequence});
+                                                 pulse.attack_sequence});
       }
 
       const auto applied_damage = std::min(entity.health, pulse.damage);
@@ -918,9 +954,8 @@ EntityGameplayRuntimeV1::health(const std::uint32_t authored_id) const {
   if (record == nullptr) {
     fail("Entity gameplay has no such authored entity");
   }
-  return record->destructible
-             ? std::optional<std::uint32_t>(record->health)
-             : std::nullopt;
+  return record->destructible ? std::optional<std::uint32_t>(record->health)
+                              : std::nullopt;
 }
 
 std::uint64_t EntityGameplayRuntimeV1::item_total(

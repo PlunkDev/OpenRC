@@ -7,6 +7,16 @@ scope; they do not declare original gameplay or the normal new-game flow done.
 
 This roadmap describes technical milestones rather than release dates.
 
+Current 2026-09-19 continuation: v10 recompiles and validates all19 levels.
+The same runtime completes original intro video/audio, copyright, title overlay,
+partial sky/terrain and1398 updates of five animated actors. The normal runtime
+framebuffer matches the separately verified GPU capture. TIE/shrub, procedural
+sky sprites, fog and camera-dependent terrain morph remain unintegrated;
+menu input is not integrated. Three original New Game PSS films decode completely
+and loading/menu components execute separately; the normal
+flow and playable Veldin remain incomplete. See [HANDOFF.md](../HANDOFF.md) for
+current validation, rather than treating historical component checks as E2E.
+
 The playable-runtime path is dependency-driven: unfinished broad Stage 1
 inventory work is not automatically a gate for Stage 3. Only formats and code
 paths required by the next verified gameplay subsystem become blockers. This
@@ -275,9 +285,13 @@ now preserves dynamic cell-list order, allocation, relocation and snapshots;
 source-qualified numerical bounds and live-actor binding remain required.
 The [numerical recovery layer](SOURCE_NUMERIC_RECOVERY_V1.md) now preserves
 paired-I timing, MAC flag reads, integer-only FTOI conversion, an explicitly
-qualified integer ADD/SUB reference model and the original post-conversion
-bounds projection. MUL/ACC and full numerical qualification and the complete
-ordered live-loader integration remain open. The original
+qualified integer ADD/SUB and ordered MUL reference models and the original
+post-conversion bounds projection. The enclosing scalar post-step retains
+ordered cache/matrix/derived writes and explicit unfinished arithmetic/spatial
+continuations. Compound ACC, full numerical qualification and the complete
+ordered live-loader integration remain open. Runtime materialization now
+uses the actual session-loaded world, without an independent shadow session.
+The original
 [shared keyed text bank and font-metric tables](RAC_TEXT_BANK_V1.md), together
 with the [frontend texture catalog](RAC_FRONTEND_TEXTURE_V1.md), are decoded
 and verified, but are not an implemented original menu or HUD.

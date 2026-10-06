@@ -72,4 +72,16 @@ class PreparedGameV2PublishError final : public std::runtime_error {
     PreparedGameV2FilesystemLimitsV1 limits,
     PreparedGameV2PublishControlV1 control = {});
 
+// The shared package is explicitly supplied once, outside level_packages.
+// An absent reference requires empty bytes; a present reference requires its
+// complete matching base package. It participates in the same transaction,
+// aggregate byte count, filesystem ownership and replacement verification.
+[[nodiscard]] PublishedPreparedGameV2V1 publish_prepared_game_v2_v1(
+    const std::filesystem::path &destination_root,
+    const PreparedGameV2 &manifest,
+    std::span<const PreparedGameV2LevelPackageBytesV1> level_packages,
+    std::span<const std::byte> shared_package_bytes,
+    PreparedGameV2FilesystemLimitsV1 limits,
+    PreparedGameV2PublishControlV1 control = {});
+
 } // namespace openrc

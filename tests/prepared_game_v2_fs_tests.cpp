@@ -412,11 +412,80 @@ void test_symlink_and_reparse_rejections_when_supported() {
   }
 }
 
+void test_shared_package_hardened_loading() {
+  PreparedFixture fixture;
+  auto shared = fixture.base;
+  shared.level_id = openrc::kPreparedGameSharedPackageIdV2;
+  const auto bytes = openrc::encode_level_package_v1(shared, kLimits.level_package);
+  fixture.manifest.shared_package = openrc::PreparedGameSharedReferenceV2{
+      "shared/global.orlvl", bytes.size(), openrc::prepared_content_sha256_v1(bytes)};
+  fixture.manifest_bytes = openrc::encode_prepared_game_v2(fixture.manifest, kLimits.manifest);
+  fixture.write_manifest();
+  auto prepared = openrc::load_prepared_game_v2_root_v1(fixture.tree.root, kLimits);
+  expect_filesystem_rejected([&] {
+    (void)openrc::load_prepared_game_shared_package_v1(prepared, kLimits);
+  }, "A missing shared package cannot be treated as an empty resource");
+  std::filesystem::create_directory(fixture.tree.root / "shared");
+  const auto file = fixture.tree.root / "shared/global.orlvl";
+  write_bytes(file, bytes);
+  expect(openrc::load_prepared_game_shared_package_v1(prepared, kLimits).level_id ==
+             openrc::kPreparedGameSharedPackageIdV2,
+         "Shared packages must load through the existing hardened path reader");
+  auto corrupt = bytes;
+  corrupt.back() ^= std::byte{1U};
+  write_bytes(file, corrupt);
+  expect_filesystem_rejected([&] {
+    (void)openrc::load_prepared_game_shared_package_v1(prepared, kLimits);
+  }, "Shared payload tamper must reject");
+  corrupt.resize(corrupt.size() - 1U);
+  write_bytes(file, corrupt);
+  expect_filesystem_rejected([&] {
+    (void)openrc::load_prepared_game_shared_package_v1(prepared, kLimits);
+  }, "Shared file must match its exact promised size before allocation");
+  write_bytes(file, bytes);
+  auto limited = kLimits;
+  limited.level_package.max_input_bytes = bytes.size() - 1U;
+  expect_filesystem_rejected([&] {
+    (void)openrc::load_prepared_game_shared_package_v1(prepared, limited);
+  }, "Shared reader must apply its package byte budget");
+  auto unsafe = prepared;
+  unsafe.manifest.shared_package->package_path = "../external/global.orlvl";
+  expect_filesystem_rejected([&] {
+    (void)openrc::load_prepared_game_shared_package_v1(unsafe, kLimits);
+  }, "Mutating a loaded shared reference cannot authorize traversal");
+  unsafe.manifest.shared_package.reset();
+  expect_filesystem_rejected([&] {
+    (void)openrc::load_prepared_game_shared_package_v1(unsafe, kLimits);
+  }, "Legacy publications must report absent shared content explicitly");
+
+  const auto external = fixture.tree.container() / "external/global.orlvl";
+  write_bytes(external, bytes);
+  std::filesystem::remove(file);
+  std::error_code link_error;
+  std::filesystem::create_symlink(external, file, link_error);
+  if (!link_error) {
+    expect_filesystem_rejected([&] {
+      (void)openrc::load_prepared_game_shared_package_v1(prepared, kLimits);
+    }, "Shared reader must revalidate and reject a replaced symlink file");
+    std::filesystem::remove(file);
+  }
+  std::filesystem::remove(fixture.tree.root / "shared");
+  link_error.clear();
+  std::filesystem::create_directory_symlink(fixture.tree.container() / "external",
+                                            fixture.tree.root / "shared", link_error);
+  if (!link_error) {
+    expect_filesystem_rejected([&] {
+      (void)openrc::load_prepared_game_shared_package_v1(prepared, kLimits);
+    }, "Shared reader must reject a replaced directory component");
+  }
+}
+
 } // namespace
 
 int main() {
   try {
     test_plain_root_and_level_load();
+    test_shared_package_hardened_loading();
     test_explicit_overlay_bytes();
     test_package_tamper_and_truncation();
     test_manifest_tamper_truncation_and_size_limit();

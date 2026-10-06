@@ -453,6 +453,7 @@ same_overlay_reference(const PreparedGameOverlayReferenceV2 &left,
           right.provenance.source_image_sha256 ||
       left.provenance.prepared_game_v1_manifest_sha256 !=
           right.provenance.prepared_game_v1_manifest_sha256 ||
+      left.shared_package != right.shared_package ||
       left.levels.size() != right.levels.size() ||
       left.overlays.size() != right.overlays.size()) {
     return false;
@@ -505,12 +506,37 @@ struct PublicationPlan {
   PreparedGameV2 manifest;
   std::vector<std::byte> manifest_bytes;
   std::map<std::uint32_t, std::span<const std::byte>> packages;
+  // Internal uniform ownership list only; shared remains absent from the
+  // manifest's planet references and public published level count.
+  std::vector<PreparedGameLevelReferenceV2> base_references;
   std::uint64_t total_package_bytes = 0U;
 };
+
+[[nodiscard]] std::vector<PreparedGameLevelReferenceV2>
+base_references(const PreparedGameV2 &manifest) {
+  auto references = manifest.levels;
+  if (manifest.shared_package) {
+    const auto &shared = *manifest.shared_package;
+    references.push_back({kPreparedGameSharedPackageIdV2, shared.package_path,
+                           shared.package_bytes, shared.package_sha256});
+  }
+  return references;
+}
+
+void verify_base_package(const PreparedGameV2RootV1 &loaded,
+                          const std::uint32_t id,
+                          const PreparedGameV2FilesystemLimitsV1 &limits) {
+  if (id == kPreparedGameSharedPackageIdV2) {
+    (void)load_prepared_game_shared_package_v1(loaded, limits);
+  } else {
+    (void)load_prepared_game_level_package_v1(loaded, id, limits);
+  }
+}
 
 [[nodiscard]] PublicationPlan make_publication_plan(
     const PreparedGameV2 &manifest,
     const std::span<const PreparedGameV2LevelPackageBytesV1> level_packages,
+    const std::span<const std::byte> shared_package_bytes,
     const PreparedGameV2FilesystemLimitsV1 &limits) {
   PublicationPlan result;
   try {
@@ -527,13 +553,20 @@ struct PublicationPlan {
   if (level_packages.size() != result.manifest.levels.size()) {
     fail("Explicit LevelPackageV1 inputs do not match the manifest 1:1");
   }
+  if (result.manifest.shared_package.has_value() != !shared_package_bytes.empty()) {
+    fail("Explicit shared package bytes do not match manifest presence");
+  }
+  result.base_references = base_references(result.manifest);
 
   for (const auto &input : level_packages) {
-    if (input.bytes.empty() ||
+    if (input.level_id == kPreparedGameSharedPackageIdV2 || input.bytes.empty() ||
         !result.packages.emplace(input.level_id, input.bytes).second) {
       fail("Explicit LevelPackageV1 inputs contain an empty or duplicate "
                  "level");
     }
+  }
+  if (result.manifest.shared_package) {
+    result.packages.emplace(kPreparedGameSharedPackageIdV2, shared_package_bytes);
   }
 
   std::set<std::string> virtual_files;
@@ -546,7 +579,7 @@ struct PublicationPlan {
                           virtual_directories);
   }
 
-  for (const auto &reference : result.manifest.levels) {
+  for (const auto &reference : result.base_references) {
     const auto package = result.packages.find(reference.level_id);
     if (package == result.packages.end()) {
       fail("A manifest level has no explicit LevelPackageV1 input");
@@ -561,9 +594,14 @@ struct PublicationPlan {
       fail("Explicit LevelPackageV1 bytes disagree with their manifest");
     }
     try {
-      static_cast<void>(parse_prepared_game_level_package_v1(
-          result.manifest, reference.level_id, package->second,
-          limits.level_package));
+      if (reference.level_id == kPreparedGameSharedPackageIdV2) {
+        (void)parse_prepared_game_shared_package_v1(
+            result.manifest, package->second, limits.level_package);
+      } else {
+        (void)parse_prepared_game_level_package_v1(
+            result.manifest, reference.level_id, package->second,
+            limits.level_package);
+      }
     } catch (const PreparedGameV2Error &error) {
       fail("Invalid explicit LevelPackageV1 input: " +
            std::string(error.what()));
@@ -577,7 +615,7 @@ struct PublicationPlan {
 
 void write_staging_tree(const std::filesystem::path &staging,
                         const PublicationPlan &plan) {
-  for (const auto &reference : plan.manifest.levels) {
+  for (const auto &reference : plan.base_references) {
     const auto relative = canonical_package_path(reference.package_path);
     ensure_plain_relative_directories(staging, relative.parent_path());
     const auto package = plan.packages.find(reference.level_id);
@@ -601,9 +639,8 @@ void verify_tree(const std::filesystem::path &root, const PublicationPlan &plan,
         prepared_content_sha256_v1(plan.manifest_bytes)) {
       fail("A published PreparedGameV2 manifest changed on disk");
     }
-    for (const auto &reference : plan.manifest.levels) {
-      static_cast<void>(load_prepared_game_level_package_v1(
-          loaded, reference.level_id, limits));
+    for (const auto &reference : plan.base_references) {
+      verify_base_package(loaded, reference.level_id, limits);
     }
   } catch (const PreparedGameV2FilesystemError &error) {
     fail("Cannot verify a published PreparedGameV2 tree: " +
@@ -614,7 +651,7 @@ void verify_tree(const std::filesystem::path &root, const PublicationPlan &plan,
 void require_exact_owned_tree(const PreparedGameV2RootV1 &loaded) {
     std::set<std::string> expected_files{kPreparedGameV2ManifestFileName};
     std::set<std::string> expected_directories;
-    for (const auto &reference : loaded.manifest.levels) {
+    for (const auto &reference : base_references(loaded.manifest)) {
         register_virtual_file(reference.package_path, expected_files,
                               expected_directories);
     }
@@ -708,9 +745,8 @@ void require_replaceable_existing_tree(
 #endif
     try {
         const auto loaded = load_prepared_game_v2_root_v1(root, limits);
-        for (const auto &reference : loaded.manifest.levels) {
-            static_cast<void>(load_prepared_game_level_package_v1(
-                loaded, reference.level_id, limits));
+        for (const auto &reference : base_references(loaded.manifest)) {
+            verify_base_package(loaded, reference.level_id, limits);
         }
         require_exact_owned_tree(loaded);
     } catch (const PreparedGameV2FilesystemError &error) {
@@ -745,6 +781,17 @@ PublishedPreparedGameV2V1 publish_prepared_game_v2_v1(
     const std::span<const PreparedGameV2LevelPackageBytesV1> level_packages,
     const PreparedGameV2FilesystemLimitsV1 limits,
     const PreparedGameV2PublishControlV1 control) {
+  return publish_prepared_game_v2_v1(destination_root, manifest, level_packages,
+                                    {}, limits, control);
+}
+
+PublishedPreparedGameV2V1 publish_prepared_game_v2_v1(
+    const std::filesystem::path &destination_root,
+    const PreparedGameV2 &manifest,
+    const std::span<const PreparedGameV2LevelPackageBytesV1> level_packages,
+    const std::span<const std::byte> shared_package_bytes,
+    const PreparedGameV2FilesystemLimitsV1 limits,
+    const PreparedGameV2PublishControlV1 control) {
   const auto destination = normalize_destination(destination_root);
   const auto parent = destination.parent_path();
   require_plain_directory_chain(parent);
@@ -753,7 +800,8 @@ PublishedPreparedGameV2V1 publish_prepared_game_v2_v1(
     require_replaceable_existing_tree(destination, limits);
   }
 
-  const auto plan = make_publication_plan(manifest, level_packages, limits);
+  const auto plan = make_publication_plan(manifest, level_packages,
+                                         shared_package_bytes, limits);
   const auto staging = create_unique_plain_staging(parent);
   std::filesystem::path backup;
   bool backup_moved = false;

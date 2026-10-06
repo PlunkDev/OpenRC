@@ -91,6 +91,12 @@ make_checked_level_player(const RuntimeLevelFoundationV1 &foundation,
       foundation.bootstrap.default_spawn_id);
 }
 
+[[nodiscard]] const WorldV1 &active_gameplay_world(
+    const WorldV1 &fallback,
+    const std::optional<EntityGameplayRuntimeV1> &entity_gameplay) {
+  return entity_gameplay ? entity_gameplay->world() : fallback;
+}
+
 void validate_state(
     const RuntimeLevelFoundationV1 &foundation,
     const RuntimeGameplayProfileV1 &profile, const GameSessionV1 &session,
@@ -108,8 +114,7 @@ void validate_state(
       active_level->level_id != foundation.level_id ||
       *session.active_level_id() != foundation.level_id ||
       active_level->spawn_point_id != session.active_spawn_point_id() ||
-      active_level->instance_sequence !=
-          session.level_instance_sequence()) {
+      active_level->instance_sequence != session.level_instance_sequence()) {
     fail("Runtime gameplay has inconsistent active-level state");
   }
   if (foundation.bootstrap.level_id != foundation.level_id) {
@@ -134,10 +139,7 @@ void validate_state(
       (!entity_gameplay->loaded() ||
        entity_gameplay->next_tick_index() != expected_tick ||
        !entity_gameplay->world().active_level() ||
-       entity_gameplay->world().active_level()->level_id !=
-           active_level->level_id ||
-       entity_gameplay->world().active_level()->instance_sequence !=
-           active_level->instance_sequence ||
+       *entity_gameplay->world().active_level() != *active_level ||
        entity_gameplay->item_totals() != item_totals)) {
     fail("Runtime entity gameplay level or fixed-tick sequence diverged");
   }
@@ -180,7 +182,7 @@ void load_entity_gameplay_content(EntityGameplayRuntimeV1 &runtime,
                                   const RuntimeGameplayEntityContentV1 &content,
                                   const std::uint32_t foundation_level_id,
                                   const std::uint64_t next_tick_index,
-                                  const std::uint64_t level_instance_sequence) {
+                                  WorldV1 loaded_world) {
   if (content.entity_scene.level_id != foundation_level_id ||
       content.gameplay_scene.level_id != foundation_level_id ||
       (content.destructible_scene &&
@@ -190,12 +192,12 @@ void load_entity_gameplay_content(EntityGameplayRuntimeV1 &runtime,
   try {
     if (content.destructible_scene) {
       runtime.load_scene(content.entity_scene, content.gameplay_scene,
-                         *content.destructible_scene, content.limits,
-                         next_tick_index, level_instance_sequence);
+                         *content.destructible_scene, std::move(loaded_world),
+                         content.limits, next_tick_index);
     } else {
       runtime.load_scene(content.entity_scene, content.gameplay_scene,
-                         content.limits, next_tick_index,
-                         level_instance_sequence);
+                         std::move(loaded_world), content.limits,
+                         next_tick_index);
     }
   } catch (const EntityGameplayRuntimeError &error) {
     fail("Cannot load runtime entity/gameplay content: " +
@@ -396,8 +398,18 @@ void validate_runtime_gameplay_profile_v1(
 namespace {
 
 [[nodiscard]] GameSessionV1
-make_game_session(const RuntimeGameplaySessionOptionsV1 &options) {
+make_game_session(RuntimeGameplaySessionOptionsV1 &options) {
   try {
+    if(options.frontend_session) {
+      if(options.initial_persistent_state)
+        fail("Frontend session transfer cannot also initialize persistent state");
+      const auto snapshot=options.frontend_session->snapshot();
+      if(!snapshot.persistent_state||snapshot.next_tick_index||snapshot.next_level_request_sequence||
+          snapshot.next_level_commit_sequence||snapshot.pending_level_request||snapshot.level_instance_sequence||
+          snapshot.active_level_id||snapshot.active_spawn_point_id)
+        fail("Frontend session transfer requires canonical state before the first gameplay admission");
+      return std::move(*options.frontend_session);
+    }
     if (options.initial_persistent_state) {
       return GameSessionV1(options.deterministic_seed,
                            *options.initial_persistent_state,
@@ -452,9 +464,10 @@ RuntimeGameplaySessionV1::RuntimeGameplaySessionV1(
       fail("Runtime gameplay lost its initial active-level identity");
     }
     entity_gameplay_.emplace();
-    load_entity_gameplay_content(
-        *entity_gameplay_, *options.entity_gameplay, foundation_.level_id,
-        session_.next_tick_index(), active_level->instance_sequence);
+    load_entity_gameplay_content(*entity_gameplay_, *options.entity_gameplay,
+                                 foundation_.level_id,
+                                 session_.next_tick_index(), std::move(world_));
+    world_.unload_level();
     if (entity_gameplay_->item_totals() != item_totals_) {
       fail("Runtime gameplay initialized inconsistent persistent item totals");
     }
@@ -483,13 +496,16 @@ void RuntimeGameplaySessionV1::load_level_impl(
     std::optional<RuntimeGameplayEntityContentV1> entity_gameplay,
     const std::optional<SpawnPointIdV1> spawn_point_id,
     const LevelRequestReasonV1 reason) {
+  if (advancing_frame_) {
+    fail("Level replacement cannot reenter an active runtime frame");
+  }
   const auto resolved_spawn_point_id =
       resolve_runtime_spawn_point_id(foundation, spawn_point_id);
   auto next_player =
       make_checked_level_player(foundation, profile_, resolved_spawn_point_id,
                                 session_.next_tick_index());
   auto next_session = session_;
-  auto next_world = world_;
+  WorldV1 next_world;
   auto next_input = input_;
   const auto previous_combat = combat_.snapshot();
   auto next_combat = PlayerCombatV1(
@@ -512,7 +528,8 @@ void RuntimeGameplaySessionV1::load_level_impl(
     }
     load_entity_gameplay_content(
         *next_entity_gameplay, *entity_gameplay, foundation.level_id,
-        next_session.next_tick_index(), next_active_level->instance_sequence);
+        next_session.next_tick_index(), std::move(next_world));
+    next_world.unload_level();
     try {
       next_entity_gameplay->restore_item_totals(next_item_totals);
     } catch (const EntityGameplayRuntimeError &error) {
@@ -523,9 +540,10 @@ void RuntimeGameplaySessionV1::load_level_impl(
     next_entity_gameplay.reset();
   }
   next_input.reset(next_session.next_tick_index());
-  validate_state(foundation, profile_, next_session, next_world, next_player,
-                 next_input, fixed_step_, next_combat, next_item_totals,
-                 next_entity_gameplay);
+  validate_state(foundation, profile_, next_session,
+                 active_gameplay_world(next_world, next_entity_gameplay),
+                 next_player, next_input, fixed_step_, next_combat,
+                 next_item_totals, next_entity_gameplay);
 
   foundation_ = std::move(foundation);
   session_ = std::move(next_session);
@@ -635,11 +653,12 @@ RuntimeGameplayFrameAdvanceV1 RuntimeGameplaySessionV1::advance_frame_impl(
     next_item_totals = next_entity_gameplay->item_totals();
   }
 
-  validate_state(foundation_, profile_, next_session, world_, next_player,
+  const auto &next_world = active_gameplay_world(world_, next_entity_gameplay);
+  validate_state(foundation_, profile_, next_session, next_world, next_player,
                  next_input, next_fixed_step, next_combat, next_item_totals,
                  next_entity_gameplay);
   result.snapshot = make_runtime_gameplay_snapshot(
-      next_session, world_, next_player, next_input, next_fixed_step,
+      next_session, next_world, next_player, next_input, next_fixed_step,
       next_combat, next_item_totals, next_entity_gameplay);
 
   static_assert(
@@ -665,6 +684,9 @@ RuntimeGameplayFrameAdvanceV1 RuntimeGameplaySessionV1::advance_frame_impl(
 
 void RuntimeGameplaySessionV1::set_checkpoint(PlayerCheckpointV1 checkpoint,
                                               const bool reset_immediately) {
+  if (advancing_frame_) {
+    fail("Checkpoint replacement cannot reenter an active runtime frame");
+  }
   validate_checkpoint_collision_envelope(checkpoint, profile_);
   player_.set_checkpoint(std::move(checkpoint), reset_immediately);
   validate_tick_invariants();
@@ -672,6 +694,9 @@ void RuntimeGameplaySessionV1::set_checkpoint(PlayerCheckpointV1 checkpoint,
 
 void RuntimeGameplaySessionV1::restore_item_totals(
     std::vector<EntityGameplayItemTotalV1> totals) {
+  if (advancing_frame_) {
+    fail("Inventory restoration cannot reenter an active runtime frame");
+  }
   if (!entity_gameplay_) {
     fail("Runtime gameplay cannot restore item totals without neutral content");
   }
@@ -704,7 +729,7 @@ void RuntimeGameplaySessionV1::apply_persistent_state_writes(
 }
 
 RuntimeGameplaySnapshotV1 RuntimeGameplaySessionV1::snapshot() const {
-  return make_runtime_gameplay_snapshot(session_, world_, player_, input_,
+  return make_runtime_gameplay_snapshot(session_, world(), player_, input_,
                                         fixed_step_, combat_, item_totals_,
                                         entity_gameplay_);
 }
@@ -746,7 +771,7 @@ const GameSessionV1 &RuntimeGameplaySessionV1::session() const noexcept {
 }
 
 const WorldV1 &RuntimeGameplaySessionV1::world() const noexcept {
-  return world_;
+  return active_gameplay_world(world_, entity_gameplay_);
 }
 
 const PlayerSimulationV1 &RuntimeGameplaySessionV1::player() const noexcept {
@@ -758,7 +783,11 @@ const PlayerCombatV1 &RuntimeGameplaySessionV1::combat() const noexcept {
 }
 
 void RuntimeGameplaySessionV1::validate_tick_invariants() const {
-  validate_state(foundation_, profile_, session_, world_, player_, input_,
+  if (entity_gameplay_ && world_.active_level()) {
+    fail("Runtime gameplay retained a second active world after "
+         "materialization");
+  }
+  validate_state(foundation_, profile_, session_, world(), player_, input_,
                  fixed_step_, combat_, item_totals_, entity_gameplay_);
 }
 

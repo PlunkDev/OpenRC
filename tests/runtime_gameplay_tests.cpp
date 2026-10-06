@@ -956,7 +956,42 @@ void test_prepared_state_is_owned_across_runtime_ticks_and_levels() {
        {{"word", "progress", SessionStateValueTypeV1::u32, 0U, 1U, 4U}}},
       {{"progress", {std::byte{7}, std::byte{0}, std::byte{0}, std::byte{0}}}},
   };
+  options.entity_gameplay = entity_gameplay_content(7U);
+  {
+    GameSessionV1 frontend(0x1254U,*options.initial_persistent_state,options.persistent_state_limits);
+    const std::array live_writes{SessionStateWriteV1{"word",0U,SessionStateValueTypeV1::u32,0x1234abcdU}};
+    frontend.apply_persistent_state_writes(live_writes,0);
+    const auto transferred=frontend.snapshot().persistent_state;
+    const auto* allocation=frontend.persistent_state()->buffer_bytes("progress").data();
+    auto continuation=options;
+    continuation.initial_persistent_state.reset();
+    continuation.frontend_session.emplace(std::move(frontend));
+    RuntimeGameplaySessionV1 entered(foundation(),std::move(continuation));
+    expect(entered.snapshot().session.persistent_state==transferred&&
+        entered.session().deterministic_seed()==0x1254U&&
+        entered.session().persistent_state()->buffer_bytes("progress").data()==allocation,
+        "First gameplay admission copied or reinitialized live frontend state");
+    expect_gameplay_error([&]{entered.apply_persistent_state_writes(live_writes,0);},
+        "Frontend state transfer reset the live revision");
+    static_cast<void>(entered.advance_frame(16'666'667U));
+    expect(entered.snapshot().session.persistent_state==transferred,
+        "First gameplay tick changed transferred frontend progress");
+    auto invalid=options;
+    invalid.frontend_session.emplace(0U,*options.initial_persistent_state,options.persistent_state_limits);
+    expect_gameplay_error([&]{RuntimeGameplaySessionV1 rejected(foundation(),invalid);},
+        "Frontend transfer accepted a second initial-state owner");
+    invalid.initial_persistent_state.reset();
+    static_cast<void>(invalid.frontend_session->request_level(7U));
+    expect_gameplay_error([&]{RuntimeGameplaySessionV1 rejected(foundation(),invalid);},
+        "Frontend transfer accepted an already requested level");
+  }
   RuntimeGameplaySessionV1 runtime(foundation(), options);
+  const auto initial_entity = *runtime.entity_gameplay()->find_entity_id(20U);
+  expect(&runtime.world() == &runtime.entity_gameplay()->world() &&
+             runtime.world().find_entity(initial_entity) != nullptr &&
+             runtime.world().active_level() ==
+                 std::optional{ActiveLevelV1{7U, 10U, 1U}},
+         "session exposed a parallel empty world or lost its actual spawn");
   expect(runtime.session().persistent_state()->read_u32("word", 0U) == 7U,
          "runtime ignored explicitly supplied prepared state");
   const std::array writes{SessionStateWriteV1{
@@ -989,6 +1024,45 @@ void test_prepared_state_is_owned_across_runtime_ticks_and_levels() {
       "runtime frame advancement accepted a recursive callback");
   expect(runtime.snapshot() == before_callback,
          "reentrant advance changed the committed runtime snapshot");
+  expect_gameplay_error(
+      [&] {
+        static_cast<void>(runtime.advance_frame(
+            50'000'000U, [&](const GameInputCommandV1 &,
+                             RuntimeMovementAxesV1 axes, double) {
+              runtime.load_level(foundation(8U), entity_gameplay_content(8U));
+              return axes;
+            }));
+      },
+      "a callback replaced the world underneath a staged frame");
+  expect(runtime.snapshot() == before_callback &&
+             runtime.world().find_entity(initial_entity) != nullptr,
+         "reentrant level replacement partially published a new world");
+  expect_gameplay_error(
+      [&] {
+        static_cast<void>(runtime.advance_frame(
+            50'000'000U, [&](const GameInputCommandV1 &,
+                             RuntimeMovementAxesV1 axes, double) {
+              runtime.restore_item_totals({{"items/bolts", 999U}});
+              return axes;
+            }));
+      },
+      "a callback overwrote inventory outside its staged world");
+  expect(runtime.snapshot() == before_callback,
+         "reentrant inventory restore escaped frame rollback");
+  expect_gameplay_error(
+      [&] {
+        static_cast<void>(runtime.advance_frame(
+            50'000'000U, [&](const GameInputCommandV1 &,
+                             RuntimeMovementAxesV1 axes, double) {
+              auto checkpoint = runtime.player().snapshot().checkpoint;
+              checkpoint.checkpoint_id += 100U;
+              runtime.set_checkpoint(checkpoint, true);
+              return axes;
+            }));
+      },
+      "a callback replaced the checkpoint outside the staged player");
+  expect(runtime.snapshot() == before_callback,
+         "reentrant checkpoint replacement escaped frame rollback");
   runtime.apply_persistent_state_writes({}, 1U);
   static_cast<void>(runtime.advance_frame(
       16'666'667U,
@@ -1002,6 +1076,8 @@ void test_prepared_state_is_owned_across_runtime_ticks_and_levels() {
   expect(runtime.snapshot().session.persistent_state == committed,
          "fixed-tick session staging lost persistent bytes or advanced their "
          "revision");
+  expect(runtime.world().find_entity(initial_entity) == nullptr,
+         "the session world did not observe the real entity tick removal");
   const auto before_failure = runtime.snapshot();
   auto invalid = foundation(8U);
   invalid.bootstrap.level_id = 99U;
@@ -1012,6 +1088,22 @@ void test_prepared_state_is_owned_across_runtime_ticks_and_levels() {
          "state");
   runtime.load_level(foundation(8U));
   runtime.load_level(foundation(7U), entity_gameplay_content(7U));
+  const auto reloaded_entity = *runtime.entity_gameplay()->find_entity_id(20U);
+  const auto before_content_failure = runtime.snapshot();
+  expect_gameplay_error(
+      [&] { runtime.load_level(foundation(8U), entity_gameplay_content(7U)); },
+      "wrong-level content was accepted after staging a level request");
+  expect(runtime.snapshot() == before_content_failure &&
+             runtime.world().find_entity(reloaded_entity) != nullptr,
+         "failed content materialization lost persistent bytes or live IDs");
+  runtime.load_level(foundation(8U, 20U), entity_gameplay_content(8U), 21U);
+  expect(&runtime.world() == &runtime.entity_gameplay()->world() &&
+             runtime.world().active_level() ==
+                 std::optional{ActiveLevelV1{8U, 21U, 4U}} &&
+             runtime.world().find_entity(reloaded_entity) == nullptr &&
+             runtime.snapshot().session.next_level_request_sequence == 4U &&
+             runtime.snapshot().session.next_level_commit_sequence == 4U,
+         "entity reload issued a second request or recreated a parallel world");
   expect(
       runtime.snapshot().session.persistent_state == committed,
       "optional-content transition reinitialized or discarded persistent data");

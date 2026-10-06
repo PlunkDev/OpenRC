@@ -1,5 +1,6 @@
 #include "openrc/rac_tie_class.hpp"
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cstddef>
@@ -18,6 +19,8 @@ constexpr std::size_t kPacketTableOffset = 0x70U;
 constexpr std::size_t kPacketDataOffset = 0x80U;
 constexpr std::size_t kVertexDataOffset = 0xc0U;
 constexpr std::size_t kAdGifOffset = 0x140U;
+constexpr std::size_t kLightingOffset = 0x1e0U;
+constexpr std::size_t kSecondaryLightingOffset = 0x1f0U;
 constexpr openrc::RacTieClassLimitsV1 kLimits{
     0x10000U,
     256U,
@@ -144,6 +147,19 @@ void write_fat_vertex(
     return bytes;
 }
 
+void add_lighting_indices(std::vector<std::byte>& bytes) {
+    bytes[kPacketTableOffset + 0x0aU] = std::byte{0x16};
+    bytes[kPacketTableOffset + 0x0bU] = std::byte{3};
+    constexpr std::array<std::uint8_t, 12U> indices{
+        1U, 2U, 3U, 4U, 5U, 6U, 63U, 0xffU, 7U, 8U, 9U, 0xffU};
+    for (std::size_t index = 0U; index < indices.size(); ++index) {
+        const auto value = indices[index];
+        bytes[kLightingOffset + index] = static_cast<std::byte>(value);
+        bytes[kSecondaryLightingOffset + index] = static_cast<std::byte>(
+            value == 0xffU ? value : value + 64U);
+    }
+}
+
 template <typename Mutation>
 void expect_rejected(Mutation&& mutation, const std::string& message) {
     auto bytes = make_class();
@@ -198,6 +214,96 @@ void test_valid_class() {
             result.triangles[0U].local_texture_index == 0U &&
             result.triangles[1U].local_texture_index == 1U,
         "RAC1 TIE material or strip assembly is wrong");
+    expect(result.packets[0U].lighting_indices_range.size == 0U &&
+        result.packets[0U].secondary_lighting_indices_range.size == 0U &&
+        std::all_of(result.vertices.begin(), result.vertices.end(),
+            [](const auto& vertex) {
+                return vertex.lighting_palette_index_count == 0U;
+            }),
+        "An omitted RAC1 TIE lighting stream manufactured palette indices");
+}
+
+void test_lighting_indices_and_morph_delta() {
+    auto bytes = make_class();
+    add_lighting_indices(bytes);
+    write_i16(bytes, kVertexDataOffset + 0x40U, -32768);
+    write_i16(bytes, kVertexDataOffset + 0x42U, 42);
+    write_i16(bytes, kVertexDataOffset + 0x44U, 32767);
+    // Encoded vertex order differs from GS write order. Indices must follow
+    // their encoded owner through sorting, never be assigned after assembly.
+    std::swap_ranges(bytes.begin() + kVertexDataOffset,
+        bytes.begin() + kVertexDataOffset + 0x10U,
+        bytes.begin() + kVertexDataOffset + 0x10U);
+    auto result = openrc::parse_rac_tie_class_v1(bytes, kLimits);
+    expect(result.packets[0U].lighting_indices_range ==
+            openrc::RacTieRangeV1{kLightingOffset, 12U} &&
+        result.packets[0U].secondary_lighting_indices_range ==
+            openrc::RacTieRangeV1{kSecondaryLightingOffset, 12U} &&
+        result.vertices[0U].lighting_palette_index_count == 1U &&
+        result.vertices[0U].lighting_palette_indices[0U] == 2U &&
+        result.vertices[1U].lighting_palette_indices[0U] == 1U &&
+        result.vertices[4U].lighting_palette_index_count == 3U &&
+        result.vertices[4U].lighting_palette_indices ==
+            std::array<std::uint8_t, 3U>{5U, 6U, 63U} &&
+        result.vertices[4U].quantized_morph_delta ==
+            std::array<std::int16_t, 3U>{-32768, 42, 32767},
+        "RAC1 TIE palette ownership or signed morph delta was lost");
+
+    bytes = make_class();
+    add_lighting_indices(bytes);
+    write_le16(bytes, kVertexDataOffset + 0x0eU, 10U);
+    result = openrc::parse_rac_tie_class_v1(bytes, kLimits);
+    expect(result.packets[0U].discarded_duplicate_write_count == 1U &&
+        result.vertices[1U].lighting_palette_indices[0U] == 1U &&
+        result.vertices[1U].source_range == result.vertices[0U].source_range,
+        "A duplicated RAC1 TIE GS write lost its source palette owner");
+}
+
+void test_lighting_rejections() {
+    const auto rejected = [](const auto& mutation, const std::string& message) {
+        expect_rejected([&](auto& bytes) {
+            add_lighting_indices(bytes);
+            mutation(bytes);
+        }, message);
+    };
+    rejected([](auto& bytes) {
+        bytes[kPacketTableOffset + 0x0bU] = std::byte{0};
+    }, "A partially omitted RAC1 TIE lighting stream was accepted");
+    rejected([](auto& bytes) {
+        bytes[kPacketTableOffset + 0x0bU] = std::byte{2};
+    }, "A RAC1 TIE lighting count disagreeing with vertex layout was accepted");
+    rejected([](auto& bytes) {
+        bytes.resize(kSecondaryLightingOffset + 11U);
+    }, "A truncated secondary RAC1 TIE lighting stream was accepted");
+    rejected([](auto& bytes) {
+        bytes[kLightingOffset] = std::byte{64};
+    }, "An out-of-range RAC1 TIE palette index was accepted");
+    rejected([](auto& bytes) {
+        bytes[kSecondaryLightingOffset + 5U] = std::byte{69};
+    }, "An incorrect secondary RAC1 TIE palette index was accepted");
+    rejected([](auto& bytes) {
+        bytes[kLightingOffset + 7U] = std::byte{0};
+    }, "An incorrect RAC1 TIE fat palette sentinel was accepted");
+
+    // Five dinky vertices require three explicit zero alignment bytes.
+    auto padded = make_class();
+    add_lighting_indices(padded);
+    padded[kPacketDataOffset + 0x28U] = std::byte{14};
+    std::fill(padded.begin() + 0x100U, padded.begin() + 0x130U, std::byte{0});
+    write_dinky_vertex(padded, 0x100U, {0, -512, 0}, 26U, 1024, 3072);
+    write_fat_vertex(padded, 0x110U, {0, 0, -512}, 29U, -1024, -3072);
+    for (const auto offset : {kLightingOffset, kSecondaryLightingOffset}) {
+        std::fill(padded.begin() + offset + 5U,
+            padded.begin() + offset + 8U, std::byte{0});
+    }
+    (void)openrc::parse_rac_tie_class_v1(padded, kLimits);
+    padded[kSecondaryLightingOffset + 6U] = std::byte{1};
+    try {
+        (void)openrc::parse_rac_tie_class_v1(padded, kLimits);
+    } catch (const openrc::RacTieClassError&) {
+        return;
+    }
+    throw std::runtime_error("Nonzero RAC1 TIE dinky index padding was accepted");
 }
 
 void test_limits() {
@@ -220,6 +326,24 @@ void test_limits() {
         }
         throw std::runtime_error("a RAC1 TIE caller limit was ignored");
     }
+}
+
+void test_explicit_lod() {
+    auto bytes=make_class();
+    write_le32(bytes,4U,kPacketTableOffset);
+    bytes[0x21U]=std::byte{1};
+    write_float(bytes,0x10U,10.0F);write_float(bytes,0x14U,20.0F);write_float(bytes,0x18U,30.0F);
+    write_le16(bytes,0x24U,4U);
+    const auto result=openrc::parse_rac_tie_lod_class_v1(bytes,kLimits,1U);
+    expect(result.selected_lod==1U&&result.packets.size()==1U&&
+        result.selected_lod_packet_table_range==openrc::RacTieRangeV1{kPacketTableOffset,16U}&&
+        result.lod_threshold_bits[1U]==std::bit_cast<std::uint32_t>(20.0F)&&result.mode_bits==4U,
+        "Explicit RAC1 TIE LOD assembly lost source metadata");
+    const auto empty=openrc::parse_rac_tie_lod_class_v1(bytes,kLimits,2U);
+    expect(empty.selected_lod==2U&&empty.packets.empty(),"An absent source TIE LOD fell back to another table");
+    try{(void)openrc::parse_rac_tie_lod_class_v1(bytes,kLimits,3U);}
+    catch(const openrc::RacTieClassError&){return;}
+    throw std::runtime_error("An out-of-range RAC1 TIE LOD was accepted");
 }
 
 void test_rejections() {
@@ -254,6 +378,9 @@ void test_rejections() {
 int main() {
     try {
         test_valid_class();
+        test_lighting_indices_and_morph_delta();
+        test_lighting_rejections();
+        test_explicit_lod();
         test_limits();
         test_rejections();
         std::cout << "OpenRC RAC1 TIE class tests passed\n";

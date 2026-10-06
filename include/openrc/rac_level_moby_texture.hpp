@@ -69,6 +69,11 @@ struct RacLevelMobyTextureV1 {
     // expanding PS2 alpha [0, 0x80] to host alpha [0, 0xff]. Channels are RGBA.
     std::array<std::byte, kRacLevelMobyTexturePaletteBytesV1> palette_rgba{};
 
+    // Same logical CLUT order with original encoded alpha, including values
+    // above 0x80. Compiler consumers using integer GS modulation must retain
+    // this information: the export alpha expansion is not invertible.
+    std::array<std::byte, kRacLevelMobyTexturePaletteBytesV1> palette_raw_rgba{};
+
     // Linear row-major PSMT8 indices followed by their expanded RGBA pixels.
     // No RAC1 pixel swizzle or vertical flip is applied.
     std::vector<std::byte> indices;

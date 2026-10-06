@@ -16,6 +16,8 @@ inline constexpr std::uint32_t kLevelPackageFormatVersionV1 = 1U;
 inline constexpr std::uint32_t kPreparedGameHeaderBytesV2 = 64U;
 inline constexpr std::uint32_t kLevelPackageHeaderBytesV1 = 64U;
 inline constexpr std::size_t kPreparedContentDigestBytesV1 = 32U;
+inline constexpr std::uint32_t kPreparedGameSharedPackageIdV2 = UINT32_MAX;
+inline constexpr std::uint32_t kPreparedGameHasSharedPackageV2 = 1U << 0U;
 
 using PreparedContentDigestV1 =
     std::array<std::byte, kPreparedContentDigestBytesV1>;
@@ -36,6 +38,15 @@ struct PreparedGameLevelReferenceV2 {
   std::string package_path;
   std::uint64_t package_bytes = 0U;
   PreparedContentDigestV1 package_sha256{};
+};
+
+// Optional global content uses the existing neutral package container with
+// level_id kPreparedGameSharedPackageIdV2. It is not a planet/level reference.
+struct PreparedGameSharedReferenceV2 {
+  std::string package_path;
+  std::uint64_t package_bytes = 0U;
+  PreparedContentDigestV1 package_sha256{};
+  bool operator==(const PreparedGameSharedReferenceV2 &) const = default;
 };
 
 // Optional mod manifests are separate immutable layers. The required digest is
@@ -70,6 +81,7 @@ struct PreparedGameV2 {
   PreparedGameProvenanceV2 provenance;
   std::vector<PreparedGameLevelReferenceV2> levels;
   std::vector<PreparedGameOverlayReferenceV2> overlays;
+  std::optional<PreparedGameSharedReferenceV2> shared_package;
 };
 
 enum class LevelPackageLayerKindV1 : std::uint32_t {
@@ -214,6 +226,10 @@ find_prepared_game_level_v2(const PreparedGameV2 &game,
 [[nodiscard]] LevelPackageV1 parse_prepared_game_level_package_v1(
     const PreparedGameV2 &game, std::uint32_t level_id,
     std::span<const std::byte> package_bytes, LevelPackageV1Limits limits);
+
+[[nodiscard]] LevelPackageV1 parse_prepared_game_shared_package_v1(
+    const PreparedGameV2 &game, std::span<const std::byte> package_bytes,
+    LevelPackageV1Limits limits);
 
 // Applies overlays in canonical (priority, layer_id) order. Replacements and
 // removals must be explicitly permitted by the currently visible resource.

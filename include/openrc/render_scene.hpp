@@ -39,6 +39,29 @@ enum class RenderSceneAlphaModeV1 : std::uint8_t {
   opaque = 0U,
   mask = 1U,
 };
+enum class RenderSceneAlphaFailureV1 : std::uint8_t {
+  discard = 0U,
+  // Failed encoded alpha tests still blend/write RGB, while preserving the
+  // destination alpha and depth. The ordinary depth comparison still applies.
+  rgb_only = 1U,
+};
+
+enum class RenderSceneColorMathV1 : std::uint8_t {
+  linear = 0U,
+  encoded_integer = 1U,
+};
+enum class RenderSceneBlendModeV1 : std::uint8_t {
+  opaque = 0U,
+  source_over = 1U,
+};
+enum class RenderSceneInterpolationV1 : std::uint8_t {
+  perspective = 0U,
+  affine = 1U,
+};
+enum class RenderSceneDepthTestV1 : std::uint8_t {
+  less_equal = 0U,
+  always = 1U,
+};
 
 // Bytes are tightly packed row-major RGBA8. Mip zero is mandatory; later
 // levels, when present, halve each dimension with a floor and a minimum of 1.
@@ -82,6 +105,21 @@ struct RenderSceneMaterialV1 {
   // Opaque materials require zero. Masked fragments pass when their final
   // alpha is at least alpha_cutoff_rgba8 / 255 and require a non-zero cutoff.
   std::uint8_t alpha_cutoff_rgba8 = 0U;
+
+  // Legacy defaults encode as zero extension bytes. Integer color math
+  // consumes encoded texture/vertex bytes without sRGB transfer conversion.
+  // Textured RGB is floor(texel*vertex/texture_modulation_denominator);
+  // source-over uses blend_denominator for its encoded source alpha.
+  RenderSceneColorMathV1 color_math = RenderSceneColorMathV1::linear;
+  RenderSceneBlendModeV1 blend_mode = RenderSceneBlendModeV1::opaque;
+  // Encoded integer materials interpolate byte-space vertex colors affinely.
+  // This policy selects perspective or affine texture-coordinate interpolation.
+  RenderSceneInterpolationV1 interpolation = RenderSceneInterpolationV1::perspective;
+  RenderSceneDepthTestV1 depth_test = RenderSceneDepthTestV1::less_equal;
+  bool depth_write = true;
+  std::uint8_t texture_modulation_denominator = 255U;
+  std::uint8_t blend_denominator = 255U;
+  RenderSceneAlphaFailureV1 alpha_failure = RenderSceneAlphaFailureV1::discard;
 
   [[nodiscard]] bool operator==(const RenderSceneMaterialV1 &) const = default;
 };
@@ -137,6 +175,10 @@ struct RenderSceneInstanceV1 {
   std::uint32_t id = 0U;
   std::uint32_t mesh_id = 0U;
   RenderSceneAffine3x4V1 local_to_world;
+  // Translation follows the current camera after the authored affine map.
+  // Far-plane projection preserves XY and uses the clip far depth.
+  bool camera_relative = false;
+  bool project_to_far_plane = false;
 
   [[nodiscard]] bool operator==(const RenderSceneInstanceV1 &) const = default;
 };

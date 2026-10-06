@@ -1,4 +1,5 @@
 #include "openrc/actor_library.hpp"
+#include "render_material_policy.hpp"
 
 #include "openrc/hash.hpp"
 
@@ -485,6 +486,8 @@ void validate_model(const ActorModelV1 &model, const ActorRigAssetV1 &rig,
   std::vector<bool> used_textures(model.textures.size(), false);
   std::vector<bool> used_materials(model.materials.size(), false);
   for (const auto &material : model.materials) {
+    try {detail::validate_render_material_extension_v1(material,model.textures);}
+    catch(const RenderSceneError &error) {fail(error.what());}
     if (!valid_address_mode(material.address_u) ||
         !valid_address_mode(material.address_v) ||
         !valid_filter(material.min_filter) ||
@@ -563,6 +566,11 @@ void validate_model(const ActorModelV1 &model, const ActorRigAssetV1 &rig,
         fail("ActorLibraryV1 draw ranges are not a complete partition");
       }
       used_materials[draw.material_id] = true;
+      for(std::uint64_t i=0U;i<draw.index_count;++i) {
+        const auto &vertex=mesh.vertices[mesh.triangle_indices[static_cast<std::size_t>(draw.first_index+i)]];
+        try {detail::validate_encoded_material_uv_v1(model.materials[draw.material_id],model.textures,vertex.u,vertex.v);}
+        catch(const RenderSceneError &error) {fail(error.what());}
+      }
       expected_first = checked_add(expected_first, draw.index_count,
                                    "ActorLibraryV1 draw coverage");
     }
@@ -669,6 +677,23 @@ PreparedContentDigestV1 actor_model_content_sha256_v1(
   }
   for (const auto &mesh : model.meshes) {
     digest_mesh(writer, mesh);
+  }
+  // Legacy models retain the exact old content preimage. An extension pins
+  // every material's added fields after an explicit, length-prefixed domain.
+  if(std::any_of(model.materials.begin(),model.materials.end(),
+      detail::has_render_material_extension_v1)) {
+    writer.append_domain("openrc.actor-model.render-policy.v1");
+    writer.append_u32(static_cast<std::uint32_t>(model.materials.size()));
+    for(const auto &material:model.materials) {
+      writer.append_u8(static_cast<std::uint8_t>(material.color_math));
+      writer.append_u8(static_cast<std::uint8_t>(material.blend_mode));
+      writer.append_u8(static_cast<std::uint8_t>(material.interpolation));
+      writer.append_u8(static_cast<std::uint8_t>(material.depth_test));
+      writer.append_u8(material.depth_write?0U:1U);
+      writer.append_u8(material.texture_modulation_denominator);
+      writer.append_u8(material.blend_denominator);
+      writer.append_u8(static_cast<std::uint8_t>(material.alpha_failure));
+    }
   }
   return writer.finish();
 }

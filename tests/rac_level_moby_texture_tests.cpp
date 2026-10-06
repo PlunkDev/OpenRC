@@ -208,6 +208,12 @@ void test_bank_decode_and_metadata() {
                 "logical CLUT entry 24");
     expect_rgba(first.palette_rgba, 1U, {100U, 110U, 120U, 0xfeU},
                 "logical CLUT entry 1");
+    expect_rgba(first.palette_raw_rgba, 8U, {10U, 20U, 30U, 0x40U},
+                "raw logical CLUT entry 8 retains half alpha");
+    expect_rgba(first.palette_raw_rgba, 16U, {40U, 50U, 60U, 0x80U},
+                "raw logical CLUT entry 16 retains unit alpha");
+    expect_rgba(first.palette_raw_rgba, 1U, {100U, 110U, 120U, 0x7fU},
+                "raw logical CLUT entry 1 retains alpha below unit");
     expect_rgba(first.rgba, 0U, {10U, 20U, 30U, 0x80U},
                 "first expanded pixel");
     expect_rgba(first.rgba, 1U, {40U, 50U, 60U, 0xffU},
@@ -218,6 +224,8 @@ void test_bank_decode_and_metadata() {
                 "fourth expanded pixel");
 
     const auto &second = bank.textures[1U];
+    expect_rgba(second.palette_raw_rgba, 255U, {5U, 6U, 7U, 0xffU},
+                "raw logical CLUT retains alpha beyond unit");
     expect(second.global_index == 1U, "second global index is wrong");
     expect(second.entry.table_entry_range ==
                openrc::RacLevelMobyTextureRangeV1{0x10U, 0x10U},

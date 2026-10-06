@@ -73,7 +73,10 @@ function Assert-PortableExecutable {
     }
 }
 
-& $cmake --fresh -S $projectRoot -B $buildRoot -G 'MinGW Makefiles' `
+# Reconfigure the existing build with the required toolchain/options. CMake
+# tracks changed inputs; retaining its cache avoids recompiling unchanged
+# targets on every validation. Publication still requires all tests and audits.
+& $cmake -S $projectRoot -B $buildRoot -G 'MinGW Makefiles' `
     ('-DCMAKE_CXX_COMPILER=' + $compiler) `
     ('-DCMAKE_MAKE_PROGRAM=' + $make) `
     ('-DCMAKE_BUILD_TYPE=' + $Configuration) `
@@ -157,7 +160,15 @@ try {
     }
 
     if ($hadPreviousPackage -and (Test-Path -LiteralPath $previousRoot)) {
-        Remove-Item -LiteralPath $previousRoot -Recurse -Force
+        try {
+            Remove-Item -LiteralPath $previousRoot -Recurse -Force
+        } catch {
+            # Publication has committed the fully audited replacement. Windows
+            # may still lock an old executable used by a concurrent Prepare.
+            # Keep its backup and report cleanup separately from build success.
+            Write-Warning ('The verified package is published; previous-package cleanup failed: ' +
+                $previousRoot + [System.Environment]::NewLine + $_.Exception.Message)
+        }
     }
 } catch {
     if (Test-Path -LiteralPath $stagingRoot) {

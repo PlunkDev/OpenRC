@@ -94,6 +94,7 @@ component_lane(const DvpVuComponent component) {
 }
 
 void enforce_architectural_constants(DvpVuExecutionStateV1& state) {
+    for(auto& latch:state.accumulator_overflow) latch=masked_word(latch,1U);
     state.vi[0U] = known_vi(0U);
     state.vf[0U].lanes[0U] = known_word(0U);
     state.vf[0U].lanes[1U] = known_word(0U);
@@ -124,13 +125,13 @@ struct FloatOutcome {
     bool sign = false;
     bool underflow = false;
     bool overflow = false;
+    DvpVuWordV1 sticky_events;
 };
 
-enum class FloatBinaryOperation : std::uint8_t {
-    add = 0,
-    subtract,
-    multiply,
-};
+[[nodiscard]] DvpVuWordV1 numerical_events(bool zero,bool sign,bool underflow,bool overflow) {
+    return {static_cast<std::uint32_t>(zero)|(static_cast<std::uint32_t>(sign)<<1U)|
+        (static_cast<std::uint32_t>(underflow)<<2U)|(static_cast<std::uint32_t>(overflow)<<3U),0xfU};
+}
 
 [[nodiscard]] FloatOutcome float_add_sub_reference(
     const DvpVuWordV1 left, const DvpVuWordV1 right, const bool subtract) {
@@ -140,65 +141,41 @@ enum class FloatBinaryOperation : std::uint8_t {
     const auto numeric = subtract ? dvp_vu_sub_bits_v1(left.bits, right.bits)
                                   : dvp_vu_add_bits_v1(left.bits, right.bits);
     return {known_word(numeric.bits), true, numeric.zero, numeric.sign,
-            numeric.underflow, numeric.overflow};
+            numeric.underflow, numeric.overflow,
+            numerical_events(numeric.zero,numeric.sign,numeric.underflow,numeric.overflow)};
 }
 
-[[nodiscard]] FloatOutcome float_binary(const DvpVuWordV1 left,
-                                        const DvpVuWordV1 right,
-                                        const FloatBinaryOperation operation) {
+[[nodiscard]] FloatOutcome float_mul_reference(const DvpVuWordV1 left,
+                                               const DvpVuWordV1 right) {
     if (!fully_known(left) || !fully_known(right)) {
         return {};
     }
-
-    const auto left_bits = normalize_vu_float_bits(left.bits);
-    const auto right_bits = normalize_vu_float_bits(right.bits);
-    const auto left_float = std::bit_cast<float>(left_bits);
-    const auto right_float = std::bit_cast<float>(right_bits);
-    float raw_result = 0.0F;
-    switch (operation) {
-    case FloatBinaryOperation::add:
-        raw_result = left_float + right_float;
-        break;
-    case FloatBinaryOperation::subtract:
-        raw_result = left_float - right_float;
-        break;
-    case FloatBinaryOperation::multiply:
-        raw_result = left_float * right_float;
-        break;
-    }
-
-    auto result_bits = std::bit_cast<std::uint32_t>(raw_result);
-    const auto raw_exponent = result_bits & 0x7f800000U;
-    const auto raw_mantissa = result_bits & 0x007fffffU;
-    const bool overflow = raw_exponent == 0x7f800000U;
-    const bool underflow = raw_exponent == 0U && raw_mantissa != 0U;
-    result_bits = normalize_vu_float_bits(result_bits);
-
-    FloatOutcome outcome;
-    outcome.value = known_word(result_bits);
-    outcome.flags_known = true;
-    outcome.zero = (result_bits & 0x7fffffffU) == 0U;
-    outcome.sign = (result_bits & 0x80000000U) != 0U;
-    outcome.underflow = underflow;
-    outcome.overflow = overflow;
-    return outcome;
+    const auto numeric = dvp_vu_mul_bits_v1(left.bits, right.bits);
+    return {known_word(numeric.bits), true, numeric.zero, numeric.sign,
+            numeric.underflow, numeric.overflow,
+            numerical_events(numeric.zero,numeric.sign,numeric.underflow,numeric.overflow)};
 }
 
 [[nodiscard]] FloatOutcome float_madd(const DvpVuWordV1 accumulator,
+                                      const DvpVuWordV1 overflow_latch,
                                       const DvpVuWordV1 left,
                                       const DvpVuWordV1 right,
                                       const bool subtract) {
-    // Leave the separately unqualified multiply/ACC path unchanged. Replacing
-    // its adder alone would not establish product rounding or ACC latch rules.
-    const auto product =
-        float_binary(left, right, FloatBinaryOperation::multiply);
-    if (!fully_known(product.value)) {
+    if(!fully_known(left)||!fully_known(right)) {
         return {};
     }
-    return float_binary(accumulator,
-                        product.value,
-                        subtract ? FloatBinaryOperation::subtract
-                                 : FloatBinaryOperation::add);
+    const auto product=dvp_vu_mul_bits_v1(left.bits,right.bits);
+    if(!fully_known(accumulator)||!fully_known(overflow_latch,1U)) {
+        // Product events that are already set remain known sticky events
+        // even when the final ACC addition cannot yet be determined.
+        FloatOutcome unknown;
+        unknown.sticky_events=bit_or(numerical_events(product.zero,product.sign,product.underflow,product.overflow),{});
+        return unknown;
+    }
+    const auto numeric=dvp_vu_madd_bits_v1({accumulator.bits,(overflow_latch.bits&1U)!=0U},left.bits,right.bits,subtract);
+    const auto& value=numeric.result;
+    return {known_word(value.bits),true,value.zero,value.sign,value.underflow,value.overflow,
+        {numeric.sticky_events,0xfU}};
 }
 
 [[nodiscard]] DvpVuWordV1 float_minmax(const DvpVuWordV1 left,
@@ -253,6 +230,7 @@ struct RegisterSnapshot {
     std::array<DvpVuVectorV1, kDvpVuVectorRegisterCount> vf;
     std::array<DvpVuWordV1, kDvpVuIntegerRegisterCount> vi;
     DvpVuVectorV1 accumulator;
+    std::array<DvpVuWordV1,kDvpVuLaneCount> accumulator_overflow;
     DvpVuWordV1 scalar_i;
     DvpVuWordV1 scalar_q;
     DvpVuWordV1 mac_flags;
@@ -267,6 +245,7 @@ snapshot_registers(const DvpVuExecutionStateV1& state) {
         state.vf,
         state.vi,
         state.accumulator,
+        state.accumulator_overflow,
         state.scalar_i,
         state.scalar_q,
         state.mac_flags,
@@ -280,6 +259,7 @@ struct PendingStatus {
     std::uint64_t ready_cycle = 0U;
     DvpVuWordV1 mac;
     DvpVuWordV1 current;
+    DvpVuWordV1 sticky_events;
 };
 
 struct PendingClip {
@@ -311,7 +291,7 @@ void commit_status(DvpVuExecutionStateV1& state, const PendingStatus& pending) {
     state.mac_flags = masked_word(pending.mac, 0x0000ffffU);
     replace_bits(state.status_flags, pending.current, 0x0fU);
     for (std::uint32_t bit = 0U; bit < 4U; ++bit) {
-        const auto current = masked_word(pending.current, 1U << bit);
+        const auto current = masked_word(pending.sticky_events, 1U << bit);
         DvpVuWordV1 shifted{
             current.bits << 6U,
             current.known_mask << 6U,
@@ -475,7 +455,10 @@ make_pending_status(const std::uint64_t ready_cycle,
             current.bits |= (aggregate.bits & 1U) << flag;
         }
     }
-    return PendingStatus{ready_cycle, mac, current};
+    DvpVuWordV1 sticky{0U,0xfU};
+    for(std::size_t lane=0;lane<kDvpVuLaneCount;++lane)
+        if((destination_mask&lane_bit(lane))!=0U) sticky=bit_or(sticky,outcomes[lane].sticky_events);
+    return PendingStatus{ready_cycle, mac, current,sticky};
 }
 
 [[nodiscard]] DvpVuWordV1 upper_operand(const DvpVuUpperInstructionV1& upper,
@@ -830,14 +813,13 @@ void execute_upper(const DvpVuInstructionPairV1& pair,
         if (is_add_family(upper.opcode)) {
             outcomes[lane] = float_add_sub_reference(left, right, false);
         } else if (is_multiply_family(upper.opcode)) {
-            outcomes[lane] =
-                float_binary(left, right, FloatBinaryOperation::multiply);
+            outcomes[lane] = float_mul_reference(left, right);
         } else if (is_madd_family(upper.opcode)) {
             outcomes[lane] =
-                float_madd(before.accumulator.lanes[lane], left, right, false);
+                float_madd(before.accumulator.lanes[lane],before.accumulator_overflow[lane],left,right,false);
         } else if (is_msub_family(upper.opcode)) {
             outcomes[lane] =
-                float_madd(before.accumulator.lanes[lane], left, right, true);
+                float_madd(before.accumulator.lanes[lane],before.accumulator_overflow[lane],left,right,true);
         } else {
             outcomes[lane] = float_add_sub_reference(left, right, true);
         }
@@ -846,6 +828,10 @@ void execute_upper(const DvpVuInstructionPairV1& pair,
 
     if (is_accumulator_destination(upper.opcode)) {
         write_masked_vector(state.accumulator, output, upper.destination_mask);
+        for(std::size_t lane=0;lane<kDvpVuLaneCount;++lane)
+            if((upper.destination_mask&lane_bit(lane))!=0U)
+                state.accumulator_overflow[lane]=outcomes[lane].flags_known?
+                    DvpVuWordV1{static_cast<std::uint32_t>(outcomes[lane].overflow),1U}:DvpVuWordV1{};
     } else if (upper.fd != 0U) {
         write_masked_vector(state.vf[upper.fd], output, upper.destination_mask);
     }
@@ -857,12 +843,13 @@ void execute_upper(const DvpVuInstructionPairV1& pair,
         !pipelines.q.empty() && pipelines.q.front().ready_cycle > cycle) {
         add_warning(result, DvpVuExecutionWarningV1::q_read_before_ready);
     }
-    const bool host_arithmetic = is_multiply_family(upper.opcode) ||
-                                 is_madd_family(upper.opcode) ||
+    const bool compound_arithmetic = is_madd_family(upper.opcode) ||
                                  is_msub_family(upper.opcode);
-    add_warning(result, host_arithmetic
-                            ? DvpVuExecutionWarningV1::host_float_approximation
-                            : DvpVuExecutionWarningV1::vu_add_sub_reference_model);
+    add_warning(result, compound_arithmetic
+                            ? DvpVuExecutionWarningV1::vu_madd_reference_model
+                            : is_multiply_family(upper.opcode)
+                                  ? DvpVuExecutionWarningV1::vu_mul_reference_model
+                                  : DvpVuExecutionWarningV1::vu_add_sub_reference_model);
 }
 
 [[nodiscard]] bool supported_lower(const DvpVuLowerInstructionV1& lower) {
@@ -985,6 +972,46 @@ memory_address(const DvpVuWordV1 base, const std::int32_t offset) {
         0x03ffU);
 }
 
+// Reads have no externally visible side effect. A speculative load whose
+// address is partly unknown can therefore continue with precisely the bits
+// shared by every possible RAM value. In particular, a dead prefetch at the
+// end of a source strip must not prevent its preceding live vertices from
+// reaching XGKICK. Stores and packet/control addresses remain strict.
+[[nodiscard]] DvpVuVectorV1 read_memory_value(
+    const DvpVuExecutionStateV1& state, const DvpVuWordV1 base,
+    const std::int32_t offset) {
+    if (const auto address = memory_address(base, offset)) {
+        return state.data_memory[*address];
+    }
+    DvpVuVectorV1 result;
+    bool first = true;
+    const auto mask = base.known_mask & 0x03ffU;
+    for (std::uint32_t candidate = 0U;
+         candidate < kDvpVuDataMemoryQwordCount; ++candidate) {
+        if (((candidate ^ base.bits) & mask) != 0U) {
+            continue;
+        }
+        const auto address =
+            (candidate + static_cast<std::uint32_t>(offset)) & 0x03ffU;
+        const auto& value = state.data_memory[address];
+        if (first) {
+            result = value;
+            first = false;
+        } else {
+            for (std::size_t lane = 0U; lane < kDvpVuLaneCount; ++lane) {
+                auto& joined = result.lanes[lane];
+                const auto other = value.lanes[lane];
+                joined.known_mask &= other.known_mask &
+                                     ~(joined.bits ^ other.bits);
+            }
+        }
+    }
+    for (auto& lane : result.lanes) {
+        lane.bits &= lane.known_mask;
+    }
+    return result;
+}
+
 [[nodiscard]] DvpVuWordV1 increment_vi(const DvpVuWordV1 value,
                                        const std::int32_t delta) {
     const auto addend = static_cast<std::uint16_t>(delta);
@@ -1088,26 +1115,17 @@ struct DivideOutcome {
     if (!fully_known(numerator) || !fully_known(denominator)) {
         return {};
     }
-    const auto numerator_bits = normalize_vu_float_bits(numerator.bits);
-    const auto denominator_bits = normalize_vu_float_bits(denominator.bits);
-    const bool numerator_zero = (numerator_bits & 0x7fffffffU) == 0U;
-    const bool denominator_zero = (denominator_bits & 0x7fffffffU) == 0U;
-    const auto quotient_sign =
-        (numerator_bits ^ denominator_bits) & 0x80000000U;
+    const bool numerator_zero = (numerator.bits & 0x7f800000U) == 0U;
+    const bool denominator_zero = (denominator.bits & 0x7f800000U) == 0U;
 
     DivideOutcome result;
+    result.value=known_word(dvp_vu_div_bits_v1(numerator.bits,denominator.bits));
     result.current = DvpVuWordV1{0U, 0x30U};
     if (denominator_zero) {
-        result.value = known_word(quotient_sign | 0x7f7fffffU);
         result.current.bits = numerator_zero ? 0x10U : 0x20U;
         return result;
     }
 
-    const auto left = std::bit_cast<float>(numerator_bits);
-    const auto right = std::bit_cast<float>(denominator_bits);
-    const auto quotient = left / right;
-    result.value = known_word(
-        normalize_vu_float_bits(std::bit_cast<std::uint32_t>(quotient)));
     return result;
 }
 
@@ -1231,16 +1249,14 @@ direct_branch_target(const DvpVuInstructionPairV1& pair) {
 }
 
 void execute_vector_load(const DvpVuLowerInstructionV1& lower,
-                         const RegisterSnapshot& before,
                          DvpVuExecutionStateV1& state,
-                         const std::uint16_t address) {
+                         const DvpVuVectorV1& value) {
     if (lower.it == 0U) {
         return;
     }
     write_masked_vector(state.vf[lower.it],
-                        state.data_memory[address],
+                        value,
                         lower.destination_mask);
-    (void)before;
 }
 
 [[nodiscard]] LowerOutcome execute_lower(const DvpVuInstructionPairV1& pair,
@@ -1428,7 +1444,7 @@ void execute_vector_load(const DvpVuLowerInstructionV1& lower,
             divided.value,
             divided.current,
         });
-        add_warning(result, DvpVuExecutionWarningV1::host_float_approximation);
+        add_warning(result, DvpVuExecutionWarningV1::vu_div_reference_model);
         break;
     }
     case DvpVuLowerOpcode::lq:
@@ -1440,17 +1456,11 @@ void execute_vector_load(const DvpVuLowerInstructionV1& lower,
         const auto offset = lower.opcode == DvpVuLowerOpcode::lq
                                 ? lower.signed_immediate
                                 : (pre_decrement ? -1 : 0);
-        const auto address = memory_address(base, offset);
-        if (!address) {
-            return LowerOutcome{
-                std::nullopt,
-                DvpVuTerminationV1::indeterminate_memory_address,
-            };
-        }
+        const auto value = read_memory_value(state, base, offset);
         if (pre_decrement) {
             write_vi(state, source_is, increment_vi(base, -1));
         }
-        execute_vector_load(lower, before, state, *address);
+        execute_vector_load(lower, state, value);
         if (post_increment) {
             write_vi(state, source_is, increment_vi(base, 1));
         }
@@ -1494,18 +1504,12 @@ void execute_vector_load(const DvpVuLowerInstructionV1& lower,
                 DvpVuTerminationV1::unsupported_instruction,
             };
         }
-        const auto address = memory_address(
+        const auto loaded = read_memory_value(state,
             before.vi[source_is],
             lower.opcode == DvpVuLowerOpcode::ilw ? lower.signed_immediate : 0);
-        if (!address) {
-            return LowerOutcome{
-                std::nullopt,
-                DvpVuTerminationV1::indeterminate_memory_address,
-            };
-        }
         for (std::size_t lane = 0U; lane < kDvpVuLaneCount; ++lane) {
             if ((lower.destination_mask & lane_bit(lane)) != 0U) {
-                const auto value = state.data_memory[*address].lanes[lane];
+                const auto value = loaded.lanes[lane];
                 write_vi(state,
                          source_it,
                          DvpVuWordV1{

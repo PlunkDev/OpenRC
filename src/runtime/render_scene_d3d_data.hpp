@@ -55,10 +55,20 @@ struct RenderSceneD3dMaterialV1 {
         RenderSceneMipmapFilterV1::none;
     // Opaque materials use -1, so the common shader's clip is disabled.
     float alpha_cutoff = -1.0F;
+    RenderSceneColorMathV1 color_math=RenderSceneColorMathV1::linear;
+    RenderSceneBlendModeV1 blend_mode=RenderSceneBlendModeV1::opaque;
+    RenderSceneInterpolationV1 interpolation=RenderSceneInterpolationV1::perspective;
+    RenderSceneDepthTestV1 depth_test=RenderSceneDepthTestV1::less_equal;
+    bool depth_write=true;
+    std::uint8_t texture_modulation_denominator=255,blend_denominator=255;
+    RenderSceneAlphaFailureV1 alpha_failure=RenderSceneAlphaFailureV1::discard;
 };
 
 struct RenderSceneD3dDataV1 {
     std::vector<RenderSceneD3dVertexV1> vertices;
+    // Bit0 omits camera translation, bit1 projects depth to the far plane.
+    // Kept separate from the shared 24-byte skinned/static vertex layout.
+    std::vector<std::uint8_t> vertex_projection_flags;
     std::vector<std::uint32_t> triangle_indices;
     std::vector<RenderSceneD3dDrawV1> draws;
     std::vector<RenderSceneD3dMaterialV1> materials;

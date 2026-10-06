@@ -1,4 +1,5 @@
 #include "openrc/render_scene.hpp"
+#include "render_material_policy.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -209,6 +210,7 @@ void validate_render_scene_v1(const RenderSceneV1 &scene,
   std::vector<bool> used_textures(scene.textures.size(), false);
   std::vector<bool> used_materials(scene.materials.size(), false);
   for (const auto &material : scene.materials) {
+    detail::validate_render_material_extension_v1(material,scene.textures);
     if (!valid_address_mode(material.address_u) ||
         !valid_address_mode(material.address_v) ||
         !valid_filter(material.min_filter) ||
@@ -300,6 +302,10 @@ void validate_render_scene_v1(const RenderSceneV1 &scene,
         fail("RenderSceneV1 draws are not a complete canonical triangle partition");
       }
       used_materials[draw.material_id] = true;
+      for(std::uint64_t i=0U;i<draw.index_count;++i) {
+        const auto &vertex=mesh.vertices[mesh.triangle_indices[static_cast<std::size_t>(draw.first_index+i)]];
+        detail::validate_encoded_material_uv_v1(scene.materials[draw.material_id],scene.textures,vertex.u,vertex.v);
+      }
       expected_first_index = checked_add(
           expected_first_index, draw.index_count,
           "A RenderSceneV1 draw-range endpoint");

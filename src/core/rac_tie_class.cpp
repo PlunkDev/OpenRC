@@ -28,6 +28,8 @@ struct PacketEntryV1 {
     std::uint8_t shader_count = 0U;
     std::uint8_t vertex_offset_qwords = 0U;
     std::uint8_t vertex_size_qwords = 0U;
+    std::uint8_t lighting_offset_qwords = 0U;
+    std::uint8_t lighting_size_words = 0U;
 };
 
 struct StripV1 {
@@ -214,6 +216,11 @@ void require_append_capacity(
     const std::size_t offset,
     const float scale) {
     RacTieVertexV1 result;
+    result.quantized_morph_delta = {
+        read_le_i16(bytes, offset),
+        read_le_i16(bytes, offset + 0x02U),
+        read_le_i16(bytes, offset + 0x04U),
+    };
     result.quantized_position = {
         read_le_i16(bytes, offset + 0x08U),
         read_le_i16(bytes, offset + 0x0aU),
@@ -412,6 +419,56 @@ void append_packet_geometry(
         "The RAC1 TIE source-vertex count");
     total_source_vertex_count += source_vertex_count;
 
+    RacTieRangeV1 lighting_indices_range;
+    RacTieRangeV1 secondary_lighting_indices_range;
+    const auto has_lighting_indices = entry.lighting_offset_qwords != 0U ||
+        entry.lighting_size_words != 0U;
+    const auto aligned_dinky_indices = (dinky_count + 3U) & ~3U;
+    if (has_lighting_indices) {
+        // EE 237cd4..237d28 uploads two independently aligned streams.
+        // Each dinky uses one byte; each fat uses {C0,C1,C2,0xff}.
+        const auto index_bytes = aligned_dinky_indices + 4U * fat_count;
+        if (entry.lighting_offset_qwords == 0U ||
+            entry.lighting_size_words == 0U ||
+            4U * entry.lighting_size_words != index_bytes) {
+            fail("A RAC1 TIE packet has an invalid lighting-index count");
+        }
+        lighting_indices_range = {
+            checked_add(packet_data_offset,
+                16U * entry.lighting_offset_qwords,
+                "a RAC1 TIE lighting-index offset"),
+            index_bytes,
+        };
+        secondary_lighting_indices_range = {
+            checked_add(lighting_indices_range.offset,
+                (index_bytes + 15U) & ~15U,
+                "a RAC1 TIE secondary lighting-index offset"),
+            index_bytes,
+        };
+        require_range(lighting_indices_range.offset, index_bytes,
+            bytes.size(), "A RAC1 TIE lighting-index stream");
+        require_range(secondary_lighting_indices_range.offset, index_bytes,
+            bytes.size(), "A RAC1 TIE secondary lighting-index stream");
+        for (std::uint32_t index = 0U; index < index_bytes; ++index) {
+            const auto primary = byte_value(bytes[static_cast<std::size_t>(
+                lighting_indices_range.offset + index)]);
+            const auto secondary = byte_value(bytes[static_cast<std::size_t>(
+                secondary_lighting_indices_range.offset + index)]);
+            const auto dinky_padding = index >= dinky_count &&
+                index < aligned_dinky_indices;
+            const auto fat_sentinel = index >= aligned_dinky_indices &&
+                (index - aligned_dinky_indices) % 4U == 3U;
+            if (dinky_padding || fat_sentinel) {
+                const auto expected = fat_sentinel ? 0xffU : 0U;
+                if (primary != expected || secondary != expected) {
+                    fail("A RAC1 TIE lighting-index stream has invalid padding");
+                }
+            } else if (primary >= 64U || secondary != primary + 64U) {
+                fail("A RAC1 TIE lighting index or secondary mapping is invalid");
+            }
+        }
+    }
+
     std::vector<WorkingVertexV1> working_vertices;
     const auto maximum_expanded = checked_multiply(
         source_vertex_count,
@@ -429,6 +486,11 @@ void append_packet_geometry(
         const auto offset = static_cast<std::size_t>(vertex_offset) +
             index * kTieDinkyVertexBytes;
         auto vertex = decode_dinky_vertex(bytes, offset, scale);
+        if (has_lighting_indices) {
+            vertex.lighting_palette_index_count = 1U;
+            vertex.lighting_palette_indices[0U] = byte_value(bytes[
+                static_cast<std::size_t>(lighting_indices_range.offset) + index]);
+        }
         const auto second_write_offset = read_le16(bytes, offset + 0x0eU);
         append_working_vertex(
             working_vertices,
@@ -440,6 +502,14 @@ void append_packet_geometry(
         const auto offset = static_cast<std::size_t>(
             vertex_offset + dinky_bytes) + index * kTieFatVertexBytes;
         auto vertex = decode_fat_vertex(bytes, offset, scale);
+        if (has_lighting_indices) {
+            vertex.lighting_palette_index_count = 3U;
+            for (std::size_t lane = 0U; lane < 3U; ++lane) {
+                vertex.lighting_palette_indices[lane] = byte_value(bytes[
+                    static_cast<std::size_t>(lighting_indices_range.offset) +
+                    aligned_dinky_indices + 4U * index + lane]);
+            }
+        }
         const auto second_write_offset = read_le16(bytes, offset + 0x16U);
         append_working_vertex(
             working_vertices,
@@ -485,6 +555,8 @@ void append_packet_geometry(
         vertex_padding_offset,
         vertex_padding_bytes,
     };
+    packet.lighting_indices_range = lighting_indices_range;
+    packet.secondary_lighting_indices_range = secondary_lighting_indices_range;
     packet.data_offset = static_cast<std::uint32_t>(entry.data_offset);
     packet.primitive_begin = checked_u32(
         result.primitives.size(), "A RAC1 TIE packet primitive begin");
@@ -618,9 +690,13 @@ void append_packet_geometry(
 
 } // namespace
 
-RacTieClassV1 parse_rac_tie_class_v1(
+RacTieClassV1 parse_rac_tie_lod_class_v1(
     const std::span<const std::byte> bytes,
-    const RacTieClassLimitsV1 limits) {
+    const RacTieClassLimitsV1 limits,
+    const std::uint8_t selected_lod) {
+    if (selected_lod > 2U) {
+        fail("A RAC1 TIE selected LOD is outside the original table domain");
+    }
     if (limits.max_input_bytes == 0U || limits.max_packets == 0U ||
         limits.max_strips == 0U || limits.max_source_vertices == 0U ||
         limits.max_output_vertices == 0U ||
@@ -659,6 +735,10 @@ RacTieClassV1 parse_rac_tie_class_v1(
         }
     }
     result.texture_count = byte_value(bytes[0x23U]);
+    for (std::size_t lod = 0U; lod < 3U; ++lod) {
+        result.lod_threshold_bits[lod] = read_le32(bytes, 0x10U + lod * 4U);
+    }
+    result.mode_bits = read_le16(bytes, 0x24U);
     if (result.texture_count == 0U ||
         result.texture_count > limits.max_materials) {
         fail("The RAC1 TIE class has an invalid material count");
@@ -693,14 +773,20 @@ RacTieClassV1 parse_rac_tie_class_v1(
         fail("The RAC1 TIE class has an invalid scale");
     }
 
-    const auto packet_count = result.lod_packet_counts[0U];
+    result.selected_lod = selected_lod;
+    result.high_lod_packet_table_range = {
+        result.lod_packet_table_offsets[0U],
+        static_cast<std::uint64_t>(result.lod_packet_counts[0U]) *
+            kRacTiePacketEntryBytesV1,
+    };
+    const auto packet_count = result.lod_packet_counts[selected_lod];
     require_limit(packet_count, limits.max_packets, "The RAC1 TIE packet count");
-    const auto packet_table_offset = result.lod_packet_table_offsets[0U];
+    const auto packet_table_offset = result.lod_packet_table_offsets[selected_lod];
     const auto packet_table_bytes = checked_multiply(
         packet_count,
         kRacTiePacketEntryBytesV1,
-        "the high-detail RAC1 TIE packet-table size");
-    result.high_lod_packet_table_range = {
+        "the selected RAC1 TIE packet-table size");
+    result.selected_lod_packet_table_range = {
         packet_table_offset,
         packet_table_bytes,
     };
@@ -720,6 +806,8 @@ RacTieClassV1 parse_rac_tie_class_v1(
             byte_value(bytes[entry_offset + 0x04U]),
             byte_value(bytes[entry_offset + 0x08U]),
             byte_value(bytes[entry_offset + 0x09U]),
+            byte_value(bytes[entry_offset + 0x0aU]),
+            byte_value(bytes[entry_offset + 0x0bU]),
         };
         append_packet_geometry(
             bytes,
@@ -735,6 +823,12 @@ RacTieClassV1 parse_rac_tie_class_v1(
             result);
     }
     return result;
+}
+
+RacTieClassV1 parse_rac_tie_class_v1(
+    const std::span<const std::byte> bytes,
+    const RacTieClassLimitsV1 limits) {
+    return parse_rac_tie_lod_class_v1(bytes, limits, 0U);
 }
 
 } // namespace openrc

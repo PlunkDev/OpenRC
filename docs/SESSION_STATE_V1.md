@@ -60,6 +60,18 @@ processed, preventing writes to the committed session from being silently
 lost when the staged frame commits. Nested frame advancement is also rejected.
 Movement mappers remain pure transforms, not gameplay mutation callbacks.
 
+The integrated entity runtime now receives the actual empty world from that
+staged session instead of rebuilding a separate `GameSessionV1` from a
+schema-less snapshot or an inferred level counter. Persistent bytes have one
+owner; entity materialization neither copies nor restores them. The actual
+spawn and level-instance identity are retained through the transfer. Tests
+cover live entity removals, transitions with and without content, repeated
+content loads and rejected loads while nonzero persistent bytes survive.
+Allocation-failure sweeps separately verify transactional world transfer.
+Level/checkpoint replacement and inventory restoration are also forbidden
+within an active frame, preventing callbacks from mutating the committed world while
+another copy is staged.
+
 ## Initial-artifact binary I/O
 
 The `ORSSINIT` version-1 artifact encodes one schema and its complete initial

@@ -1,10 +1,40 @@
 #include "openrc/ee_cop1_numeric.hpp"
 
 #include "ps2_fmac_add_reference.hpp"
+#include "ps2_fmac_mul_reference.hpp"
+#include "ps2_fdiv_reference.hpp"
+#include "ps2_fmac_acc_reference.hpp"
 
 #include <bit>
 
 namespace openrc {
+
+EeCop1DivResultV1 ee_cop1_div_bits_v1(const std::uint32_t numerator,
+                                      const std::uint32_t denominator) noexcept {
+  return {detail::ps2_fdiv_value_v1(numerator, denominator)};
+}
+
+EeCop1MaddResultV1 ee_cop1_madd_bits_v1(
+    const EeCop1AccumulatorV1 accumulator, const std::uint32_t left,
+    const std::uint32_t right, const bool subtract) noexcept {
+  const auto value = detail::ps2_fmac_acc_value_v1(
+      accumulator.bits, accumulator.overflow, left, right, subtract);
+  return {{value.result.bits, value.result.underflow, value.result.overflow},
+          {value.product.bits, value.product.underflow, value.product.overflow}};
+}
+
+EeCop1MulResultV1 ee_cop1_mul_bits_v1(const std::uint32_t left,
+                                      const std::uint32_t right) noexcept {
+  const auto value = detail::ps2_fmac_mul_value_v1(left, right);
+  return {value.bits, value.underflow, value.overflow};
+}
+
+std::uint32_t
+ee_cop1_mul_fcsr_bits_v1(const std::uint32_t prior_fcsr,
+                         const EeCop1MulResultV1 &result) noexcept {
+  return ee_cop1_add_sub_fcsr_bits_v1(
+      prior_fcsr, {result.bits, result.underflow, result.overflow});
+}
 
 EeCop1AddSubResultV1 ee_cop1_add_bits_v1(const std::uint32_t left,
                                          const std::uint32_t right) noexcept {

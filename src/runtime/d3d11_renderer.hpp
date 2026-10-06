@@ -9,8 +9,14 @@
 #include <windows.h>
 
 #include <cstdint>
+#include <cstddef>
 #include <memory>
+#include <optional>
 #include <span>
+#include <vector>
+#include <array>
+
+#include "openrc/screen_overlay.hpp"
 
 namespace openrc {
 struct ActorAffineTransformV1;
@@ -20,6 +26,8 @@ struct ActorPosePaletteV1;
 struct ActorRigV1;
 struct CollisionVectorV1;
 struct RenderSceneV1;
+struct SceneCameraV1;
+struct ScreenOverlayV1;
 }
 
 namespace openrc::game {
@@ -33,6 +41,71 @@ namespace openrc::runtime {
 
 class D3d11Renderer final {
 public:
+    // Presentation before a level is mounted uses the same device, swap chain
+    // and shaders as gameplay, without constructing a synthetic level.
+    explicit D3d11Renderer(HWND window);
+    void set_media_frame(std::uint32_t width, std::uint32_t height,
+                         std::span<const std::byte> rgba,
+                         std::uint32_t aspect_numerator,
+                         std::uint32_t aspect_denominator);
+    [[nodiscard]] std::uint64_t media_frames_submitted() const noexcept;
+    // Diagnostic readback of the current media draw before Present discards
+    // the back buffer. Dimensions are the renderer's current client size.
+    [[nodiscard]] std::vector<std::byte> capture_media_frame_rgba();
+    [[nodiscard]] std::vector<std::byte> capture_frame_rgba();
+    // An event covers GPU work submitted before this call. Polling reports
+    // the device's completion, independently of Present or elapsed time.
+    // Starting another drain invalidates the previous token.
+    [[nodiscard]] std::uint64_t begin_submission_drain();
+    [[nodiscard]] bool submission_drain_completed(std::uint64_t token);
+    // Requires the current event already observed complete. False means later
+    // GPU work/admission needs a fresh event; independent of presentation mode.
+    // This read-only check does not consume the event or retire any resources.
+    [[nodiscard]] bool submission_drain_covers_current_work(std::uint64_t token) const;
+    // Release the current completion event only after observed completion of
+    // all current work. False leaves it owned when newer work needs a drain.
+    // Success invalidates the token; frame, scene and device remain intact.
+    [[nodiscard]] bool try_retire_submission_drain(std::uint64_t token);
+    // Release cinematic geometry, actors and overlays after this current
+    // drain has been observed complete, with no later GPU work/admission.
+    // Requires a frozen media frame; keeps it, the device and swap chain.
+    // Consumes the token's retirement eligibility and rejects gameplay.
+    void retire_scene_for_media(std::uint64_t completed_drain_token);
+    // The same contract, except a current observed-complete event followed by
+    // newer work returns false without changing resources. A message-pumping
+    // caller can then submit and await a fresh event. Other misuse still throws.
+    [[nodiscard]] bool try_retire_scene_for_media(std::uint64_t completed_drain_token);
+    // Admit a cinematic scene into this same device after media playback.
+    // Neutral actor instances share the ordinary world-actor render path.
+    void set_scene_actors(const openrc::ActorLibraryV1& library,
+        std::span<const openrc::game::RuntimeWorldActorResolutionV1> actors);
+    void set_scene_geometry(const openrc::RenderSceneV1& scene);
+    // First gameplay admission after frontend/media presentation. Keeps this
+    // device and swap chain, replaces scenic actors/geometry, retires overlays
+    // and installs the actual prepared player model. The caller establishes
+    // gameplay camera/pose before presenting the first gameplay frame.
+    void set_gameplay_scene(const openrc::RenderSceneV1& scene,
+        const openrc::ActorLibraryV1& library,
+        const openrc::game::RuntimePlayerActorResolutionV1& player,
+        std::span<const openrc::game::RuntimeWorldActorResolutionV1> actors);
+    void set_scene_camera(const openrc::SceneCameraV1& camera,
+        std::uint32_t aspect_numerator, std::uint32_t aspect_denominator,
+        const std::array<float,4>& clear_color);
+    // Legacy single-overlay admission replaces the complete layer bank.
+    // Its frame setter addresses layer zero; clear retires every layer.
+    void set_screen_overlay(const openrc::ScreenOverlayV1& overlay);
+    void set_screen_overlay_frame(std::uint32_t frame_index);
+    void clear_screen_overlay();
+    // Upload immutable layers once, in submission order. Limits cover the
+    // aggregate neutral byte/image/frame/draw counts across all layers.
+    // Each admitted layer starts at frame zero; an empty span clears them.
+    void set_screen_overlay_layers(
+        std::span<const openrc::ScreenOverlayV1> layers,
+        openrc::ScreenOverlayLimitsV1 limits = {});
+    // Select every layer independently without uploading images. Null hides
+    // that layer. All selections are validated before any state is changed.
+    void set_screen_overlay_layer_frames(
+        std::span<const std::optional<std::uint32_t>> frame_indices);
     // Prepared-package runtime path. It consumes only the neutral render
     // resource.
     D3d11Renderer(HWND window, const openrc::RenderSceneV1& scene);
@@ -86,6 +159,11 @@ public:
         std::uint32_t authored_id,
         const openrc::game::WorldTransformV1& transform);
     void set_world_actor_enabled(std::uint32_t authored_id, bool enabled);
+    // A neutral object may use its owner's separate camera (for example a
+    // model-based interface over a scenic background). Null restores the
+    // scene camera, without changing the object's pose or world transform.
+    void set_world_actor_camera(std::uint32_t authored_id,
+        const openrc::SceneCameraV1* camera);
     [[nodiscard]] bool world_actor_enabled(std::uint32_t authored_id) const;
     [[nodiscard]] bool
     last_frame_world_actor_submitted(std::uint32_t authored_id) const;

@@ -110,6 +110,9 @@ std::vector<std::string> RuntimeLaunchPlanV1::argv_utf8_v1() const {
   const auto checked_prepared_root =
       require_absolute_file_like_path(prepared_root, "PreparedGameV2 root");
 
+  if (startup) return {path_to_utf8(checked_executable), "--prepared-root",
+                       path_to_utf8(checked_prepared_root)};
+
   return {
       path_to_utf8(checked_executable),
       "--prepared-root",
@@ -128,6 +131,14 @@ RuntimeLaunchPlanV1 make_runtime_launch_plan_v1(
   result.prepared_root = require_absolute_file_like_path(
       prepared_root, "PreparedGameV2 root");
   result.level_id = level_id;
+  return result;
+}
+
+RuntimeLaunchPlanV1 make_runtime_startup_launch_plan_v1(
+    const std::filesystem::path &runtime_executable,
+    const std::filesystem::path &prepared_root) {
+  auto result = make_runtime_launch_plan_v1(runtime_executable,prepared_root,0U);
+  result.startup = true;
   return result;
 }
 

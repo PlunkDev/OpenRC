@@ -417,6 +417,82 @@ void test_prepared_game_integrity_and_paths() {
       "PreparedGameV2 ignored its level count limit");
 }
 
+void test_shared_package_reference_and_legacy_bytes() {
+  const auto level_bytes = openrc::encode_level_package_v1(make_base_package(), kLevelLimits);
+  auto game = make_prepared_game(level_bytes);
+  const auto legacy_bytes = openrc::encode_prepared_game_v2(game, kGameLimits);
+  expect(legacy_bytes[68U] == std::byte{0U} &&
+             !openrc::parse_prepared_game_v2(legacy_bytes, kGameLimits).shared_package,
+         "A legacy manifest must retain feature zero and no global package");
+  auto shared = make_base_package();
+  shared.level_id = openrc::kPreparedGameSharedPackageIdV2;
+  const auto shared_bytes = openrc::encode_level_package_v1(shared, kLevelLimits);
+  game.shared_package = openrc::PreparedGameSharedReferenceV2{
+      "shared/global.orlvl", shared_bytes.size(),
+      openrc::prepared_content_sha256_v1(shared_bytes)};
+  const auto bytes = openrc::encode_prepared_game_v2(game, kGameLimits);
+  const auto parsed = openrc::parse_prepared_game_v2(bytes, kGameLimits);
+  expect(bytes[68U] == std::byte{1U} && parsed.shared_package == game.shared_package &&
+             parsed.levels.size() == 2U &&
+             openrc::find_prepared_game_level_v2(parsed, shared.level_id) == nullptr &&
+             openrc::encode_prepared_game_v2(parsed, kGameLimits) == bytes,
+         "Shared package must roundtrip outside the planet list");
+  expect(openrc::parse_prepared_game_shared_package_v1(parsed, shared_bytes, kLevelLimits)
+             .level_id == shared.level_id, "Shared package must use the same neutral container");
+  game.shared_package.reset();
+  expect(openrc::encode_prepared_game_v2(game, kGameLimits) == legacy_bytes,
+         "Feature zero encoding must remain byte-identical after shared removal");
+  expect_rejected<openrc::PreparedGameV2Error>([&] {
+    (void)openrc::parse_prepared_game_shared_package_v1(game, shared_bytes, kLevelLimits);
+  }, "Absent shared reference must reject supplied shared bytes");
+
+  auto bad_features = bytes;
+  bad_features[68U] = std::byte{3U};
+  overwrite_body_digest(bad_features);
+  expect_rejected<openrc::PreparedGameV2Error>([&] {
+    (void)openrc::parse_prepared_game_v2(bad_features, kGameLimits);
+  }, "Unknown required feature bits must reject even with a correct digest");
+  auto missing_record = legacy_bytes;
+  missing_record[68U] = std::byte{1U};
+  overwrite_body_digest(missing_record);
+  expect_rejected<openrc::PreparedGameV2Error>([&] {
+    (void)openrc::parse_prepared_game_v2(missing_record, kGameLimits);
+  }, "A feature flag cannot fabricate an absent shared record");
+
+  auto tight = kGameLimits;
+  tight.max_total_referenced_package_bytes = level_bytes.size() + 1234U;
+  (void)openrc::parse_prepared_game_v2(legacy_bytes, tight);
+  expect_rejected<openrc::PreparedGameV2Error>([&] {
+    (void)openrc::parse_prepared_game_v2(bytes, tight);
+  }, "Shared bytes must count against the existing aggregate package budget");
+  for (const auto path : {"../shared.orlvl", "levels/000.orlvl", "mods/gameplay/manifest.ormod"}) {
+    auto collision = parsed;
+    collision.shared_package->package_path = path;
+    expect_rejected<openrc::PreparedGameV2Error>([&] {
+      (void)openrc::encode_prepared_game_v2(collision, kGameLimits);
+    }, "Shared paths must be safe and distinct from all existing references");
+  }
+  auto reserved_level = game;
+  reserved_level.levels[0U].level_id = openrc::kPreparedGameSharedPackageIdV2;
+  expect_rejected<openrc::PreparedGameV2Error>([&] {
+    (void)openrc::encode_prepared_game_v2(reserved_level, kGameLimits);
+  }, "Reserved shared identity cannot masquerade as a planet");
+  for (unsigned change = 0U; change < 4U; ++change) {
+    auto invalid = shared;
+    if (change == 0U) invalid.level_id = 0U;
+    if (change == 1U) invalid.build_id = "another-build";
+    if (change == 2U) invalid.content_api_version = 2U;
+    auto invalid_bytes = openrc::encode_level_package_v1(invalid, kLevelLimits);
+    auto reference = parsed;
+    reference.shared_package->package_bytes = invalid_bytes.size();
+    reference.shared_package->package_sha256 = openrc::prepared_content_sha256_v1(invalid_bytes);
+    if (change == 3U) invalid_bytes.back() ^= std::byte{1U};
+    expect_rejected<openrc::PreparedGameV2Error>([&] {
+      (void)openrc::parse_prepared_game_shared_package_v1(reference, invalid_bytes, kLevelLimits);
+    }, "Shared identity and digest binding must reject mismatches");
+  }
+}
+
 } // namespace
 
 int main() {
@@ -426,6 +502,7 @@ int main() {
     test_overlay_resolution();
     test_prepared_game_round_trip_and_reference_binding();
     test_prepared_game_integrity_and_paths();
+    test_shared_package_reference_and_legacy_bytes();
     std::cout << "OpenRC PreparedGameV2/LevelPackageV1 tests passed\n";
     return 0;
   } catch (const std::exception &error) {

@@ -427,6 +427,28 @@ LevelPackageV1 load_prepared_game_level_package_v1(
   }
 }
 
+LevelPackageV1 load_prepared_game_shared_package_v1(
+    const PreparedGameV2RootV1 &prepared,
+    const PreparedGameV2FilesystemLimitsV1 limits) {
+  validate_limits(limits);
+  if (!prepared.manifest.shared_package) {
+    fail("PreparedGameV2 does not reference a shared package");
+  }
+  const auto &reference = *prepared.manifest.shared_package;
+  if (reference.package_bytes > limits.level_package.max_input_bytes) {
+    fail("A referenced shared LevelPackageV1 exceeds its caller byte limit");
+  }
+  const auto package_bytes = read_prepared_file(
+      prepared.root, reference.package_path,
+      limits.level_package.max_input_bytes, reference.package_bytes);
+  try {
+    return parse_prepared_game_shared_package_v1(
+        prepared.manifest, package_bytes, limits.level_package);
+  } catch (const PreparedGameV2Error &error) {
+    fail("Invalid referenced shared LevelPackageV1: " + std::string(error.what()));
+  }
+}
+
 ResolvedLevelPackageV1 load_resolved_prepared_game_level_package_v1(
     const PreparedGameV2RootV1 &prepared, const std::uint32_t level_id,
     const std::span<const ExplicitLevelPackageOverlayBytesV1> explicit_overlays,

@@ -1,5 +1,6 @@
 #include "openrc/dvp_vu_numeric.hpp"
 #include "openrc/ee_cop1_numeric.hpp"
+#include "ps2_mul_reference_oracle.hpp"
 
 #include <array>
 #include <cstdint>
@@ -371,6 +372,65 @@ void test_add_sub_fcsr_events_and_persistence() {
          "ordered ADD/SUB events lost sticky or unrelated state");
 }
 
+void test_mul_ordered_value_and_fcsr_boundary() {
+  std::uint32_t generator = 0x9108732dU;
+  for (std::uint32_t sample = 0U; sample < 65536U; ++sample) {
+    generator = generator * 1664525U + 1013904223U;
+    const auto left = generator;
+    generator = generator * 1664525U + 1013904223U;
+    const auto right = generator;
+    const auto expected = openrc_test::mul_oracle(left, right);
+    const auto value = openrc::ee_cop1_mul_bits_v1(left, right);
+    expect(value.bits == expected.bits &&
+               value.underflow == expected.underflow &&
+               value.overflow == expected.overflow,
+           "EE MUL differs from independent column oracle");
+    const auto vu = openrc::dvp_vu_mul_bits_v1(left, right);
+    expect(value.bits == vu.bits && value.underflow == vu.underflow &&
+               value.overflow == vu.overflow,
+           "shared MUL value must not conflate EE and VU state types");
+    const auto prior = sample * 0x10001U;
+    const auto fcsr = openrc::ee_cop1_mul_fcsr_bits_v1(prior, value);
+    const auto events =
+        (value.underflow ? 0x4008U : 0U) | (value.overflow ? 0x8010U : 0U);
+    expect(fcsr == ((prior & ~0xc000U) | events),
+           "MUL must replace U/O causes, accumulate stickies and preserve "
+           "other bits");
+  }
+  static_assert(!openrc::EeCop1MulResultV1::physical_console_qualified);
+  static_assert(!openrc::DvpVuMulResultV1::physical_console_qualified);
+}
+
+void test_division_exact_scale_and_range() {
+  // Algebraic powers of two need no floating host or a duplicate of the
+  // divider's redundant remainder recurrence. Include its extended exp255.
+  for(std::uint32_t numerator_exp=0;numerator_exp<256;++numerator_exp)
+    for(std::uint32_t denominator_exp=0;denominator_exp<256;++denominator_exp)
+      for(const auto sign:std::array{0U,0x80000000U}) {
+        const int exponent=static_cast<int>(numerator_exp)-static_cast<int>(denominator_exp)+127;
+        const auto expected=denominator_exp==0?sign|0x7fffffffU:
+            numerator_exp==0||exponent<=0?sign:
+            exponent>255?sign|0x7fffffffU:sign|(static_cast<std::uint32_t>(exponent)<<23U);
+        const auto result=openrc::ee_cop1_div_bits_v1((numerator_exp<<23U)|sign,denominator_exp<<23U);
+        expect(result.bits==expected,"DIV power-of-two scaling/range differs from integer exponent arithmetic");
+      }
+  for(std::uint32_t exponent=1;exponent<256;++exponent)
+    for(std::uint32_t sample=0;sample<256;++sample) {
+      const auto value=(exponent<<23U)|((sample*0x7fffffU)/255U);
+      expect(openrc::ee_cop1_div_bits_v1(value,0x3f800000U).bits==value,"DIV right identity changed a finite mantissa");
+      expect(openrc::ee_cop1_div_bits_v1(value,value).bits==0x3f800000U,"DIV self quotient is not one");
+      expect(openrc::ee_cop1_div_bits_v1(value|0x80000000U,value).bits==0xbf800000U,"DIV sign XOR failed");
+    }
+  for(const auto zero:std::array{0U,1U,0x7fffffU,0x80000000U,0x807fffffU}) {
+    expect(openrc::ee_cop1_div_bits_v1(zero,0xbf800000U).bits==((zero^0xbf800000U)&0x80000000U),
+        "DIV exponent-zero numerator did not flush with its sign");
+    expect(openrc::ee_cop1_div_bits_v1(0x3f800000U,zero).bits==((zero&0x80000000U)|0x7fffffffU),
+        "DIV exponent-zero denominator did not saturate with its sign");
+  }
+  static_assert(!openrc::EeCop1DivResultV1::physical_console_qualified);
+  static_assert(!openrc::EeCop1DivResultV1::fcsr_effects_qualified);
+}
+
 } // namespace
 
 int main() {
@@ -384,6 +444,8 @@ int main() {
     test_add_sub_guard_distance_and_underflow_remnants();
     test_add_sub_exact_integer_domain_and_shared_value_boundary();
     test_add_sub_fcsr_events_and_persistence();
+    test_mul_ordered_value_and_fcsr_boundary();
+    test_division_exact_scale_and_range();
     std::cout << "ee_cop1_numeric_tests: ok\n";
     return 0;
   } catch (const std::exception &error) {

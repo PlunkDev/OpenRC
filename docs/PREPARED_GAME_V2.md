@@ -42,13 +42,36 @@ manifest references.
 
 The body contains, in order:
 
-1. `u32 content_api_version` and one zero `u32`;
+1. `u32 content_api_version` and `u32 required_features`;
 2. strings `game_id`, `build_id`, `compiler_id`, `compiler_version`;
 3. source image byte size and SHA-256;
 4. a one-byte V1-manifest presence flag, seven zero bytes, and a 32-byte
    digest (zero when absent);
-5. level references in strictly increasing `level_id` order;
-6. overlay references in increasing `(priority, overlay_id)` order.
+5. when feature bit 0 is set, one shared-package reference;
+6. level references in strictly increasing `level_id` order;
+7. overlay references in increasing `(priority, overlay_id)` order.
+
+`required_features=0` retains the original V2 bytes exactly. Bit 0 means the
+shared reference below is present; every unknown bit is rejected. Its record is:
+
+```text
+u64 package_bytes
+sha256 package_sha256
+string package_path
+```
+
+This optional package carries global content such as startup media and frontend
+resources once, outside the planet list. It uses the existing `LevelPackageV1`
+container with `level_id=UINT32_MAX`, base layer and matching build/content API.
+That reserved ID cannot appear in `levels`; the primary header count remains
+the planet count. Its path must be distinct from all level/overlay paths and
+its bytes count toward `max_total_referenced_package_bytes`.
+
+`load_prepared_game_shared_package_v1` applies the same exact-size, hash,
+no-follow path and container-identity checks as the level loader. The publisher
+accepts its bytes explicitly, writes it within the same staging transaction,
+and includes it in complete-tree verification and rollback. An absent shared
+reference requires absent bytes; no global file is discovered implicitly.
 
 A level reference is:
 
@@ -158,7 +181,7 @@ one `mod_resource` provenance record.
 ## Current native-game resource profile
 
 The current all-level asset compiler emits exactly eight
-upsert resources in every base `LevelPackageV1`:
+upsert resources in every per-level base `LevelPackageV1`:
 
 | Resource ID | Type ID | Schema | Runtime role |
 | --- | --- | ---: | --- |

@@ -40,6 +40,10 @@ make_sample(const XINPUT_GAMEPAD &gamepad) noexcept {
     result.held_buttons |=
         game::game_button_mask_v1(game::GameButtonV1::primary_action);
   }
+  if ((gamepad.wButtons & XINPUT_GAMEPAD_START) != 0U)
+    result.held_buttons |= game::game_button_mask_v1(game::GameButtonV1::pause);
+  if ((gamepad.wButtons & XINPUT_GAMEPAD_B) != 0U)
+    result.held_buttons |= game::game_button_mask_v1(game::GameButtonV1::menu_back);
   return result;
 }
 

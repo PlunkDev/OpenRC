@@ -64,6 +64,30 @@ relationships use semantic keys. This makes the schema suitable for later
 planets and explicit mod overlays without exposing compiler-local table indices
 or RAC-specific class behavior to the runtime.
 
+## Runtime world ownership
+
+`RuntimeGameplaySessionV1` commits each level request once on its staged
+`GameSessionV1`, then transfers that fresh empty `WorldV1` to entity
+materialization. The entity runtime retains the actual level/spawn/instance
+identity rather than recreating a second session to imitate its sequence.
+The main runtime's `world()` accessor exposes the same world that owns live
+entity IDs and processes removals. With entity content active, no parallel
+empty world remains active in the main runtime.
+
+Transferred worlds must be loaded, empty (including no previously used slots),
+match the scene level and have an instance newer than the previously loaded
+scene. Scene validation and all entity allocation complete before replacement.
+The main runtime stages its session, world and gameplay together, so a failed
+materialization does not publish a level request, lose persistent bytes or
+invalidate existing entity IDs. Reentrant level/checkpoint/inventory replacement
+from a movement callback is rejected while the frame is staged.
+
+The standalone scene-loading overload remains a diagnostic entry point using
+the same materializer. Its local identity seed is not stored as a shadow game
+session and is not used by the integrated runtime. This ownership change does
+not itself execute original RAC admission, constructor or post-step procedures;
+their ordered source-backed integration remains required.
+
 ## Current compiler output
 
 The current compiler emits one initially enabled player definition for each

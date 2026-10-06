@@ -118,4 +118,13 @@ parse_rac_moby_sequence_v1(std::span<const std::byte> source,
                            RacRatchetSequenceRangeV1 sequence_range,
                            RacRatchetSequenceLimitsV1 limits);
 
+// Scene-bank actor sequences use sequence-relative frame offsets and the
+// same regular pose payload, but controls +11..+13 are 00 ff ff: no trigger
+// directory follows the frame table. The original bytes remain untouched;
+// the returned no-trigger metadata is a compiler-side projection only.
+[[nodiscard]] RacRatchetSequenceV1
+parse_rac_scene_sequence_v1(std::span<const std::byte> source,
+                          RacRatchetSequenceRangeV1 sequence_range,
+                          RacRatchetSequenceLimitsV1 limits);
+
 } // namespace openrc

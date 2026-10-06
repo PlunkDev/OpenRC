@@ -38,6 +38,10 @@ struct DvpVuExecutionStateV1 {
     std::array<DvpVuVectorV1, kDvpVuVectorRegisterCount> vf{};
     std::array<DvpVuWordV1, kDvpVuIntegerRegisterCount> vi{};
     DvpVuVectorV1 accumulator;
+    // One hidden overflow latch per lane. Only bit0 is architectural; unknown
+    // history remains unknown until an actual ACC-writing operation replaces
+    // it. A finite Fmax word alone cannot reconstruct this state.
+    std::array<DvpVuWordV1,kDvpVuLaneCount> accumulator_overflow{};
     DvpVuWordV1 scalar_i;
     DvpVuWordV1 scalar_q;
     // MAC uses its architectural low 16 bits, STATUS its low 12 bits, and
@@ -83,8 +87,8 @@ enum class DvpVuTerminationV1 : std::uint8_t {
 };
 
 enum class DvpVuExecutionWarningV1 : std::uint8_t {
-    // Arithmetic currently uses a clamped host-float approximation rather
-    // than the VU1 multiplier's bit-exact rounding behavior.
+    // A remaining operation uses host arithmetic or carries its older
+    // qualification (for example ITOF/CLIP). FMAC/DIV have separate warnings.
     host_float_approximation = 0,
     // Q was read while a newer DIV result was still pending; the visible old
     // Q value is used, matching the lack of a Q data interlock.
@@ -100,6 +104,14 @@ enum class DvpVuExecutionWarningV1 : std::uint8_t {
     // reports, not an exhaustive physical-console qualification. This does
     // not establish ACC overflow history or full FMAC forwarding correctness.
     vu_add_sub_reference_model,
+    // Ordered MUL/MULA values use the integer Booth/carry reference model.
+    // This is not exhaustive hardware qualification, hidden ACC overflow
+    // history, compound MADD/MSUB semantics, or complete FMAC forwarding.
+    vu_mul_reference_model,
+    // Ordered product/ACC value and events, with explicit hidden overflow
+    // history. This does not qualify all FMAC forwarding or physical timing.
+    vu_madd_reference_model,
+    vu_div_reference_model,
 };
 
 struct DvpVuGifTagV1 {
@@ -196,7 +208,9 @@ void apply_scene_block_dvp_vu_writes_v1(
     SceneBlockDvpVuBridgeLimitsV1 limits);
 
 // Executes a bounded decoded program. Indeterminate runtime inputs are
-// propagated, and normal diagnostic stops are returned as termination values;
+// propagated. A read through a partly unknown RAM address retains only bits
+// common to every possible addressed value; unknown stores, control targets
+// and XGKICK addresses still stop. Normal diagnostic stops are termination values;
 // exceptions are reserved for malformed API input or zero safety limits.
 [[nodiscard]] DvpVuExecutionResultV1
 execute_dvp_vu_program_v1(const DvpVuProgramV1& program,

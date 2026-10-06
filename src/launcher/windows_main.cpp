@@ -209,6 +209,8 @@ void set_report(const std::wstring& text) {
         return L"Reusing the verified native installation";
     case Phase::compiling_player_actor:
         return L"Compiling the reusable player actor";
+    case Phase::compiling_startup_media:
+        return L"Preparing the original intro";
     case Phase::compiling_player_animation:
         return L"Compiling the player locomotion animations";
     case Phase::compiling_entity_scene:
@@ -727,8 +729,8 @@ void inspect_selected_iso() {
 [[nodiscard]] std::wstring make_runtime_command_line(
     const std::filesystem::path& runtime_path,
     const ReadyGame& ready_game) {
-    const auto plan = openrc::launcher::make_runtime_launch_plan_v1(
-        runtime_path, ready_game.prepared_root, 0U);
+    const auto plan = openrc::launcher::make_runtime_startup_launch_plan_v1(
+        runtime_path, ready_game.prepared_root);
     const auto utf8_arguments = plan.argv_utf8_v1();
 
     std::wstring command_line;

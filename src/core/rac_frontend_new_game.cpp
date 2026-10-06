@@ -1,8 +1,12 @@
 #include "openrc/rac_frontend_new_game.hpp"
 
+#include "openrc/dvp_vu_numeric.hpp"
+#include "openrc/ee_cop1_numeric.hpp"
+
 #include <algorithm>
 #include <bit>
 #include <limits>
+#include <numeric>
 #include <optional>
 
 namespace openrc {
@@ -236,11 +240,17 @@ public:
     box.subpixel_y = s16(0U - (node(0x3cU) & 15U));
     if (node(0x30U) & 0x10000U)
       box.bottom = s16((node(0x24U) & 0xffffU) - 1U);
-    const auto mixed =
-        numeric(NK::color_mix_1fa8a8, 0x21b814U,
-                {sx(read(0x1602b0U)), sx(0x80ffa888U), 0U}, 0x3f000000U);
+    const auto left_color = sx(read(0x1602b0U));
+    const auto right_color = sx(0x80ffa888U);
+    const auto mixed = mix_rac_frontend_color_half_v1(left_color, right_color);
+    effect(
+        RacFrontendNewGameHalfMixV1{0x21b814U, left_color, right_color, mixed});
+    out.timed_color = plan_rac_frontend_timed_color_v1(
+        node(0x44U), mixed, sx(0x80ffa888U), read(0x1602b4U),
+        read(0x15ee68U));
     const auto color = numeric(NK::timed_color_21c6c0, 0x21b828U,
-                               {sx(node(0x44U)), mixed, sx(0x80ffa888U)});
+                               {sx(node(0x44U)), mixed, sx(0x80ffa888U)},
+                               out.timed_color->returned_low64);
     for (U32 i = 0U; i < 8U; ++i)
       out.final_palette[i] = read(0x18cbf8U + i * 4U);
     out.final_inline_colors_enabled = read(0x15f59cU) != 0U;
@@ -358,22 +368,40 @@ private:
       fail("Reached original selector pointer is null");
     return selected;
   }
-  U64 numeric(NK kind, U32 pc, std::array<U64, 3U> args, U32 single = 0U) {
-    if (numeric_cursor == in.numeric_observations.size())
-      fail("Reached unqualified numeric call has no explicit observation");
-    const auto &value = in.numeric_observations[numeric_cursor++];
-    if (value.kind != kind || value.source_call_pc != pc ||
-        value.arguments != args || value.single_argument_bits != single)
-      fail("Numeric observation does not match actual reached source call");
+  U64 numeric(NK kind, U32 pc, std::array<U64, 3U> args,
+              std::optional<U64> evaluated) {
+    Numeric value{kind, pc, args, 0U, evaluated.value_or(0U),
+                  evaluated.has_value()};
+    // A nonempty diagnostic stream checks every call. It cannot override an
+    // executed return. With no stream, all-executed callbacks need no oracle.
+    if (!in.numeric_observations.empty()) {
+      if (numeric_cursor == in.numeric_observations.size())
+        fail("Numeric expectations end before the reached source call");
+      const auto &expected = in.numeric_observations[numeric_cursor++];
+      if (expected.kind != kind || expected.source_call_pc != pc ||
+          expected.arguments != args || expected.single_argument_bits != 0U)
+        fail("Numeric observation does not match actual reached source call");
+      if (evaluated && expected.returned_low64 != *evaluated)
+        fail("Numeric expectation differs from the executed source result");
+      value.returned_low64 = expected.returned_low64;
+    } else if (!evaluated) {
+      fail("Non-exact timed DIV/MADD has no explicit source observation");
+    }
     if (kind == NK::timer_1f98c0 &&
         value.returned_low64 != sx(static_cast<U32>(value.returned_low64)))
       fail("Timer observation violates original MFC1 sign extension");
+    if (kind == NK::timed_color_21c6c0 &&
+        value.returned_low64 > std::numeric_limits<U32>::max())
+      fail("Timed-color observation violates original PPACH/PPACB zero "
+           "extension");
     effect(value);
     return value.returned_low64;
   }
   U32 timer(U32 pc) {
-    return static_cast<U32>(
-        numeric(NK::timer_1f98c0, pc, {sx(read(0x1602b4U)), 0U, 0U}));
+    const auto argument = read(0x1602b4U);
+    return static_cast<U32>(numeric(
+        NK::timer_1f98c0, pc, {sx(argument), 0U, 0U},
+        evaluate_rac_frontend_timer_v1(argument, read(0x15ee68U))));
   }
   Bytes string(U32 address) const {
     std::span<const std::byte> owner;
@@ -516,6 +544,103 @@ private:
   }
 };
 } // namespace
+
+std::uint64_t evaluate_rac_frontend_timer_v1(
+    std::uint32_t argument_word, std::uint32_t time_scale_bits) {
+  // Actual 1f98c0: CVT.S.W(argument), ADDA(.25,.25), then ordered
+  // MADD(converted_argument, live_scale) and CVT.W.S. PAL installs
+  // 3f555555 after startup; no host multiply or inferred rational scale.
+  const auto converted = ee_cop1_cvt_s_w_bits_v1(argument_word);
+  const auto seeded = ee_cop1_add_bits_v1(0x3e800000U, 0x3e800000U);
+  const auto result = ee_cop1_madd_bits_v1(
+      {seeded.bits, seeded.overflow}, converted.bits, time_scale_bits);
+  return sx(ee_cop1_cvt_w_s_bits_v1(result.result.bits).bits);
+}
+
+RacFrontendTimedColorPlanV1 plan_rac_frontend_timed_color_v1(
+    std::uint32_t age_word, std::uint64_t left_color,
+    std::uint64_t right_color, std::uint32_t timer_argument_word,
+    std::uint32_t time_scale_bits) {
+  RacFrontendTimedColorPlanV1 out;
+  out.clamped_age = s32(age_word) < 0 ? 0U : age_word;
+  // Original NOR/MOVN compares all low 64 bits, not just the color word.
+  out.left_color = left_color == std::numeric_limits<U64>::max()
+                       ? sx(0x80ffa888U)
+                       : left_color;
+  out.right_color = right_color == std::numeric_limits<U64>::max()
+                        ? sx(0x8020ffffU)
+                        : right_color;
+  out.duration = static_cast<U32>(evaluate_rac_frontend_timer_v1(
+      timer_argument_word, time_scale_bits));
+  out.timer_calls = 1U;
+  U32 factor = 0x3f800000U;
+  if (s32(out.duration) >= s32(out.clamped_age)) {
+    // 21c71c and 21c728 are separate timer calls with the same immutable
+    // source inputs. Preserve the SUBU numerator before both CVT.S.W calls.
+    const auto subtract_from = static_cast<U32>(evaluate_rac_frontend_timer_v1(
+        timer_argument_word, time_scale_bits));
+    const auto divisor = static_cast<U32>(evaluate_rac_frontend_timer_v1(
+        timer_argument_word, time_scale_bits));
+    out.timer_calls = 3U;
+    out.division_numerator = subtract_from - out.clamped_age;
+    out.division_denominator = divisor;
+    const auto quotient = ee_cop1_div_bits_v1(
+        ee_cop1_cvt_s_w_bits_v1(*out.division_numerator).bits,
+        ee_cop1_cvt_s_w_bits_v1(divisor).bits);
+    factor = ee_cop1_sub_bits_v1(0x3f800000U, quotient.bits).bits;
+  }
+  // Actual mixer1fa8a8 recomputes 1-factor in VU, unpacks bytes, ITOF0,
+  // MULAw(left,inverse), MADDx(right,factor), FTOI0 and low-byte packing.
+  const auto inverse = dvp_vu_sub_bits_v1(0x3f800000U, factor).bits;
+  U64 packed = 0U;
+  for (unsigned lane = 0U; lane < 4U; ++lane) {
+    const auto left = static_cast<U32>((out.left_color >> (lane * 8U)) & 255U);
+    const auto right = static_cast<U32>((out.right_color >> (lane * 8U)) & 255U);
+    const auto acc = dvp_vu_mul_bits_v1(ee_cop1_cvt_s_w_bits_v1(left).bits,
+                                       inverse);
+    const auto mixed = dvp_vu_madd_bits_v1({acc.bits,acc.overflow},
+        ee_cop1_cvt_s_w_bits_v1(right).bits, factor);
+    const auto converted = dvp_vu_ftoi_bits_v1(mixed.result.bits,0);
+    packed |= static_cast<U64>(converted & 255U) << (lane * 8U);
+  }
+  out.factor_bits = factor;
+  out.returned_low64 = packed;
+  return out;
+}
+
+std::uint64_t
+mix_rac_frontend_color_half_v1(std::uint64_t left_color,
+                               std::uint64_t right_color) noexcept {
+  // Source1fa8a8..1fa8c4: PEXTLB(zero,color), then PEXTLH(zero,expanded)
+  // place the four original low bytes into four unsigned32-bit lanes.
+  // The intermediate PEXTLB high bytes never survive PEXTLH's low-half read.
+  std::array<U32, 4U> left{}, right{};
+  for (unsigned lane = 0U; lane < 4U; ++lane) {
+    left[lane] = static_cast<U32>((left_color >> (8U * lane)) & 0xffU);
+    right[lane] = static_cast<U32>((right_color >> (8U * lane)) & 0xffU);
+  }
+  // 1fa8c8 VSUBx.w: architectural vf0.w=1 minus exact vf1.x=.5 gives .5.
+  // 1fa8cc/1fa8d0 ITOF0: each unsigned byte is exactly representable.
+  // In the remainder, integers represent HALF units, not approximate floats.
+  // 1fa8d4 MULAw: ACC=left*.5; left is its exact half-unit coefficient.
+  std::array<U32, 4U> accumulator_half_units = left;
+  // 1fa8d8 MADDx: vf1=ACC+right*.5, only then overwriting coefficient vf1.x.
+  // At most510 half units (255); products and sum need at most9 significant
+  // bits, so neither separate nor fused operation can discard a value bit.
+  std::array<U32, 4U> result_half_units{};
+  for (unsigned lane = 0U; lane < 4U; ++lane)
+    result_half_units[lane] = accumulator_half_units[lane] + right[lane];
+  // 1fa8dc FTOI0: nonnegative truncation toward zero. No lane can saturate.
+  std::array<U32, 4U> converted{};
+  for (unsigned lane = 0U; lane < 4U; ++lane)
+    converted[lane] = result_half_units[lane] >> 1U;
+  // 1fa8e0 QMFC2, 1fa8e4 PPACH(zero,v0), then return-delay PPACB(zero,v0).
+  // Each word's low half/byte survives; explicit zero operands zero upper96.
+  U64 packed = 0U;
+  for (unsigned lane = 0U; lane < 4U; ++lane)
+    packed |= static_cast<U64>(converted[lane]) << (8U * lane);
+  return packed;
+}
 
 RacFrontendNewGamePlanV1
 plan_rac_frontend_new_game_v1(const RacFrontendNewGameInputsV1 &input) {

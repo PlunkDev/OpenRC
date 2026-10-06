@@ -587,10 +587,107 @@ void test_symlink_and_reparse_rejections_when_supported() {
   }
 }
 
+void test_shared_package_publication_and_rollback() {
+  TemporaryTree tree;
+  Fixture fixture;
+  const auto inputs = fixture.inputs();
+  const auto destination = tree.root / "prepared";
+  (void)openrc::publish_prepared_game_v2_v1(destination, fixture.manifest, inputs, kLimits);
+  const auto legacy_manifest = read_bytes(destination / openrc::kPreparedGameV2ManifestFileName);
+  const auto shared_bytes = openrc::encode_level_package_v1(
+      make_package(openrc::kPreparedGameSharedPackageIdV2, "original-global-intro"),
+      kLimits.level_package);
+  auto manifest = fixture.manifest;
+  manifest.shared_package = openrc::PreparedGameSharedReferenceV2{
+      "shared/global.orlvl", shared_bytes.size(), openrc::prepared_content_sha256_v1(shared_bytes)};
+  const auto result = openrc::publish_prepared_game_v2_v1(
+      destination, manifest, inputs, shared_bytes, kLimits);
+  expect(result.level_count == 2U &&
+             result.package_bytes == fixture.package_zero.size() + fixture.package_one.size() + shared_bytes.size() &&
+             read_bytes(destination / "shared/global.orlvl") == shared_bytes,
+         "Shared content must publish once outside the level count and inside the byte aggregate");
+  const auto root = openrc::load_prepared_game_v2_root_v1(destination, kLimits);
+  expect(openrc::load_prepared_game_shared_package_v1(root, kLimits).resources[0U].payload ==
+             bytes_of("original-global-intro"), "The published shared package must load through hardened FS");
+  const auto old_manifest = read_bytes(destination / openrc::kPreparedGameV2ManifestFileName);
+  const auto replacement_bytes = openrc::encode_level_package_v1(
+      make_package(openrc::kPreparedGameSharedPackageIdV2, "replacement-global-intro"),
+      kLimits.level_package);
+  auto replacement = manifest;
+  replacement.shared_package->package_bytes = replacement_bytes.size();
+  replacement.shared_package->package_sha256 = openrc::prepared_content_sha256_v1(replacement_bytes);
+  CancellationContext cancellation{openrc::PreparedGameV2PublishCheckpointV1::destination_backed_up, 0U};
+  expect_publish_rejected([&] {
+    (void)openrc::publish_prepared_game_v2_v1(destination, replacement, inputs,
+        replacement_bytes, kLimits, {cancel_at_checkpoint, &cancellation});
+  }, "Shared replacement must obey cancellation after backup");
+  expect(cancellation.calls == 2U &&
+             read_bytes(destination / openrc::kPreparedGameV2ManifestFileName) == old_manifest &&
+             read_bytes(destination / "shared/global.orlvl") == shared_bytes &&
+             transaction_directory_count(tree.root) == 0U,
+         "Rollback must restore the old shared bytes and manifest exactly");
+  (void)openrc::publish_prepared_game_v2_v1(destination, replacement, inputs,
+                                         replacement_bytes, kLimits);
+  expect(read_bytes(destination / "shared/global.orlvl") == replacement_bytes,
+         "A verified shared publication must remain replaceable");
+  // Returning to a package set without global content owns and removes the
+  // old shared file through the same transaction, with unchanged legacy bytes.
+  (void)openrc::publish_prepared_game_v2_v1(destination, fixture.manifest, inputs, kLimits);
+  expect(!std::filesystem::exists(destination / "shared") &&
+             read_bytes(destination / openrc::kPreparedGameV2ManifestFileName) == legacy_manifest,
+         "Shared removal must restore the exact legacy publication layout");
+}
+
+void test_shared_package_binding_and_owned_tree_rejections() {
+  TemporaryTree tree;
+  Fixture fixture;
+  const auto inputs = fixture.inputs();
+  const auto destination = tree.root / "prepared";
+  auto shared_bytes = openrc::encode_level_package_v1(
+      make_package(openrc::kPreparedGameSharedPackageIdV2, "global-content"), kLimits.level_package);
+  auto manifest = fixture.manifest;
+  manifest.shared_package = openrc::PreparedGameSharedReferenceV2{
+      "shared/global.orlvl", shared_bytes.size(), openrc::prepared_content_sha256_v1(shared_bytes)};
+  expect_publish_rejected([&] {
+    (void)openrc::publish_prepared_game_v2_v1(destination, manifest, inputs, kLimits);
+  }, "A shared reference requires explicit matching bytes");
+  expect_publish_rejected([&] {
+    (void)openrc::publish_prepared_game_v2_v1(destination, fixture.manifest, inputs, shared_bytes, kLimits);
+  }, "Shared bytes require a manifest reference");
+  auto corrupt = shared_bytes;
+  corrupt.back() ^= std::byte{1U};
+  expect_publish_rejected([&] {
+    (void)openrc::publish_prepared_game_v2_v1(destination, manifest, inputs, corrupt, kLimits);
+  }, "Corrupt shared input cannot be staged");
+  for (const auto path : {"prepared-v2.orpg", "levels", "levels/0.orlvl/child", "../global.orlvl"}) {
+    auto conflict = manifest;
+    conflict.shared_package->package_path = path;
+    expect_publish_rejected([&] {
+      (void)openrc::publish_prepared_game_v2_v1(destination, conflict, inputs, shared_bytes, kLimits);
+    }, "Shared path must participate in all virtual file and directory collisions");
+  }
+  auto misplaced = inputs;
+  misplaced[0U].level_id = openrc::kPreparedGameSharedPackageIdV2;
+  expect_publish_rejected([&] {
+    (void)openrc::publish_prepared_game_v2_v1(destination, manifest, misplaced, shared_bytes, kLimits);
+  }, "Shared bytes cannot be supplied through the planet input list");
+  expect(!std::filesystem::exists(destination) && transaction_directory_count(tree.root) == 0U,
+         "Invalid shared publications must leave no staged or destination content");
+  (void)openrc::publish_prepared_game_v2_v1(destination, manifest, inputs, shared_bytes, kLimits);
+  write_bytes(destination / "shared/global.orlvl", corrupt);
+  expect_publish_rejected([&] {
+    (void)openrc::publish_prepared_game_v2_v1(destination, manifest, inputs, shared_bytes, kLimits);
+  }, "A damaged existing global package cannot be treated as safely replaceable");
+  expect(read_bytes(destination / "shared/global.orlvl") == corrupt,
+         "Refused replacement must preserve the existing bytes");
+}
+
 } // namespace
 
 int main() {
-  try {
+    try {
+        test_shared_package_publication_and_rollback();
+        test_shared_package_binding_and_owned_tree_rejections();
     test_new_publication_and_determinism();
     test_existing_destination_is_replaced();
         test_unrecognized_existing_destination_is_preserved();

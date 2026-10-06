@@ -3,6 +3,12 @@
 #include "render_scene_d3d_data.hpp"
 
 #include "generated/render_scene_ps_dxbc.hpp"
+#include "generated/screen_overlay_ps_dxbc.hpp"
+#include "generated/encoded_affine_vs_dxbc.hpp"
+#include "generated/encoded_vs_dxbc.hpp"
+#include "generated/encoded_ps_dxbc.hpp"
+#include "generated/encoded_affine_ps_dxbc.hpp"
+#include "generated/source_textured_ps_dxbc.hpp"
 #include "generated/source_textured_vs_dxbc.hpp"
 #include "generated/wireframe_ps_dxbc.hpp"
 
@@ -12,6 +18,8 @@
 #include "openrc/runtime_player_actor.hpp"
 #include "openrc/runtime_world_actor.hpp"
 #include "openrc/third_person_camera.hpp"
+#include "openrc/scene_timeline.hpp"
+#include "openrc/screen_overlay.hpp"
 
 #include <d3d11.h>
 #include <dxgi.h>
@@ -30,6 +38,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -55,6 +64,11 @@ struct alignas(16) RenderSceneMaterialConstants {
 };
 
 static_assert(sizeof(RenderSceneMaterialConstants) == 32U);
+struct alignas(16) EncodedMaterialConstants {
+    std::uint32_t modulation_denominator=255,blend_denominator=255,flags=0,alpha_cutoff=0;
+    std::uint32_t texture_width=1,texture_height=1,padding0=0,padding1=0;
+};
+static_assert(sizeof(EncodedMaterialConstants)==32U);
 
 struct RenderSceneSamplerKey {
     RenderSceneAddressModeV1 address_u = RenderSceneAddressModeV1::repeat;
@@ -137,6 +151,10 @@ make_gpu_material(const RenderSceneMaterialV1& material) {
         material.alpha_mode == RenderSceneAlphaModeV1::mask
             ? static_cast<float>(material.alpha_cutoff_rgba8) / 255.0F
             : -1.0F,
+        material.color_math,material.blend_mode,material.interpolation,
+        material.depth_test,material.depth_write,
+        material.texture_modulation_denominator,material.blend_denominator,
+        material.alpha_failure,
     };
 }
 
@@ -542,6 +560,539 @@ void require_success(const HRESULT result, const char* const operation) {
 } // namespace
 
 struct D3d11Renderer::Implementation {
+    explicit Implementation(HWND native_window) : window(native_window) {
+        media_mode = true;
+        if (!window) throw std::invalid_argument("Media renderer requires a window");
+        create_device_and_swap_chain();
+        create_pipeline();
+        create_render_target();
+        RECT client{};
+        if (!GetClientRect(window, &client))
+            throw std::runtime_error("Cannot obtain media window dimensions");
+        set_dimensions(static_cast<std::uint32_t>(std::max<LONG>(0,client.right-client.left)),
+                       static_cast<std::uint32_t>(std::max<LONG>(0,client.bottom-client.top)));
+    }
+
+    void set_media_frame(std::uint32_t frame_width, std::uint32_t frame_height,
+                         std::span<const std::byte> rgba,
+                         std::uint32_t aspect_numerator,
+                         std::uint32_t aspect_denominator) {
+        if (!frame_width || !frame_height || frame_width>kMaximumD3d11TextureDimension || frame_height>kMaximumD3d11TextureDimension ||
+            rgba.size()!=static_cast<std::uint64_t>(frame_width)*frame_height*4U ||
+            !aspect_numerator || !aspect_denominator)
+            throw std::invalid_argument("Invalid prepared media frame");
+        submission_drain_covers_latest_work=false;
+        media_mode = true;
+        if (!media_texture || media_width!=frame_width || media_height!=frame_height) {
+            media_view.Reset(); media_texture.Reset();
+            D3D11_TEXTURE2D_DESC description{};
+            description.Width=frame_width; description.Height=frame_height;
+            description.MipLevels=1; description.ArraySize=1;
+            description.Format=DXGI_FORMAT_R8G8B8A8_UNORM;
+            description.SampleDesc.Count=1;
+            description.Usage=D3D11_USAGE_DEFAULT;
+            description.BindFlags=D3D11_BIND_SHADER_RESOURCE;
+            require_success(device->CreateTexture2D(&description,nullptr,media_texture.GetAddressOf()),"Create media texture");
+            require_success(device->CreateShaderResourceView(media_texture.Get(),nullptr,media_view.GetAddressOf()),"Create media texture view");
+            media_width=frame_width; media_height=frame_height;
+        }
+        if (!media_vertices) {
+            D3D11_BUFFER_DESC desc{};
+            desc.ByteWidth=sizeof(ProjectedVertex)*4U;
+            desc.Usage=D3D11_USAGE_DEFAULT; desc.BindFlags=D3D11_BIND_VERTEX_BUFFER;
+            require_success(device->CreateBuffer(&desc,nullptr,media_vertices.GetAddressOf()),"Create media vertices");
+            D3D11_SAMPLER_DESC sampler{};
+            sampler.Filter=D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+            sampler.AddressU=sampler.AddressV=sampler.AddressW=D3D11_TEXTURE_ADDRESS_CLAMP;
+            sampler.MaxLOD=D3D11_FLOAT32_MAX;
+            require_success(device->CreateSamplerState(&sampler,media_sampler.GetAddressOf()),"Create media sampler");
+        }
+        context->UpdateSubresource(media_texture.Get(),0,nullptr,rgba.data(),frame_width*4U,0);
+        media_aspect=static_cast<double>(aspect_numerator)/aspect_denominator;
+    }
+
+    bool render_media() {
+        if (!width || !height || !render_target) return false;
+        submission_drain_covers_latest_work=false;
+        constexpr float black[4]={0,0,0,1};
+        context->ClearRenderTargetView(render_target.Get(),black);
+        if (!media_texture) {
+            const auto hr=swap_chain->Present(1,0);
+            if (hr==DXGI_STATUS_OCCLUDED) return false;
+            require_success(hr,"Present initial media background");
+            return true;
+        }
+        auto *target=render_target.Get();
+        context->OMSetRenderTargets(1,&target,nullptr);
+        context->OMSetDepthStencilState(nullptr,0);
+        context->OMSetBlendState(nullptr,nullptr,0xffffffffU);
+        context->RSSetState(solid_rasterizer_state.Get());
+        D3D11_VIEWPORT viewport{0,0,static_cast<float>(width),static_cast<float>(height),0,1};
+        context->RSSetViewports(1,&viewport);
+        auto aspect=static_cast<double>(width)/height;
+        float x=1, y=1;
+        if (aspect>media_aspect) x=static_cast<float>(media_aspect/aspect);
+        else y=static_cast<float>(aspect/media_aspect);
+        const std::array<ProjectedVertex,4> vertices{{
+            {{-x,y,0,1},0xffffffffU,0,0}, {{x,y,0,1},0xffffffffU,1,0},
+            {{-x,-y,0,1},0xffffffffU,0,1}, {{x,-y,0,1},0xffffffffU,1,1}}};
+        context->UpdateSubresource(media_vertices.Get(),0,nullptr,vertices.data(),0,0);
+        UINT stride=sizeof(ProjectedVertex), offset=0;
+        auto *buffer=media_vertices.Get();
+        context->IASetVertexBuffers(0,1,&buffer,&stride,&offset);
+        context->IASetInputLayout(projected_input_layout.Get());
+        context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+        context->VSSetShader(projected_vertex_shader.Get(),nullptr,0);
+        // Decoded video is already display-encoded RGB. The scene shader
+        // converts linear light to sRGB and would encode these bytes twice.
+        context->PSSetShader(media_pixel_shader.Get(),nullptr,0);
+        auto *view=media_view.Get(); auto *sampler=media_sampler.Get();
+        context->PSSetShaderResources(0,1,&view);
+        context->PSSetSamplers(0,1,&sampler);
+        context->Draw(4,0);
+        ++media_submitted;
+        render_screen_overlay();
+        capture_back_buffer();
+        view=nullptr; context->PSSetShaderResources(0,1,&view);
+        auto hr=swap_chain->Present(1,0);
+        if (hr==DXGI_STATUS_OCCLUDED) return false;
+        require_success(hr,"Present media frame");
+        return true;
+    }
+
+    struct ScreenOverlayLayerGpu {
+        std::uint32_t canvas_width=0,canvas_height=0,coverage_denominator=0;
+        std::vector<std::array<std::uint32_t,2>> image_dimensions;
+        std::vector<ScreenOverlayFrameV1> frames;
+        std::vector<ComPtr<ID3D11ShaderResourceView>> views;
+        std::optional<std::uint32_t> frame_index=0U;
+    };
+
+    void set_screen_overlay_layers(const std::span<const ScreenOverlayV1> values,
+        const ScreenOverlayLimitsV1 limits) {
+        auto remaining_bytes=limits.max_bytes;
+        std::uint64_t remaining_images=limits.max_images,remaining_frames=limits.max_frames,
+            remaining_draws=limits.max_draws;
+        const auto consume=[](std::uint64_t& remaining,const std::uint64_t amount) {
+            if(amount>remaining)throw ScreenOverlayError("Screen overlay layers exceed aggregate limits");
+            remaining-=amount;
+        };
+        // Validate the whole admission before allocating or replacing GPU
+        // resources, including the bytes retained by frame/draw metadata.
+        for(const auto& value:values) {
+            validate_screen_overlay_v1(value,limits);
+            consume(remaining_bytes,96U);
+            consume(remaining_images,value.images.size());
+            consume(remaining_frames,value.frames.size());
+            for(const auto& image:value.images) {
+                consume(remaining_bytes,8U);
+                consume(remaining_bytes,image.rgb_coverage.size());
+            }
+            for(const auto& frame:value.frames) {
+                consume(remaining_draws,frame.draws.size());
+                consume(remaining_bytes,4U+12U*static_cast<std::uint64_t>(frame.draws.size()));
+            }
+        }
+        submission_drain_covers_latest_work=false;
+        std::vector<ScreenOverlayLayerGpu> layers;
+        layers.reserve(values.size());
+        for(const auto& value:values) {
+            ScreenOverlayLayerGpu layer;
+            layer.canvas_width=value.canvas_width;layer.canvas_height=value.canvas_height;
+            layer.coverage_denominator=value.coverage_denominator;layer.frames=value.frames;
+            layer.image_dimensions.reserve(value.images.size());layer.views.reserve(value.images.size());
+            for(const auto& image:value.images) {
+                D3D11_TEXTURE2D_DESC desc{};
+                desc.Width=image.width;desc.Height=image.height;
+                desc.MipLevels=1;desc.ArraySize=1;desc.Format=DXGI_FORMAT_R8G8B8A8_UINT;
+                desc.SampleDesc.Count=1;desc.Usage=D3D11_USAGE_IMMUTABLE;
+                desc.BindFlags=D3D11_BIND_SHADER_RESOURCE;
+                D3D11_SUBRESOURCE_DATA data{image.rgb_coverage.data(),image.width*4U,0};
+                ComPtr<ID3D11Texture2D> texture;
+                require_success(device->CreateTexture2D(&desc,&data,texture.GetAddressOf()),"Create overlay coverage image");
+                ComPtr<ID3D11ShaderResourceView> view;
+                require_success(device->CreateShaderResourceView(texture.Get(),nullptr,view.GetAddressOf()),"Create overlay coverage view");
+                layer.views.push_back(std::move(view));
+                layer.image_dimensions.push_back({image.width,image.height});
+            }
+            layers.push_back(std::move(layer));
+        }
+        if(!layers.empty()&&!overlay_vertices) {
+            ComPtr<ID3D11Buffer> vertices,constants;
+            D3D11_BUFFER_DESC desc{};desc.ByteWidth=4U*sizeof(ProjectedVertex);
+            desc.Usage=D3D11_USAGE_DEFAULT;desc.BindFlags=D3D11_BIND_VERTEX_BUFFER;
+            require_success(device->CreateBuffer(&desc,nullptr,vertices.GetAddressOf()),"Create overlay vertices");
+            desc.ByteWidth=16;desc.BindFlags=D3D11_BIND_CONSTANT_BUFFER;
+            require_success(device->CreateBuffer(&desc,nullptr,constants.GetAddressOf()),"Create overlay constants");
+            overlay_vertices=std::move(vertices);overlay_constants=std::move(constants);
+        }
+        overlay_layers=std::move(layers);
+    }
+
+    void set_screen_overlay_layer_frames(
+        const std::span<const std::optional<std::uint32_t>> frame_indices) {
+        if(frame_indices.size()!=overlay_layers.size())
+            throw std::invalid_argument("Screen overlay layer frame count differs");
+        for(std::size_t i=0;i<frame_indices.size();++i)
+            if(frame_indices[i]&&*frame_indices[i]>=overlay_layers[i].frames.size())
+                throw std::out_of_range("Screen overlay layer frame is absent");
+        for(std::size_t i=0;i<frame_indices.size();++i)
+            overlay_layers[i].frame_index=frame_indices[i];
+    }
+
+    void render_screen_overlay() {
+        if(std::none_of(overlay_layers.begin(),overlay_layers.end(),[](const auto& layer) {
+            return layer.frame_index&&!layer.frames[*layer.frame_index].draws.empty();
+        }))return;
+        ComPtr<ID3D11Texture2D> back;
+        require_success(swap_chain->GetBuffer(0,IID_PPV_ARGS(back.GetAddressOf())),"Get overlay destination");
+        D3D11_TEXTURE2D_DESC desc{};back->GetDesc(&desc);
+        if(!overlay_destination||overlay_destination_width!=desc.Width||overlay_destination_height!=desc.Height) {
+            overlay_destination_view.Reset();overlay_destination.Reset();
+            desc.Usage=D3D11_USAGE_DEFAULT;desc.BindFlags=D3D11_BIND_SHADER_RESOURCE;
+            desc.CPUAccessFlags=0;desc.MiscFlags=0;
+            require_success(device->CreateTexture2D(&desc,nullptr,overlay_destination.GetAddressOf()),"Create overlay destination copy");
+            require_success(device->CreateShaderResourceView(overlay_destination.Get(),nullptr,overlay_destination_view.GetAddressOf()),"Create overlay destination view");
+            overlay_destination_width=desc.Width;overlay_destination_height=desc.Height;
+        }
+        const auto aspect=media_mode?media_aspect:scene_aspect;
+        D3D11_VIEWPORT viewport{0,0,static_cast<float>(width),static_cast<float>(height),0,1};
+        if(static_cast<double>(width)/height>aspect) {
+            viewport.Width=static_cast<float>(height*aspect);
+            viewport.TopLeftX=(static_cast<float>(width)-viewport.Width)*0.5F;
+        } else {
+            viewport.Height=static_cast<float>(width/aspect);
+            viewport.TopLeftY=(static_cast<float>(height)-viewport.Height)*0.5F;
+        }
+        context->RSSetViewports(1,&viewport);
+        context->RSSetState(solid_rasterizer_state.Get());
+        context->OMSetDepthStencilState(nullptr,0);
+        context->OMSetBlendState(nullptr,nullptr,0xffffffffU);
+        context->IASetInputLayout(projected_input_layout.Get());
+        context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+        auto* vertices=overlay_vertices.Get();UINT stride=sizeof(ProjectedVertex),offset=0;
+        context->IASetVertexBuffers(0,1,&vertices,&stride,&offset);
+        context->VSSetShader(projected_vertex_shader.Get(),nullptr,0);
+        context->PSSetShader(overlay_pixel_shader.Get(),nullptr,0);
+        auto* constants=overlay_constants.Get();context->PSSetConstantBuffers(0,1,&constants);
+        ID3D11ShaderResourceView* empty[2]={nullptr,nullptr};
+        for(const auto& layer:overlay_layers) {
+          if(!layer.frame_index)continue;
+          for(const auto& draw:layer.frames[*layer.frame_index].draws) {
+            const auto& image=layer.image_dimensions[draw.image_id];
+            const auto left=static_cast<float>(double(draw.x)*2/layer.canvas_width-1);
+            const auto right=static_cast<float>((double(draw.x)+image[0])*2/layer.canvas_width-1);
+            const auto top=static_cast<float>(1-double(draw.y)*2/layer.canvas_height);
+            const auto bottom=static_cast<float>(1-(double(draw.y)+image[1])*2/layer.canvas_height);
+            const std::array<ProjectedVertex,4> quad{{
+                {{left,top,0,1},0xffffffffU,0,0},{{right,top,0,1},0xffffffffU,1,0},
+                {{left,bottom,0,1},0xffffffffU,0,1},{{right,bottom,0,1},0xffffffffU,1,1}}};
+            const std::array<std::uint32_t,4> values{layer.coverage_denominator,image[0],image[1],0};
+            context->UpdateSubresource(overlay_vertices.Get(),0,nullptr,quad.data(),0,0);
+            context->UpdateSubresource(overlay_constants.Get(),0,nullptr,values.data(),0,0);
+            // Preserve each preceding draw in order. A separate copy avoids
+            // reading an RTV while it is bound for output.
+            context->PSSetShaderResources(0,2,empty);
+            context->OMSetRenderTargets(0,nullptr,nullptr);
+            context->CopyResource(overlay_destination.Get(),back.Get());
+            auto* target=render_target.Get();context->OMSetRenderTargets(1,&target,nullptr);
+            ID3D11ShaderResourceView* selected[2]={overlay_destination_view.Get(),layer.views[draw.image_id].Get()};
+            context->PSSetShaderResources(0,2,selected);
+            context->Draw(4,0);
+          }
+        }
+        context->PSSetShaderResources(0,2,empty);
+        ID3D11Buffer* no_constants=nullptr;context->PSSetConstantBuffers(0,1,&no_constants);
+    }
+
+    void capture_back_buffer() {
+        if (media_capture_requested) {
+            ComPtr<ID3D11Texture2D> back;
+            require_success(swap_chain->GetBuffer(0,IID_PPV_ARGS(back.GetAddressOf())),"Read media back buffer");
+            D3D11_TEXTURE2D_DESC description{};
+            back->GetDesc(&description);
+            description.Usage=D3D11_USAGE_STAGING;
+            description.BindFlags=0; description.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
+            description.MiscFlags=0;
+            ComPtr<ID3D11Texture2D> staging;
+            require_success(device->CreateTexture2D(&description,nullptr,staging.GetAddressOf()),"Create media readback");
+            context->CopyResource(staging.Get(),back.Get());
+            media_capture.resize(static_cast<std::size_t>(width)*height*4U);
+            D3D11_MAPPED_SUBRESOURCE mapped{};
+            require_success(context->Map(staging.Get(),0,D3D11_MAP_READ,0,&mapped),"Map media readback");
+            for(std::uint32_t y=0;y<height;++y)
+                std::memcpy(media_capture.data()+static_cast<std::size_t>(y)*width*4U,
+                    static_cast<const std::byte*>(mapped.pData)+static_cast<std::size_t>(y)*mapped.RowPitch,width*4U);
+            context->Unmap(staging.Get(),0);
+            media_capture_requested=false;
+        }
+    }
+
+    void ensure_encoded_destination(ID3D11Texture2D* back) {
+        D3D11_TEXTURE2D_DESC desc{};back->GetDesc(&desc);
+        if(overlay_destination&&overlay_destination_width==desc.Width&&overlay_destination_height==desc.Height) return;
+        overlay_destination_view.Reset();overlay_destination.Reset();
+        desc.Usage=D3D11_USAGE_DEFAULT;desc.BindFlags=D3D11_BIND_SHADER_RESOURCE;
+        desc.CPUAccessFlags=0;desc.MiscFlags=0;
+        require_success(device->CreateTexture2D(&desc,nullptr,overlay_destination.GetAddressOf()),"Create encoded destination copy");
+        require_success(device->CreateShaderResourceView(overlay_destination.Get(),nullptr,overlay_destination_view.GetAddressOf()),"Create encoded destination view");
+        overlay_destination_width=desc.Width;overlay_destination_height=desc.Height;
+    }
+
+    D3D11_BOX encoded_destination_region(std::span<const ProjectedVertex> vertices,
+        std::span<const std::uint32_t> indices,std::uint32_t first,
+        const D3D11_VIEWPORT& viewport) const {
+        if(first>indices.size()||indices.size()-first<3)
+            throw std::logic_error("Encoded draw has no matching CPU index ownership");
+        double left=std::numeric_limits<double>::infinity(),top=left;
+        double right=-left,bottom=-left;
+        unsigned positive_w=0;
+        for(unsigned i=0;i<3;++i) {
+            if(indices[first+i]>=vertices.size())
+                throw std::logic_error("Encoded draw has no matching projected vertex");
+            const auto& p=vertices[indices[first+i]].clip_position;
+            if(p[3]<=0)continue;
+            ++positive_w;
+            const auto x=viewport.TopLeftX+(double(p[0])/p[3]+1)*viewport.Width/2;
+            const auto y=viewport.TopLeftY+(1-double(p[1])/p[3])*viewport.Height/2;
+            left=std::min(left,x);right=std::max(right,x);
+            top=std::min(top,y);bottom=std::max(bottom,y);
+        }
+        if(!positive_w)return {};
+        // A triangle crossing the eye plane can grow after clipping. Retain
+        // the full framebuffer in that case. With positive W, projected
+        // coverage lies in the vertex bounds; a pixel of padding covers the
+        // rasterizer's subpixel snap as well as pixel-center conventions.
+        if(positive_w!=3)return {0,0,0,width,height,1};
+        const auto bound=[](double v,UINT extent){return static_cast<UINT>(std::clamp(v,0.0,double(extent)));};
+        return {bound(std::floor(left)-1,width),bound(std::floor(top)-1,height),0,
+            bound(std::ceil(right)+1,width),bound(std::ceil(bottom)+1,height),1};
+    }
+
+    void draw_encoded(const RenderSceneD3dDrawV1& draw,
+        const RenderSceneD3dMaterialV1& material,ID3D11ShaderResourceView* texture,
+        std::span<const ProjectedVertex> vertices,std::span<const std::uint32_t> indices,
+        const D3D11_VIEWPORT& viewport) {
+        EncodedMaterialConstants constants;
+        constants.modulation_denominator=material.texture_modulation_denominator;
+        constants.blend_denominator=material.blend_denominator;
+        const bool blended=material.blend_mode==RenderSceneBlendModeV1::source_over;
+        constants.flags=(material.base_color_texture_id?1U:0U)|(blended?2U:0U)|
+            (material.mag_filter==RenderSceneFilterV1::linear?4U:0U)|
+            (material.address_u==RenderSceneAddressModeV1::repeat?8U:0U)|
+            (material.address_v==RenderSceneAddressModeV1::repeat?16U:0U)|
+            (material.alpha_cutoff>=0?32U:0U);
+        constants.alpha_cutoff=material.alpha_cutoff>=0?static_cast<std::uint32_t>(std::lround(material.alpha_cutoff*255)):0;
+        ComPtr<ID3D11Resource> resource;texture->GetResource(resource.GetAddressOf());
+        ComPtr<ID3D11Texture2D> image;
+        require_success(resource.As(&image),"Read encoded texture dimensions");
+        D3D11_TEXTURE2D_DESC desc{};image->GetDesc(&desc);
+        constants.texture_width=desc.Width;constants.texture_height=desc.Height;
+        context->UpdateSubresource(render_scene_material_buffer.Get(),0,nullptr,&constants,0,0);
+        const bool affine=material.interpolation==RenderSceneInterpolationV1::affine;
+        context->VSSetShader(affine?encoded_affine_vertex_shader.Get():encoded_vertex_shader.Get(),nullptr,0);
+        context->PSSetShader(affine?encoded_affine_pixel_shader.Get():encoded_pixel_shader.Get(),nullptr,0);
+        auto* buffer=render_scene_material_buffer.Get();context->PSSetConstantBuffers(0,1,&buffer);
+        context->PSSetShaderResources(0,1,&texture);
+        const bool keep_failed_rgb=material.alpha_failure==RenderSceneAlphaFailureV1::rgb_only;
+        if(!blended&&!keep_failed_rgb) {context->DrawIndexed(draw.index_count,draw.first_index,0);return;}
+        ComPtr<ID3D11Texture2D> back;
+        if(blended) {
+            require_success(swap_chain->GetBuffer(0,IID_PPV_ARGS(back.GetAddressOf())),"Get encoded draw destination");
+            ensure_encoded_destination(back.Get());
+        }
+        // A snapshot once per mesh would read stale pixels for overlapping
+        // later primitives. Preserve their order; batching requires proof of
+        // disjoint raster regions and must not change this contract.
+        ID3D11ShaderResourceView* empty=nullptr;
+        auto* target=render_target.Get();auto* destination=overlay_destination_view.Get();
+        const auto depth_policy=(material.depth_test==RenderSceneDepthTestV1::always?2U:0U)|
+            (material.depth_write?0U:1U);
+        for(std::uint32_t index=0;index<draw.index_count;index+=3) {
+            if(blended) {
+                const auto region=encoded_destination_region(vertices,indices,draw.first_index+index,viewport);
+                if(region.left>=region.right||region.top>=region.bottom)continue;
+                context->PSSetShaderResources(1,1,&empty);
+                context->OMSetRenderTargets(0,nullptr,nullptr);
+                context->CopySubresourceRegion(overlay_destination.Get(),0,region.left,region.top,0,back.Get(),0,&region);
+                context->OMSetRenderTargets(1,&target,depth_view.Get());
+                context->PSSetShaderResources(1,1,&destination);
+            }
+            if(keep_failed_rgb) {
+                // The two predicates are disjoint and share this primitive's
+                // destination snapshot. Failed alpha still depth-tests, but
+                // cannot occlude later primitives or replace destination A.
+                constants.flags|=64U;
+                context->UpdateSubresource(render_scene_material_buffer.Get(),0,nullptr,&constants,0,0);
+                context->OMSetDepthStencilState(scene_depth_states[depth_policy|1U].Get(),0);
+                context->OMSetBlendState(rgb_write_state.Get(),nullptr,0xffffffffU);
+                context->DrawIndexed(3,draw.first_index+index,0);
+                constants.flags&=~64U;
+                context->UpdateSubresource(render_scene_material_buffer.Get(),0,nullptr,&constants,0,0);
+                context->OMSetDepthStencilState(scene_depth_states[depth_policy].Get(),0);
+                context->OMSetBlendState(nullptr,nullptr,0xffffffffU);
+            }
+            context->DrawIndexed(3,draw.first_index+index,0);
+        }
+        context->PSSetShaderResources(1,1,&empty);
+    }
+
+    std::uint64_t begin_submission_drain() {
+        if(submission_drain_token==UINT64_MAX)
+            throw std::overflow_error("GPU submission drain token exhausted");
+        ComPtr<ID3D11Query> query;
+        const D3D11_QUERY_DESC description{D3D11_QUERY_EVENT,0};
+        require_success(device->CreateQuery(&description,query.GetAddressOf()),"Create GPU completion event");
+        context->End(query.Get());
+        context->Flush();
+        submission_drain_query=std::move(query);
+        submission_drain_observed_complete=false;
+        submission_drain_covers_latest_work=true;
+        submission_drain_retirement_consumed=false;
+        return ++submission_drain_token;
+    }
+    bool submission_drain_completed(std::uint64_t token) {
+        if(!token||token!=submission_drain_token||!submission_drain_query)
+            throw std::invalid_argument("GPU submission drain has a stale or missing token");
+        BOOL completed=FALSE;
+        const auto status=context->GetData(submission_drain_query.Get(),&completed,sizeof(completed),D3D11_ASYNC_GETDATA_DONOTFLUSH);
+        if(status==S_FALSE)return false;
+        require_success(status,"Read GPU completion event");
+        submission_drain_observed_complete=completed!=FALSE;
+        return completed!=FALSE;
+    }
+    bool submission_drain_covers_current_work(std::uint64_t token) const {
+        if(!token||token!=submission_drain_token||!submission_drain_query)
+            throw std::invalid_argument("GPU completion coverage has a stale or missing drain token");
+        if(!submission_drain_observed_complete)
+            throw std::logic_error("GPU completion coverage requires observed completion");
+        return submission_drain_covers_latest_work;
+    }
+
+    bool try_retire_submission_drain(std::uint64_t token) {
+        if(!submission_drain_covers_current_work(token))return false;
+        submission_drain_query.Reset();
+        submission_drain_observed_complete=false;
+        submission_drain_covers_latest_work=false;
+        return true;
+    }
+
+    bool try_retire_scene_for_media(std::uint64_t token) {
+        if(has_gameplay_actor||gameplay_presentation)
+            throw std::logic_error("Cannot retire an active gameplay scene as cinematic media");
+        if(!media_mode||!media_texture||!media_view)
+            throw std::logic_error("Cinematic retirement requires an admitted frozen media frame");
+        if(submission_drain_retirement_consumed)
+            throw std::invalid_argument("Cinematic retirement already consumed its GPU drain token");
+        if(!submission_drain_covers_current_work(token))return false;
+
+        // The context retains bindings independently of our COM owners.
+        // Clear those references after the observed event, then release the
+        // cinematic allocations. Both presentation paths bind their complete
+        // pipeline again; shared shaders, device and swap chain remain live.
+        context->ClearState();
+        const auto release=[](auto& values) {
+            std::decay_t<decltype(values)>{}.swap(values);
+        };
+        render_scene_vertex_buffer.Reset();render_scene_index_buffer.Reset();
+        release(render_scene_vertices);release(render_scene_projection_flags);
+        release(render_scene_projected_vertices);release(render_scene_triangle_indices);
+        release(render_scene_draws);release(render_scene_materials);
+        release(render_scene_instance_enabled);release(render_scene_instance_submitted);
+        release(render_scene_texture_views);release(render_scene_material_samplers);
+        release(render_scene_sampler_cache);
+        release(world_actor_instances);release(world_actor_models);
+        release(overlay_layers);
+        overlay_destination_view.Reset();overlay_destination.Reset();
+        overlay_destination_width=overlay_destination_height=0;
+        overlay_vertices.Reset();overlay_constants.Reset();
+        scene_camera.reset();
+        has_render_scene_geometry=false;projected_vertices_dirty=false;
+        // D3D11 defers destruction even after reference release. This flush
+        // retires those objects; it is not the GPU completion proof above.
+        context->Flush();
+        submission_drain_covers_latest_work=false;
+        submission_drain_retirement_consumed=true;
+        return true;
+    }
+    void retire_scene_for_media(std::uint64_t token) {
+        if(!try_retire_scene_for_media(token))
+            throw std::logic_error("Cinematic retirement requires GPU completion after the latest work");
+    }
+
+    void set_scene_actors(const ActorLibraryV1& library,
+        std::span<const game::RuntimeWorldActorResolutionV1> actors) {
+        if (has_gameplay_actor || gameplay_presentation)
+            throw std::logic_error("Cannot replace an active gameplay scene with a cinematic");
+        submission_drain_covers_latest_work=false;
+        world_actor_instances.clear();
+        world_actor_models.clear();
+        initialize_world_actors(library,actors);
+        create_world_actor_buffers();
+        create_world_actor_resources();
+        if (!render_scene_white_texture_view) create_render_scene_white_texture();
+        media_mode=false;
+        projected_vertices_dirty=true;
+    }
+
+    void set_scene_geometry(const RenderSceneV1& scene) {
+        if (has_gameplay_actor || gameplay_presentation)
+            throw std::logic_error("Cannot replace an active gameplay scene with a cinematic");
+        auto flattened=build_render_scene_d3d_data_v1(scene);
+        submission_drain_covers_latest_work=false;
+        // Static scene allocation is independent from cinematic actor ownership.
+        // Empty replacement must retire previous buffers and visibility too.
+        render_scene_vertex_buffer.Reset();render_scene_index_buffer.Reset();
+        render_scene_vertices.clear();render_scene_projected_vertices.clear();
+        render_scene_triangle_indices.clear();
+        render_scene_projection_flags.clear();
+        render_scene_texture_views.clear();render_scene_material_samplers.clear();
+        has_render_scene_geometry=false;
+        initialize_render_scene_geometry(flattened);
+        render_scene_draws=std::move(flattened.draws);
+        render_scene_materials=std::move(flattened.materials);
+        render_scene_instance_enabled.assign(scene.instances.size(),true);
+        render_scene_instance_submitted.assign(scene.instances.size(),false);
+        if(has_render_scene_geometry)
+            create_render_scene_geometry_buffers(flattened.triangle_indices);
+        create_render_scene_resources(scene);
+        media_mode=false;projected_vertices_dirty=true;
+    }
+
+    void set_gameplay_scene(const RenderSceneV1& scene,const ActorLibraryV1& library,
+        const game::RuntimePlayerActorResolutionV1& player,
+        std::span<const game::RuntimeWorldActorResolutionV1> actors) {
+        if(has_gameplay_actor||gameplay_presentation)
+            throw std::logic_error("First gameplay admission already completed");
+        if(player.actor_rig_index>=library.rigs.size()||player.actor_model_index>=library.models.size())
+            throw std::invalid_argument("Gameplay admission player binding exceeds its prepared library");
+        const auto& rig=library.rigs[player.actor_rig_index];
+        const auto& model=library.models[player.actor_model_index];
+        if(model.rig_key!=rig.semantic_key)
+            throw std::invalid_argument("Gameplay admission player model refers to a different rig");
+        set_scene_geometry(scene);
+        set_scene_actors(library,actors);
+        initialize_gameplay_actor(rig.rig,model,player.model_to_entity);
+        create_gameplay_actor_buffers();
+        create_gameplay_actor_resources(model);
+        overlay_layers.clear();
+        scene_camera.reset();
+        media_mode=false;projected_vertices_dirty=true;
+    }
+
+    void set_scene_camera(const SceneCameraV1& camera,
+        std::uint32_t aspect_numerator, std::uint32_t aspect_denominator,
+        const std::array<float,4>& clear_color) {
+        validate_scene_camera_v1(camera);
+        if (!aspect_numerator || !aspect_denominator || aspect_numerator>65535 || aspect_denominator>65535 ||
+            !std::ranges::all_of(clear_color,[](float v){return std::isfinite(v)&&v>=0&&v<=1;}))
+            throw std::invalid_argument("Invalid cinematic aspect or clear color");
+        scene_camera=camera;
+        scene_aspect=static_cast<double>(aspect_numerator)/aspect_denominator;
+        scene_clear_color=clear_color;
+        media_mode=false;
+        projected_vertices_dirty=true;
+    }
     struct WorldActorModelGpu {
         std::uint32_t actor_model_index = 0U;
         std::uint32_t actor_rig_index = 0U;
@@ -564,6 +1115,7 @@ struct D3d11Renderer::Implementation {
         ActorPosePaletteV1 pose_palette;
         ActorAffineTransformV1 model_to_entity;
         ActorAffineTransformV1 entity_to_world;
+        std::optional<SceneCameraV1> camera;
         std::vector<RenderSceneD3dVertexV1> vertices;
         std::vector<ProjectedVertex> projected_vertices;
         ComPtr<ID3D11Buffer> vertex_buffer;
@@ -672,6 +1224,7 @@ struct D3d11Renderer::Implementation {
         }
 
         render_scene_vertices = geometry.vertices;
+        render_scene_projection_flags=geometry.vertex_projection_flags;
         render_scene_projected_vertices.resize(render_scene_vertices.size());
         for (std::size_t index = 0U;
              index < render_scene_vertices.size(); ++index) {
@@ -1149,6 +1702,22 @@ struct D3d11Renderer::Implementation {
     }
 
     void create_pipeline() {
+        require_success(device->CreatePixelShader(g_openrc_screen_overlay_ps,
+            sizeof(g_openrc_screen_overlay_ps),nullptr,overlay_pixel_shader.GetAddressOf()),
+            "Create screen overlay shader");
+        require_success(device->CreateVertexShader(g_openrc_encoded_vs,sizeof(g_openrc_encoded_vs),
+            nullptr,encoded_vertex_shader.GetAddressOf()),"Create encoded vertex shader");
+        require_success(device->CreateVertexShader(g_openrc_encoded_affine_vs,sizeof(g_openrc_encoded_affine_vs),
+            nullptr,encoded_affine_vertex_shader.GetAddressOf()),"Create encoded affine vertex shader");
+        require_success(device->CreatePixelShader(g_openrc_encoded_ps,sizeof(g_openrc_encoded_ps),
+            nullptr,encoded_pixel_shader.GetAddressOf()),"Create encoded pixel shader");
+        require_success(device->CreatePixelShader(g_openrc_encoded_affine_ps,sizeof(g_openrc_encoded_affine_ps),
+            nullptr,encoded_affine_pixel_shader.GetAddressOf()),"Create encoded affine pixel shader");
+        require_success(
+            device->CreatePixelShader(g_openrc_source_textured_ps,
+                sizeof(g_openrc_source_textured_ps),nullptr,
+                media_pixel_shader.GetAddressOf()),
+            "ID3D11Device::CreatePixelShader(media)");
         require_success(
             device->CreatePixelShader(
                 g_openrc_wireframe_ps,
@@ -1234,6 +1803,16 @@ struct D3d11Renderer::Implementation {
             device->CreateDepthStencilState(
                 &depth_description, depth_write_state.GetAddressOf()),
             "ID3D11Device::CreateDepthStencilState(write)");
+        for(std::uint32_t policy=0;policy<4;++policy) {
+            depth_description.DepthFunc=(policy&2)?D3D11_COMPARISON_ALWAYS:D3D11_COMPARISON_LESS_EQUAL;
+            depth_description.DepthWriteMask=(policy&1)?D3D11_DEPTH_WRITE_MASK_ZERO:D3D11_DEPTH_WRITE_MASK_ALL;
+            require_success(device->CreateDepthStencilState(&depth_description,scene_depth_states[policy].GetAddressOf()),"Create neutral material depth state");
+        }
+        D3D11_BLEND_DESC rgb_description{};
+        rgb_description.RenderTarget[0].RenderTargetWriteMask=
+            D3D11_COLOR_WRITE_ENABLE_RED|D3D11_COLOR_WRITE_ENABLE_GREEN|D3D11_COLOR_WRITE_ENABLE_BLUE;
+        require_success(device->CreateBlendState(&rgb_description,rgb_write_state.GetAddressOf()),
+            "Create RGB-only alpha-failure write state");
 
         D3D11_BUFFER_DESC constant_description{};
         constant_description.ByteWidth = sizeof(RenderSceneMaterialConstants);
@@ -1249,6 +1828,7 @@ struct D3d11Renderer::Implementation {
 
     void create_render_scene_geometry_buffers(
         const std::span<const std::uint32_t> triangle_indices) {
+        render_scene_triangle_indices.assign(triangle_indices.begin(),triangle_indices.end());
         D3D11_BUFFER_DESC vertex_description{};
         vertex_description.ByteWidth = checked_buffer_size(
             render_scene_projected_vertices.size(),
@@ -1796,6 +2376,14 @@ struct D3d11Renderer::Implementation {
         projected_vertices_dirty = true;
     }
 
+    void set_world_actor_camera(std::uint32_t authored_id,const SceneCameraV1* camera) {
+        if(camera) validate_scene_camera_v1(*camera);
+        auto& actor=require_world_actor(authored_id);
+        const auto value=camera?std::optional<SceneCameraV1>{*camera}:std::nullopt;
+        if(actor.camera==value) return;
+        actor.camera=value;projected_vertices_dirty=true;
+    }
+
     [[nodiscard]] bool
     world_actor_enabled(const std::uint32_t authored_id) const {
         return require_world_actor(authored_id).enabled;
@@ -1942,7 +2530,7 @@ struct D3d11Renderer::Implementation {
     void create_render_scene_resources(const RenderSceneV1& scene) {
         create_neutral_texture_resources(
             scene.textures, render_scene_texture_views);
-        create_render_scene_white_texture();
+        if (!render_scene_white_texture_view) create_render_scene_white_texture();
         render_scene_material_samplers.reserve(
             render_scene_materials.size());
         for (const auto& material : render_scene_materials) {
@@ -2008,7 +2596,19 @@ struct D3d11Renderer::Implementation {
             "ID3D11Device::CreateDepthStencilView");
     }
 
+    [[nodiscard]] static CameraProjection make_scene_camera_projection(const SceneCameraV1& camera) {
+            const auto vector=[](const std::array<float,3>& a){return Vec3{a[0],a[1],a[2]};};
+            const auto denominator=static_cast<double>(camera.far_plane)-camera.near_plane;
+            return {vector(camera.position),vector(camera.forward),vector(camera.right),vector(camera.up),
+                camera.tangent_half_vertical,camera.tangent_half_horizontal,
+                static_cast<float>(camera.far_plane/denominator),
+                static_cast<float>(static_cast<double>(camera.near_plane)*camera.far_plane/denominator)};
+    }
+
     [[nodiscard]] CameraProjection make_camera_projection() {
+        if (scene_camera) {
+            return make_scene_camera_projection(*scene_camera);
+        }
         if (!gameplay_presentation) {
             throw std::logic_error(
                 "The neutral D3D11 renderer requires an explicit gameplay camera");
@@ -2058,21 +2658,25 @@ struct D3d11Renderer::Implementation {
         const std::span<const RenderSceneD3dVertexV1> vertices,
         const std::span<ProjectedVertex> output,
         ID3D11Buffer* const buffer,
-        const char* const map_operation) {
+        const char* const map_operation,
+        std::span<const std::uint8_t> projection_flags={}) {
         if (vertices.empty() || vertices.size() != output.size() ||
             buffer == nullptr) {
             throw std::logic_error(
                 "The D3D11 projected-vertex storage is inconsistent");
         }
+        if(!projection_flags.empty()&&projection_flags.size()!=vertices.size())
+            throw std::logic_error("The D3D11 per-instance projection flags are inconsistent");
         for (std::size_t index = 0U; index < vertices.size(); ++index) {
-            const auto relative = as_vec3(vertices[index]) - camera.eye;
+            const auto flags=projection_flags.empty()?0U:projection_flags[index];
+            const auto relative = as_vec3(vertices[index]) - ((flags&1U)?Vec3{}:camera.eye);
             const auto camera_z = dot(relative, camera.forward);
             output[index].clip_position = {
                 dot(relative, camera.right) /
                     camera.tangent_half_horizontal,
                 dot(relative, camera.up) /
                     camera.tangent_half_vertical,
-                camera.depth_scale * camera_z - camera.depth_offset,
+                (flags&2U)?camera_z:camera.depth_scale * camera_z - camera.depth_offset,
                 camera_z,
             };
             for (const auto component : output[index].clip_position) {
@@ -2106,7 +2710,7 @@ struct D3d11Renderer::Implementation {
                 render_scene_vertices,
                 render_scene_projected_vertices,
                 render_scene_vertex_buffer.Get(),
-                "ID3D11DeviceContext::Map(projected RenderSceneV1 vertices)");
+                "ID3D11DeviceContext::Map(projected RenderSceneV1 vertices)",render_scene_projection_flags);
         }
         for (auto& actor : world_actor_instances) {
             if (!actor.enabled) {
@@ -2117,7 +2721,7 @@ struct D3d11Renderer::Implementation {
                 actor.vertices_dirty = false;
             }
             project_and_upload_vertices(
-                camera,
+                actor.camera?make_scene_camera_projection(*actor.camera):camera,
                 actor.vertices,
                 actor.projected_vertices,
                 actor.vertex_buffer.Get(),
@@ -2170,6 +2774,7 @@ struct D3d11Renderer::Implementation {
             return;
         }
 
+        submission_drain_covers_latest_work=false;
         context->OMSetRenderTargets(0U, nullptr, nullptr);
         render_target.Reset();
         depth_view.Reset();
@@ -2183,6 +2788,7 @@ struct D3d11Renderer::Implementation {
     }
 
     bool render() {
+        if (media_mode) return render_media();
         std::fill(
             render_scene_instance_submitted.begin(),
             render_scene_instance_submitted.end(),
@@ -2194,10 +2800,11 @@ struct D3d11Renderer::Implementation {
             return false;
         }
 
-        if (!gameplay_presentation) {
+        if (!gameplay_presentation && !scene_camera) {
             throw std::logic_error(
                 "The neutral D3D11 renderer cannot render without a gameplay presentation");
         }
+        submission_drain_covers_latest_work=false;
         update_projected_vertices();
 
         constexpr std::array<float, 4U> kClearColor{
@@ -2206,7 +2813,8 @@ struct D3d11Renderer::Implementation {
             18.0F / 255.0F,
             1.0F,
         };
-        context->ClearRenderTargetView(render_target.Get(), kClearColor.data());
+        context->ClearRenderTargetView(render_target.Get(),
+            scene_camera?scene_clear_color.data():kClearColor.data());
         context->ClearDepthStencilView(
             depth_view.Get(), D3D11_CLEAR_DEPTH, 1.0F, 0U);
 
@@ -2218,6 +2826,16 @@ struct D3d11Renderer::Implementation {
         D3D11_VIEWPORT viewport{};
         viewport.Width = static_cast<float>(width);
         viewport.Height = static_cast<float>(height);
+        if (scene_camera) {
+            const auto window_aspect=static_cast<double>(width)/height;
+            if (window_aspect>scene_aspect) {
+                viewport.Width=static_cast<float>(height*scene_aspect);
+                viewport.TopLeftX=(static_cast<float>(width)-viewport.Width)*0.5F;
+            } else {
+                viewport.Height=static_cast<float>(width/scene_aspect);
+                viewport.TopLeftY=(static_cast<float>(height)-viewport.Height)*0.5F;
+            }
+        }
         viewport.MinDepth = 0.0F;
         viewport.MaxDepth = 1.0F;
         context->RSSetViewports(1U, &viewport);
@@ -2242,13 +2860,15 @@ struct D3d11Renderer::Implementation {
         context->VSSetConstantBuffers(0U, 1U, no_constant_buffer);
 
         const auto draw_neutral =
-            [this, &kBlendFactor](
+            [this, &kBlendFactor, &viewport](
                 const RenderSceneD3dDrawV1& draw,
                 const std::vector<RenderSceneD3dMaterialV1>& materials,
                 const std::vector<ComPtr<ID3D11ShaderResourceView>>&
                     texture_views,
                 const std::vector<ComPtr<ID3D11SamplerState>>&
-                    material_samplers) {
+                    material_samplers,
+                std::span<const ProjectedVertex> projected,
+                std::span<const std::uint32_t> indices) {
                 const auto& material = materials[draw.material_id];
                 RenderSceneMaterialConstants constants{};
                 constants.base_color = material.base_color;
@@ -2267,7 +2887,9 @@ struct D3d11Renderer::Implementation {
                     material.double_sided
                         ? solid_rasterizer_state.Get()
                         : solid_single_sided_rasterizer_state.Get());
-                context->OMSetDepthStencilState(depth_write_state.Get(), 0U);
+                const auto depth_policy=(material.depth_test==RenderSceneDepthTestV1::always?2U:0U)|
+                    (material.depth_write?0U:1U);
+                context->OMSetDepthStencilState(scene_depth_states[depth_policy].Get(),0U);
                 context->OMSetBlendState(
                     nullptr, kBlendFactor.data(), kAllSamples);
                 context->PSSetShader(
@@ -2280,6 +2902,10 @@ struct D3d11Renderer::Implementation {
                     material.base_color_texture_id
                         ? texture_views[*material.base_color_texture_id].Get()
                         : render_scene_white_texture_view.Get();
+                if(material.color_math==RenderSceneColorMathV1::encoded_integer) {
+                    draw_encoded(draw,material,texture_view,projected,indices,viewport);return;
+                }
+                context->VSSetShader(projected_vertex_shader.Get(),nullptr,0);
                 ID3D11ShaderResourceView* const selected_views[] = {
                     texture_view};
                 context->PSSetShaderResources(0U, 1U, selected_views);
@@ -2303,7 +2929,7 @@ struct D3d11Renderer::Implementation {
                 draw,
                 render_scene_materials,
                 render_scene_texture_views,
-                render_scene_material_samplers);
+                render_scene_material_samplers,render_scene_projected_vertices,render_scene_triangle_indices);
             render_scene_instance_submitted[draw.instance_id] = true;
         }
 
@@ -2335,7 +2961,8 @@ struct D3d11Renderer::Implementation {
                     draw,
                     model.materials,
                     model.texture_views,
-                    model.material_samplers);
+                    model.material_samplers,actor.projected_vertices,
+                    actor.reverses_orientation?model.reversed_triangle_indices:model.triangle_indices);
                 actor.submitted = true;
             }
         }
@@ -2356,9 +2983,10 @@ struct D3d11Renderer::Implementation {
                     draw,
                     gameplay_actor_materials,
                     gameplay_actor_texture_views,
-                    gameplay_actor_material_samplers);
+                    gameplay_actor_material_samplers,gameplay_actor_projected_vertices,gameplay_actor_triangle_indices);
             }
-        } else {
+        } else if (gameplay_presentation) {
+            context->VSSetShader(projected_vertex_shader.Get(), nullptr, 0U);
             ID3D11Buffer* const gameplay_vertex_buffers[] = {
                 gameplay_proxy_vertex_buffer.Get()};
             context->IASetVertexBuffers(
@@ -2388,6 +3016,8 @@ struct D3d11Renderer::Implementation {
         context->OMSetBlendState(
             nullptr, kBlendFactor.data(), kAllSamples);
 
+        render_screen_overlay();
+        capture_back_buffer();
         const auto result = swap_chain->Present(1U, 0U);
         if (result == DXGI_STATUS_OCCLUDED) {
             return false;
@@ -2404,12 +3034,33 @@ struct D3d11Renderer::Implementation {
     }
 
     HWND window = nullptr;
+    ComPtr<ID3D11Texture2D> media_texture;
+    std::vector<ScreenOverlayLayerGpu> overlay_layers;
+    std::uint32_t overlay_destination_width=0,overlay_destination_height=0;
+    ComPtr<ID3D11Texture2D> overlay_destination;
+    ComPtr<ID3D11ShaderResourceView> overlay_destination_view;
+    ComPtr<ID3D11Buffer> overlay_vertices,overlay_constants;
+    ComPtr<ID3D11PixelShader> overlay_pixel_shader;
+    ComPtr<ID3D11ShaderResourceView> media_view;
+    ComPtr<ID3D11SamplerState> media_sampler;
+    ComPtr<ID3D11Buffer> media_vertices;
+    std::uint32_t media_width=0, media_height=0;
+    double media_aspect=1;
+    std::uint64_t media_submitted=0;
+    bool media_capture_requested=false;
+    bool media_mode=false;
+    std::optional<SceneCameraV1> scene_camera;
+    double scene_aspect=1;
+    std::array<float,4> scene_clear_color{0,0,0,1};
+    std::vector<std::byte> media_capture;
     std::uint32_t width = 0U;
     std::uint32_t height = 0U;
     UINT gameplay_proxy_index_count = 0U;
     D3D_FEATURE_LEVEL feature_level = D3D_FEATURE_LEVEL_10_0;
     std::vector<RenderSceneD3dVertexV1> render_scene_vertices;
+    std::vector<std::uint8_t> render_scene_projection_flags;
     std::vector<ProjectedVertex> render_scene_projected_vertices;
+    std::vector<std::uint32_t> render_scene_triangle_indices;
     std::vector<WorldActorModelGpu> world_actor_models;
     std::vector<WorldActorInstanceGpu> world_actor_instances;
     std::vector<ActorSkinnedMeshV1> gameplay_actor_meshes;
@@ -2449,11 +3100,17 @@ struct D3d11Renderer::Implementation {
     ComPtr<ID3D11DepthStencilView> depth_view;
     ComPtr<ID3D11VertexShader> projected_vertex_shader;
     ComPtr<ID3D11PixelShader> gameplay_proxy_pixel_shader;
+    ComPtr<ID3D11PixelShader> media_pixel_shader;
     ComPtr<ID3D11PixelShader> render_scene_pixel_shader;
     ComPtr<ID3D11InputLayout> projected_input_layout;
     ComPtr<ID3D11RasterizerState> solid_rasterizer_state;
     ComPtr<ID3D11RasterizerState> solid_single_sided_rasterizer_state;
     ComPtr<ID3D11DepthStencilState> depth_write_state;
+    std::array<ComPtr<ID3D11DepthStencilState>,4> scene_depth_states;
+    ComPtr<ID3D11BlendState> rgb_write_state;
+    ComPtr<ID3D11VertexShader> encoded_affine_vertex_shader;
+    ComPtr<ID3D11VertexShader> encoded_vertex_shader;
+    ComPtr<ID3D11PixelShader> encoded_pixel_shader,encoded_affine_pixel_shader;
     ComPtr<ID3D11ShaderResourceView> render_scene_white_texture_view;
     ComPtr<ID3D11Buffer> render_scene_vertex_buffer;
     ComPtr<ID3D11Buffer> render_scene_index_buffer;
@@ -2462,7 +3119,78 @@ struct D3d11Renderer::Implementation {
     ComPtr<ID3D11Buffer> gameplay_proxy_vertex_buffer;
     ComPtr<ID3D11Buffer> gameplay_proxy_index_buffer;
     ComPtr<ID3D11Buffer> render_scene_material_buffer;
+    ComPtr<ID3D11Query> submission_drain_query;
+    std::uint64_t submission_drain_token=0;
+    bool submission_drain_observed_complete=false;
+    bool submission_drain_covers_latest_work=false;
+    bool submission_drain_retirement_consumed=false;
 };
+
+D3d11Renderer::D3d11Renderer(HWND window)
+    : implementation_(std::make_unique<Implementation>(window)) {}
+
+void D3d11Renderer::set_media_frame(std::uint32_t width, std::uint32_t height,
+                                   std::span<const std::byte> rgba,
+                                   std::uint32_t aspect_numerator,
+                                   std::uint32_t aspect_denominator) {
+    implementation_->set_media_frame(width,height,rgba,aspect_numerator,aspect_denominator);
+}
+std::uint64_t D3d11Renderer::media_frames_submitted() const noexcept {
+    return implementation_->media_submitted;
+}
+std::vector<std::byte> D3d11Renderer::capture_media_frame_rgba() {
+    if (!implementation_->media_texture) throw std::logic_error("No media frame to capture");
+    implementation_->media_capture_requested=true;
+    static_cast<void>(implementation_->render_media());
+    return std::move(implementation_->media_capture);
+}
+
+std::vector<std::byte> D3d11Renderer::capture_frame_rgba() {
+    implementation_->media_capture.clear();
+    implementation_->media_capture_requested=true;
+    static_cast<void>(implementation_->render());
+    return std::move(implementation_->media_capture);
+}
+
+std::uint64_t D3d11Renderer::begin_submission_drain() {
+    return implementation_->begin_submission_drain();
+}
+bool D3d11Renderer::submission_drain_completed(std::uint64_t token) {
+    return implementation_->submission_drain_completed(token);
+}
+bool D3d11Renderer::submission_drain_covers_current_work(std::uint64_t token) const {
+    return implementation_->submission_drain_covers_current_work(token);
+}
+bool D3d11Renderer::try_retire_submission_drain(std::uint64_t token) {
+    return implementation_->try_retire_submission_drain(token);
+}
+void D3d11Renderer::retire_scene_for_media(std::uint64_t completed_drain_token) {
+    implementation_->retire_scene_for_media(completed_drain_token);
+}
+bool D3d11Renderer::try_retire_scene_for_media(std::uint64_t completed_drain_token) {
+    return implementation_->try_retire_scene_for_media(completed_drain_token);
+}
+
+void D3d11Renderer::set_scene_actors(const ActorLibraryV1& library,
+    std::span<const game::RuntimeWorldActorResolutionV1> actors) {
+    implementation_->set_scene_actors(library,actors);
+}
+
+void D3d11Renderer::set_scene_geometry(const RenderSceneV1& scene) {
+    implementation_->set_scene_geometry(scene);
+}
+
+void D3d11Renderer::set_gameplay_scene(const RenderSceneV1& scene,
+    const ActorLibraryV1& library,const game::RuntimePlayerActorResolutionV1& player,
+    std::span<const game::RuntimeWorldActorResolutionV1> actors) {
+    implementation_->set_gameplay_scene(scene,library,player,actors);
+}
+
+void D3d11Renderer::set_scene_camera(const SceneCameraV1& camera,
+    std::uint32_t aspect_numerator,std::uint32_t aspect_denominator,
+    const std::array<float,4>& clear_color) {
+    implementation_->set_scene_camera(camera,aspect_numerator,aspect_denominator,clear_color);
+}
 
 D3d11Renderer::D3d11Renderer(HWND window,
                              const openrc::RenderSceneV1& scene)
@@ -2528,6 +3256,27 @@ void D3d11Renderer::resize(const std::uint32_t width,
     implementation_->resize(width, height);
 }
 
+void D3d11Renderer::set_screen_overlay(const ScreenOverlayV1& overlay) {
+    implementation_->set_screen_overlay_layers(std::span(&overlay,1U),{});
+}
+void D3d11Renderer::set_screen_overlay_frame(std::uint32_t frame_index) {
+    if(implementation_->overlay_layers.empty()||
+        frame_index>=implementation_->overlay_layers[0].frames.size())
+        throw std::out_of_range("Screen overlay frame is absent");
+    implementation_->overlay_layers[0].frame_index=frame_index;
+}
+void D3d11Renderer::clear_screen_overlay() {
+    implementation_->overlay_layers.clear();
+}
+void D3d11Renderer::set_screen_overlay_layers(const std::span<const ScreenOverlayV1> layers,
+    const ScreenOverlayLimitsV1 limits) {
+    implementation_->set_screen_overlay_layers(layers,limits);
+}
+void D3d11Renderer::set_screen_overlay_layer_frames(
+    const std::span<const std::optional<std::uint32_t>> frame_indices) {
+    implementation_->set_screen_overlay_layer_frames(frame_indices);
+}
+
 bool D3d11Renderer::render() {
     return implementation_->render();
 }
@@ -2561,6 +3310,11 @@ void D3d11Renderer::set_world_actor_transform(
     const std::uint32_t authored_id,
     const game::WorldTransformV1& transform) {
     implementation_->set_world_actor_transform(authored_id, transform);
+}
+
+void D3d11Renderer::set_world_actor_camera(std::uint32_t authored_id,
+    const SceneCameraV1* camera) {
+    implementation_->set_world_actor_camera(authored_id,camera);
 }
 
 void D3d11Renderer::set_world_actor_enabled(

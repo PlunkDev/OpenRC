@@ -100,6 +100,11 @@ struct RuntimeGameplaySessionOptionsV1 {
   // Neither omission nor a later level reload initializes any implicit bytes.
   std::optional<SessionStateInitialV1> initial_persistent_state;
   SessionStateLimitsV1 persistent_state_limits;
+  // A prepared frontend can transfer its existing canonical session when
+  // entering the first level. It must have no gameplay ticks or level requests.
+  // Mutually exclusive with initial_persistent_state; its seed, bytes and
+  // revision are retained, without replaying prepared initial values.
+  std::optional<GameSessionV1> frontend_session;
 };
 
 struct RuntimeMovementAxesV1 {
@@ -253,6 +258,8 @@ private:
   RuntimeLevelFoundationV1 foundation_;
   RuntimeGameplayProfileV1 profile_;
   GameSessionV1 session_;
+  // Active only without entity content. With content, entity_gameplay_ owns
+  // the transferred session-loaded world; world() exposes that same object.
   WorldV1 world_;
   PlayerSimulationV1 player_;
   GameInputStateV1 input_;

@@ -442,7 +442,15 @@ void write_material(Writer &writer, const RenderSceneMaterialV1 &material) {
   writer.append_u8(static_cast<std::uint8_t>(material.mipmap_filter));
   writer.append_u8(static_cast<std::uint8_t>(material.alpha_mode));
   writer.append_u8(material.alpha_cutoff_rgba8);
-  writer.append_zero(9U);
+  writer.append_u8(static_cast<std::uint8_t>(material.color_math));
+  writer.append_u8(static_cast<std::uint8_t>(material.blend_mode));
+  writer.append_u8(static_cast<std::uint8_t>(material.interpolation));
+  writer.append_u8(static_cast<std::uint8_t>(material.depth_test));
+  writer.append_u8(material.depth_write?0U:1U);
+  writer.append_u8(material.texture_modulation_denominator==255U?0U:material.texture_modulation_denominator);
+  writer.append_u8(material.blend_denominator==255U?0U:material.blend_denominator);
+  writer.append_u8(static_cast<std::uint8_t>(material.alpha_failure));
+  writer.append_zero(1U);
 }
 
 void write_vertex(Writer &writer, const ActorSkinnedVertexV1 &vertex) {
@@ -866,7 +874,21 @@ ActorLibraryV1 decode_actor_library_v1(const std::span<const std::byte> bytes,
           reader.read_u8("An actor material alpha mode"));
       material.alpha_cutoff_rgba8 =
           reader.read_u8("An actor material alpha cutoff");
-      reader.require_zero(9U, "Actor material reserved bytes");
+      material.color_math=static_cast<RenderSceneColorMathV1>(reader.read_u8("Actor material color math"));
+      material.blend_mode=static_cast<RenderSceneBlendModeV1>(reader.read_u8("Actor material blend mode"));
+      material.interpolation=static_cast<RenderSceneInterpolationV1>(reader.read_u8("Actor material interpolation"));
+      material.depth_test=static_cast<RenderSceneDepthTestV1>(reader.read_u8("Actor material depth test"));
+      const auto no_depth_write=reader.read_u8("Actor material depth write");
+      const auto modulation=reader.read_u8("Actor material modulation denominator");
+      const auto blend=reader.read_u8("Actor material blend denominator");
+      if(no_depth_write>1U || modulation==255U || blend==255U)
+        fail("ActorLibraryV1 material extension has noncanonical wire values");
+      material.depth_write=no_depth_write==0U;
+      material.texture_modulation_denominator=modulation?modulation:255U;
+      material.blend_denominator=blend?blend:255U;
+      material.alpha_failure=static_cast<RenderSceneAlphaFailureV1>(
+          reader.read_u8("Actor material alpha failure"));
+      reader.require_zero(1U, "Actor material reserved bytes");
       model.materials.push_back(material);
     }
 

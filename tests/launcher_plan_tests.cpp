@@ -137,6 +137,10 @@ void test_runtime_plan_has_exact_package_only_argv() {
 
   expect(argv == expected,
          "Runtime argv differs from the PreparedGameV2-only contract");
+  const auto startup = openrc::launcher::make_runtime_startup_launch_plan_v1(
+      runtime, prepared).argv_utf8_v1();
+  expect(startup == std::vector<std::string>(expected.begin(), expected.begin()+3),
+         "Normal startup must not request a developer level or source ISO");
   expect(std::ranges::find(argv, "--disc-image") == argv.end() &&
              std::ranges::find(argv, "--boot-executable") == argv.end() &&
              std::ranges::find(argv, "--record") == argv.end() &&

@@ -7,6 +7,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <variant>
@@ -20,23 +21,77 @@ struct RacFrontendNewGameSourceV1 {
   std::span<const std::byte> bytes;
 };
 
-enum class RacFrontendNewGameNumericKindV1 {
-  timer_1f98c0,
-  color_mix_1fa8a8,
-  timed_color_21c6c0
-};
+enum class RacFrontendNewGameNumericKindV1 { timer_1f98c0, timed_color_21c6c0 };
 struct RacFrontendNewGameNumericV1 {
   RacFrontendNewGameNumericKindV1 kind =
       RacFrontendNewGameNumericKindV1::timer_1f98c0;
   std::uint32_t source_call_pc = 0U;
   std::array<std::uint64_t, 3U> arguments{};
-  // color_mix receives raw f12=0x3f000000; the other calls have no f12 ABI.
+  // Neither call has an f12 ABI; this must be zero.
   std::uint32_t single_argument_bits = 0U;
   std::uint64_t returned_low64 = 0U;
-  // Supplied observations of unexecuted numeric callees, not evaluated values.
+  // True only when the callee's result was computed from its owned inputs.
+  // False identifies the remaining non-exact timed-mixer observation.
+  bool evaluated = false;
+  // Optional diagnostic expectations never override an evaluated value.
   // The reached call kind, PC and all actual arguments are cross-checked.
+  // Timer MFC1 sign-extends its word; timed-color's final PPACH/PPACB result
+  // zeroes the upper32 bits. These source ABI constraints are also checked.
   bool operator==(const RacFrontendNewGameNumericV1 &) const = default;
 };
+
+// Source 1f98c0 with its actual unit time scale. CVT.S.W, ADDA(.25,.25),
+// MADD(argument,1), and TRUNC are exact for -2^23 <= argument < 2^23.
+// Other scales/ranges throw; there is no host-float or unknown-ACC fallback.
+// The signed integer result retains the source MFC1 sign extension.
+[[nodiscard]] std::uint64_t evaluate_rac_frontend_timer_v1(
+    std::uint32_t argument_word, std::uint32_t time_scale_bits);
+
+struct RacFrontendTimedColorPlanV1 {
+  std::uint32_t clamped_age = 0U;
+  std::uint32_t duration = 0U;
+  std::uint32_t timer_calls = 0U;
+  std::uint64_t left_color = 0U;
+  std::uint64_t right_color = 0U;
+  // Present only on the source DIV arm; these are CVT.S.W operand words.
+  std::optional<std::uint32_t> division_numerator;
+  std::optional<std::uint32_t> division_denominator;
+  // Set only when division, SUB, both products and ACC sum are all exact.
+  // A pending result does not substitute rational interpolation for DIV/MADD.
+  std::optional<std::uint32_t> factor_bits;
+  std::optional<std::uint64_t> returned_low64;
+};
+
+// Executes 21c6c0's signed age clamp, 64-bit -1 color defaults, timer calls,
+// and its branch/operand order. Exact dyadic mixtures use integer arithmetic;
+// the non-exact DIV/MADD domain remains explicitly pending. A reached DIV by
+// zero also remains pending; the over-duration branch still executes normally.
+[[nodiscard]] RacFrontendTimedColorPlanV1 plan_rac_frontend_timed_color_v1(
+    std::uint32_t age_word, std::uint64_t left_color,
+    std::uint64_t right_color, std::uint32_t timer_argument_word,
+    std::uint32_t time_scale_bits);
+
+// Evaluated original1fa8a8 call at21b814, whose actual f12 is exactly0.5.
+// Separate from numeric observations: the returned low64 is computed, not
+// supplied. Source unpacking discards input bits32..127; final PPACH/PPACB
+// zeroes return bits32..127. This API carries the observable low64 ABI only.
+struct RacFrontendNewGameHalfMixV1 {
+  std::uint32_t source_call_pc = 0U;
+  std::uint64_t left_color = 0U;
+  std::uint64_t right_color = 0U;
+  std::uint64_t returned_low64 = 0U;
+  bool operator==(const RacFrontendNewGameHalfMixV1 &) const = default;
+};
+
+// Exact value-only specialization of source1fa8a8 for its reached factor0.5.
+// Byte lanes0..255, their halves and their sum are all exactly representable:
+// VU SUB(1,.5), ITOF0, MULAw and MADDx cannot discard a value bit, overflow or
+// underflow within this domain. FTOI0 truncates the final half-integer.
+// This does not qualify arbitrary factors, VU ACC/flags/latency, or timed
+// color.
+[[nodiscard]] std::uint64_t
+mix_rac_frontend_color_half_v1(std::uint64_t left_color,
+                               std::uint64_t right_color) noexcept;
 
 struct RacFrontendNewGameWriteV1 {
   std::uint32_t source_pc = 0U;
@@ -77,7 +132,7 @@ struct RacFrontendNewGameLayoutV1 {
 using RacFrontendNewGameEffectV1 =
     std::variant<RacFrontendNewGameWriteV1, RacFrontendNewGameNumericV1,
                  RacFrontendNewGameTextV1, RacFrontendNewGameControlV1,
-                 RacFrontendNewGameLayoutV1>;
+                 RacFrontendNewGameLayoutV1, RacFrontendNewGameHalfMixV1>;
 
 struct RacFrontendNewGameLimitsV1 {
   std::uint64_t max_source_bytes = 16U * 1024U * 1024U;
@@ -105,6 +160,7 @@ struct RacFrontendNewGameInputsV1 {
   RacFrontendGsRegionV1 texture_payload;
   std::uint32_t allocator_begin = 0U;
   std::span<const RacFrontendNewGameNumericV1> numeric_observations;
+  // Empty observations are valid when every reached numeric call executes.
   RacFrontendNewGameLimitsV1 limits;
 };
 
@@ -120,6 +176,7 @@ struct RacFrontendNewGamePlanV1 {
   std::array<std::uint32_t, 8U> final_palette{};
   bool final_inline_colors_enabled = false;
   bool batch_reached = false;
+  std::optional<RacFrontendTimedColorPlanV1> timed_color;
 };
 
 class RacFrontendNewGameError final : public std::runtime_error {
@@ -130,8 +187,10 @@ public:
 // Complete bounded control owner21b298, used by original New Game text node.
 // All selection/timer/scroll/early-return arms retain source integer semantics.
 // The reached layout, float glyph and cold-binder helpers actually run; their
-// numeric programs are not evaluated or substituted by host math. Timer and
-// color callees are explicit ordered observations, not successful fake no-ops.
+// numeric programs are not substituted by host math. Unit-scale timers and
+// exact dyadic timed colors execute. Non-exact timed DIV/MADD results still
+// require an explicit observation, marked evaluated=false in the effect.
+// The actual constant-half mixing call evaluates its exact bounded byte domain.
 // No runtime schema, host font, renderer, source-byte embedding or implied GS
 // residency. Source literals are supplied through their original owned ranges.
 [[nodiscard]] RacFrontendNewGamePlanV1

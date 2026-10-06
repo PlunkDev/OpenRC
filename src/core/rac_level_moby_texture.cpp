@@ -254,6 +254,10 @@ RacLevelMobyTextureBankV1 decode_rac_level_moby_texture_bank_v1(
                 static_cast<std::size_t>(raw_index) * 4U;
             const auto output_offset =
                 static_cast<std::size_t>(logical_index) * 4U;
+            for (std::size_t channel = 0U; channel < 4U; ++channel) {
+                texture.palette_raw_rgba[output_offset + channel] =
+                    raw_gs_ram[raw_offset + channel];
+            }
             texture.palette_rgba[output_offset] = raw_gs_ram[raw_offset];
             texture.palette_rgba[output_offset + 1U] =
                 raw_gs_ram[raw_offset + 1U];

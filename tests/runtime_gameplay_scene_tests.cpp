@@ -28,8 +28,8 @@ std::size_t allocations_before_failure = 0U;
     }
     --allocations_before_failure;
   }
-  if (auto *const result = std::malloc(requested_size == 0U ? 1U
-                                                            : requested_size)) {
+  if (auto *const result =
+          std::malloc(requested_size == 0U ? 1U : requested_size)) {
     return result;
   }
   throw std::bad_alloc{};
@@ -52,9 +52,7 @@ void *operator new[](const std::size_t size) {
   return allocation_failure::allocate(size);
 }
 
-void operator delete(void *const allocation) noexcept {
-  std::free(allocation);
-}
+void operator delete(void *const allocation) noexcept { std::free(allocation); }
 
 void operator delete[](void *const allocation) noexcept {
   std::free(allocation);
@@ -238,18 +236,14 @@ make_destructible_scenes(const std::uint32_t level_id = 7U) {
   };
 }
 
-[[nodiscard]] openrc::game::GameplayDamagePulseV1 damage_at_crate(
-    const std::uint64_t attack_sequence, const std::uint32_t source_authored_id,
-    const openrc::game::DamageChannelMaskV1 channel,
-    const std::uint32_t damage) {
+[[nodiscard]] openrc::game::GameplayDamagePulseV1
+damage_at_crate(const std::uint64_t attack_sequence,
+                const std::uint32_t source_authored_id,
+                const openrc::game::DamageChannelMaskV1 channel,
+                const std::uint32_t damage) {
   return {
-      attack_sequence,
-      source_authored_id,
-      channel,
-      damage,
-      {4.0, 0.0, 1.0},
-      {4.0, 0.0, 1.0},
-      0.25,
+      attack_sequence, source_authored_id, channel, damage,
+      {4.0, 0.0, 1.0}, {4.0, 0.0, 1.0},    0.25,
   };
 }
 
@@ -267,11 +261,12 @@ find_snapshot_entity(const openrc::game::EntityGameplaySnapshotV1 &snapshot,
   return *found;
 }
 
-[[nodiscard]] openrc::game::EntityGameplayEventV1 damage_event(
-    const openrc::game::EntityGameplayEventKindV1 kind,
-    const std::uint64_t tick_index, const std::uint64_t attack_sequence,
-    const std::uint32_t source_authored_id, const std::uint32_t damage,
-    const std::uint32_t remaining_health) {
+[[nodiscard]] openrc::game::EntityGameplayEventV1
+damage_event(const openrc::game::EntityGameplayEventKindV1 kind,
+             const std::uint64_t tick_index,
+             const std::uint64_t attack_sequence,
+             const std::uint32_t source_authored_id, const std::uint32_t damage,
+             const std::uint32_t remaining_health) {
   openrc::game::EntityGameplayEventV1 result;
   result.kind = kind;
   result.tick_index = tick_index;
@@ -453,6 +448,109 @@ void test_bad_cross_resource_loads_are_transactional() {
          "an invalid-entity reload changed the live runtime");
 }
 
+void test_materialization_uses_the_session_loaded_world() {
+  using namespace openrc::game;
+  const auto scenes = make_scenes(7U);
+  GameSessionV1 owner(0x12345678U);
+  WorldV1 staged_world;
+  for (std::uint32_t i = 0U; i < 12U; ++i) {
+    const auto request = owner.request_level(7U, 93U);
+    staged_world.load_level(owner, request);
+  }
+  const auto owner_before = owner.snapshot();
+  const auto identity = staged_world.active_level();
+  EntityGameplayRuntimeV1 runtime;
+  runtime.load_scene(scenes.entities, scenes.gameplay, staged_world, kLimits,
+                     50U);
+  expect(owner.snapshot() == owner_before &&
+             staged_world.active_level() == identity &&
+             staged_world.slot_count() == 0U &&
+             runtime.world().active_level() == identity &&
+             runtime.snapshot().next_tick_index == 50U &&
+             runtime.find_entity_id(20U)->level_instance_sequence == 12U,
+         "materialization reconstructed or changed the real session identity");
+  const auto before = runtime.snapshot();
+  expect_runtime_error(
+      [&] {
+        runtime.load_scene(scenes.entities, scenes.gameplay, staged_world,
+                           kLimits);
+      },
+      "a repeated world instance could recreate stale entity IDs");
+  expect(runtime.snapshot() == before,
+         "rejected world reuse changed the materialized state");
+
+  // The standalone overload remains available for diagnostics and continues
+  // from the adopted identity rather than restarting its own sequence.
+  runtime.load_scene(scenes.entities, scenes.gameplay, kLimits, 60U);
+  expect(runtime.world().active_level()->instance_sequence == 13U &&
+             !runtime.world().active_level()->spawn_point_id,
+         "standalone reload restarted a transferred world identity");
+}
+
+void test_transferred_world_validation_and_allocation_failures() {
+  using namespace openrc::game;
+  const auto scenes = make_scenes(7U);
+  EntityGameplayRuntimeV1 baseline;
+  baseline.load_scene(scenes.entities, scenes.gameplay, kLimits);
+  const auto before = baseline.snapshot();
+  const auto old_id = *baseline.find_entity_id(20U);
+  auto reject = [&](WorldV1 world) {
+    expect_runtime_error(
+        [&] {
+          baseline.load_scene(scenes.entities, scenes.gameplay,
+                              std::move(world), kLimits);
+        },
+        "invalid transferred world was accepted");
+    expect(baseline.snapshot() == before &&
+               baseline.world().find_entity(old_id) != nullptr,
+           "invalid transferred world damaged the live scene");
+  };
+  reject(WorldV1{});
+  GameSessionV1 owner;
+  WorldV1 staged_world;
+  auto request = owner.request_level(8U, 99U);
+  staged_world.load_level(owner, request);
+  reject(staged_world);
+  request = owner.request_level(7U, 93U);
+  staged_world.load_level(owner, request);
+  auto occupied = staged_world;
+  const auto extra_id = occupied.spawn_entity(WorldEntityDefinitionV1{});
+  reject(occupied);
+  expect(occupied.destroy_entity(extra_id), "test entity was not removed");
+  reject(occupied); // Empty count is insufficient: no pre-used slots allowed.
+
+  std::size_t failures = 0U;
+  bool completed = false;
+  const auto owner_before = owner.snapshot();
+  for (std::size_t point = 0U; point < 512U; ++point) {
+    auto runtime = baseline;
+    allocation_failure::fail_after(point);
+    try {
+      runtime.load_scene(scenes.entities, scenes.gameplay, staged_world,
+                         kLimits, 123U);
+      allocation_failure::disable();
+      expect(runtime.world().active_level() == staged_world.active_level() &&
+                 runtime.world().find_entity(old_id) == nullptr &&
+                 runtime.snapshot().next_tick_index == 123U,
+             "successful staged transfer lost identity or retained old IDs");
+      completed = true;
+      break;
+    } catch (const std::bad_alloc &) {
+      allocation_failure::disable();
+      ++failures;
+      expect(runtime.snapshot() == before &&
+                 runtime.world().find_entity(old_id) != nullptr,
+             "allocation failure partially published the replacement world");
+    } catch (...) {
+      allocation_failure::disable();
+      throw;
+    }
+  }
+  expect(completed && failures != 0U && owner.snapshot() == owner_before &&
+             staged_world.slot_count() == 0U,
+         "fault sweep did not finish or modified the caller's staged owner");
+}
+
 void test_destructible_load_and_cross_resource_validation() {
   using namespace openrc;
   using namespace openrc::game;
@@ -463,23 +561,21 @@ void test_destructible_load_and_cross_resource_validation() {
 
   const auto crate_id = runtime.find_entity_id(kDestructibleAuthoredId);
   const auto loaded = runtime.snapshot();
-  const auto &crate =
-      find_snapshot_entity(loaded, kDestructibleAuthoredId);
+  const auto &crate = find_snapshot_entity(loaded, kDestructibleAuthoredId);
   expect(crate_id.has_value() && runtime.world().entity_count() == 6U &&
              runtime.world().find_entity(*crate_id) != nullptr &&
              runtime.enabled(kDestructibleAuthoredId) &&
              !runtime.collected(kDestructibleAuthoredId) &&
              !runtime.destroyed(kDestructibleAuthoredId) &&
              runtime.health(kDestructibleAuthoredId) == 50U &&
-             !runtime.health(20U) && crate.health == 50U &&
-             !crate.destroyed && crate.damage_source_sequences.empty(),
+             !runtime.health(20U) && crate.health == 50U && !crate.destroyed &&
+             crate.damage_source_sequences.empty(),
          "destructible state was not materialized with exact initial health");
 
   const auto center = world_destructible_center_v1(
       *runtime.find_authored_transform(kDestructibleAuthoredId),
       scenes.destructibles.destructibles.front());
-  expect(std::abs(center.x - 4.0) < 0.000001 &&
-             std::abs(center.y) < 0.000001 &&
+  expect(std::abs(center.x - 4.0) < 0.000001 && std::abs(center.y) < 0.000001 &&
              std::abs(center.z - 1.0) < 0.000001,
          "destructible local hit center was not mapped into world space");
 
@@ -498,8 +594,8 @@ void test_destructible_load_and_cross_resource_validation() {
       std::move(missing_definition), kLimits.destructible_scene);
   expect_runtime_error(
       [&] {
-        runtime.load_scene(scenes.entities, scenes.gameplay,
-                           missing_definition, kLimits);
+        runtime.load_scene(scenes.entities, scenes.gameplay, missing_definition,
+                           kLimits);
       },
       "a destructible referencing a missing definition was accepted");
 
@@ -539,8 +635,8 @@ void test_destructible_load_and_cross_resource_validation() {
       [](const auto &candidate, const std::uint32_t authored_id) {
         return candidate.authored_id < authored_id;
       });
-  distant_transform->transform.position[0U] = static_cast<float>(
-      kGameplayDamageMaximumGeometryMagnitudeV1 * 2.0);
+  distant_transform->transform.position[0U] =
+      static_cast<float>(kGameplayDamageMaximumGeometryMagnitudeV1 * 2.0);
   expect_runtime_error(
       [&] {
         runtime.load_scene(distant_world_sphere, scenes.gameplay,
@@ -555,10 +651,10 @@ void test_destructible_load_and_cross_resource_validation() {
       [](const auto &candidate, const std::uint32_t authored_id) {
         return candidate.authored_id < authored_id;
       });
-  const auto oversized_scale = static_cast<float>(
-      kGameplayDamageMaximumGeometryMagnitudeV1 * 2.0);
-  oversized_transform->transform.scale = {
-      oversized_scale, oversized_scale, oversized_scale};
+  const auto oversized_scale =
+      static_cast<float>(kGameplayDamageMaximumGeometryMagnitudeV1 * 2.0);
+  oversized_transform->transform.scale = {oversized_scale, oversized_scale,
+                                          oversized_scale};
   expect_runtime_error(
       [&] {
         runtime.load_scene(oversized_world_sphere, scenes.gameplay,
@@ -573,8 +669,8 @@ void test_destructible_load_and_cross_resource_validation() {
       [](const auto &candidate, const std::uint32_t authored_id) {
         return candidate.authored_id < authored_id;
       });
-  undersized_transform->transform.scale = {
-      1.0F / 128.0F, 1.0F / 128.0F, 1.0F / 128.0F};
+  undersized_transform->transform.scale = {1.0F / 128.0F, 1.0F / 128.0F,
+                                           1.0F / 128.0F};
   expect_runtime_error(
       [&] {
         runtime.load_scene(undersized_world_sphere, scenes.gameplay,
@@ -619,27 +715,23 @@ void test_destructible_damage_channels_health_events_and_attack_identity() {
     return runtime.fixed_tick(tick_index, distant_player, pulses);
   };
 
-  const auto rejected = damage_at_crate(
-      1U, 5U, kDamageChannelExplosiveV1, 20U);
+  const auto rejected = damage_at_crate(1U, 5U, kDamageChannelExplosiveV1, 20U);
   expect(tick_with(0U, rejected).empty() &&
              runtime.health(kDestructibleAuthoredId) == 50U,
          "a destructible accepted a damage channel outside its authored mask");
 
-  const auto active_melee =
-      damage_at_crate(1U, 5U, kDamageChannelMeleeV1, 20U);
+  const auto active_melee = damage_at_crate(1U, 5U, kDamageChannelMeleeV1, 20U);
   expect(tick_with(1U, active_melee) ==
-             std::vector<EntityGameplayEventV1>{damage_event(
-                 EntityGameplayEventKindV1::entity_damaged, 1U, 1U, 5U, 20U,
-                 30U)} &&
+                 std::vector<EntityGameplayEventV1>{
+                     damage_event(EntityGameplayEventKindV1::entity_damaged, 1U,
+                                  1U, 5U, 20U, 30U)} &&
              runtime.health(kDestructibleAuthoredId) == 30U,
          "an accepted damage pulse did not reduce health exactly once");
   const auto once = runtime.snapshot();
-  const auto &once_crate =
-      find_snapshot_entity(once, kDestructibleAuthoredId);
+  const auto &once_crate = find_snapshot_entity(once, kDestructibleAuthoredId);
   expect(once_crate.health == 30U &&
              once_crate.damage_source_sequences ==
-                 std::vector<EntityGameplayDamageSourceSequenceV1>{
-                     {5U, 1U}},
+                 std::vector<EntityGameplayDamageSourceSequenceV1>{{5U, 1U}},
          "snapshot lost destructible health or last-hit identity");
 
   expect(tick_with(2U, active_melee).empty() &&
@@ -649,9 +741,9 @@ void test_destructible_damage_channels_health_events_and_attack_identity() {
   const auto same_attack_other_source =
       damage_at_crate(1U, 6U, kDamageChannelMeleeV1, 20U);
   expect(tick_with(3U, same_attack_other_source) ==
-             std::vector<EntityGameplayEventV1>{damage_event(
-                 EntityGameplayEventKindV1::entity_damaged, 3U, 1U, 6U, 20U,
-                 10U)} &&
+                 std::vector<EntityGameplayEventV1>{
+                     damage_event(EntityGameplayEventKindV1::entity_damaged, 3U,
+                                  1U, 6U, 20U, 10U)} &&
              runtime.health(kDestructibleAuthoredId) == 10U,
          "attack identity did not include its authored source");
 
@@ -666,10 +758,10 @@ void test_destructible_damage_channels_health_events_and_attack_identity() {
   const auto destroyed = tick_with(6U, finishing_projectile);
   expect(destroyed ==
              std::vector<EntityGameplayEventV1>{
-                 damage_event(EntityGameplayEventKindV1::entity_damaged, 6U,
-                               2U, 5U, 10U, 0U),
+                 damage_event(EntityGameplayEventKindV1::entity_damaged, 6U, 2U,
+                              5U, 10U, 0U),
                  damage_event(EntityGameplayEventKindV1::entity_destroyed, 6U,
-                               2U, 5U, 10U, 0U),
+                              2U, 5U, 10U, 0U),
                  grant_event(6U, "items/bolts", 3U, 0U),
                  grant_event(6U, "loot/scrap", 2U, 1U),
              },
@@ -704,8 +796,8 @@ void test_out_of_domain_damage_pulses_are_transactional() {
   const std::array projection_pulses{projection_overflow};
   expect_runtime_error(
       [&] {
-        static_cast<void>(runtime.fixed_tick(
-            0U, player_at(50.0, 50.0), projection_pulses));
+        static_cast<void>(
+            runtime.fixed_tick(0U, player_at(50.0, 50.0), projection_pulses));
       },
       "a pulse whose projection dot product overflows was accepted");
   expect(runtime.snapshot() == before,
@@ -720,8 +812,8 @@ void test_out_of_domain_damage_pulses_are_transactional() {
   const std::array limit_pulses{near_binary64_limit};
   expect_runtime_error(
       [&] {
-        static_cast<void>(runtime.fixed_tick(
-            0U, player_at(50.0, 50.0), limit_pulses));
+        static_cast<void>(
+            runtime.fixed_tick(0U, player_at(50.0, 50.0), limit_pulses));
       },
       "a pulse near the binary64 limit was accepted");
   expect(runtime.snapshot() == before,
@@ -729,29 +821,28 @@ void test_out_of_domain_damage_pulses_are_transactional() {
 
   auto adjacent_coordinate =
       damage_at_crate(1U, 5U, kDamageChannelMeleeV1, 20U);
-  adjacent_coordinate.capsule_start.x = std::nextafter(
-      kGameplayDamageMaximumGeometryMagnitudeV1,
-      std::numeric_limits<double>::infinity());
+  adjacent_coordinate.capsule_start.x =
+      std::nextafter(kGameplayDamageMaximumGeometryMagnitudeV1,
+                     std::numeric_limits<double>::infinity());
   adjacent_coordinate.capsule_end = adjacent_coordinate.capsule_start;
   const std::array adjacent_coordinate_pulses{adjacent_coordinate};
   expect_runtime_error(
       [&] {
-        static_cast<void>(runtime.fixed_tick(
-            0U, player_at(50.0, 50.0), adjacent_coordinate_pulses));
+        static_cast<void>(runtime.fixed_tick(0U, player_at(50.0, 50.0),
+                                             adjacent_coordinate_pulses));
       },
       "a pulse one binary64 step beyond the coordinate domain was accepted");
   expect(runtime.snapshot() == before,
          "adjacent coordinate rejection partially committed gameplay state");
 
-  auto subminimum_radius =
-      damage_at_crate(1U, 5U, kDamageChannelMeleeV1, 20U);
+  auto subminimum_radius = damage_at_crate(1U, 5U, kDamageChannelMeleeV1, 20U);
   subminimum_radius.radius =
       std::nextafter(kGameplayDamageMinimumRadiusV1, 0.0);
   const std::array subminimum_radius_pulses{subminimum_radius};
   expect_runtime_error(
       [&] {
-        static_cast<void>(runtime.fixed_tick(
-            0U, player_at(50.0, 50.0), subminimum_radius_pulses));
+        static_cast<void>(runtime.fixed_tick(0U, player_at(50.0, 50.0),
+                                             subminimum_radius_pulses));
       },
       "a pulse one binary64 step below the radius domain was accepted");
   expect(runtime.snapshot() == before,
@@ -766,35 +857,32 @@ void test_damage_capsule_endpoint_and_long_interior_regions() {
   EntityGameplayRuntimeV1 interior_runtime;
   interior_runtime.load_scene(scenes.entities, scenes.gameplay,
                               scenes.destructibles, kLimits);
-  auto long_interior =
-      damage_at_crate(1U, 5U, kDamageChannelMeleeV1, 20U);
-  long_interior.capsule_start = {
-      -kGameplayDamageMaximumGeometryMagnitudeV1, 0.0, 1.0};
-  long_interior.capsule_end = {
-      kGameplayDamageMaximumGeometryMagnitudeV1, 0.0, 1.0};
+  auto long_interior = damage_at_crate(1U, 5U, kDamageChannelMeleeV1, 20U);
+  long_interior.capsule_start = {-kGameplayDamageMaximumGeometryMagnitudeV1,
+                                 0.0, 1.0};
+  long_interior.capsule_end = {kGameplayDamageMaximumGeometryMagnitudeV1, 0.0,
+                               1.0};
   long_interior.radius = kGameplayDamageMinimumRadiusV1;
   const std::array interior_pulses{long_interior};
-  expect(interior_runtime.fixed_tick(0U, distant_player, interior_pulses) ==
-             std::vector<EntityGameplayEventV1>{damage_event(
-                 EntityGameplayEventKindV1::entity_damaged, 0U, 1U, 5U, 20U,
-                 30U)},
-         "a boundary-valid long segment lost its interior overlap to "
-         "projection cancellation");
+  expect(
+      interior_runtime.fixed_tick(0U, distant_player, interior_pulses) ==
+          std::vector<EntityGameplayEventV1>{damage_event(
+              EntityGameplayEventKindV1::entity_damaged, 0U, 1U, 5U, 20U, 30U)},
+      "a boundary-valid long segment lost its interior overlap to "
+      "projection cancellation");
 
   EntityGameplayRuntimeV1 diagonal_runtime;
   diagonal_runtime.load_scene(scenes.entities, scenes.gameplay,
                               scenes.destructibles, kLimits);
-  auto diagonal_miss =
-      damage_at_crate(1U, 5U, kDamageChannelMeleeV1, 20U);
-  diagonal_miss.capsule_start = {
-      -kGameplayDamageMaximumGeometryMagnitudeV1,
-      -kGameplayDamageMaximumGeometryMagnitudeV1, 1.0};
-  diagonal_miss.capsule_end = {
-      kGameplayDamageMaximumGeometryMagnitudeV1,
-      kGameplayDamageMaximumGeometryMagnitudeV1, 1.0};
+  auto diagonal_miss = damage_at_crate(1U, 5U, kDamageChannelMeleeV1, 20U);
+  diagonal_miss.capsule_start = {-kGameplayDamageMaximumGeometryMagnitudeV1,
+                                 -kGameplayDamageMaximumGeometryMagnitudeV1,
+                                 1.0};
+  diagonal_miss.capsule_end = {kGameplayDamageMaximumGeometryMagnitudeV1,
+                               kGameplayDamageMaximumGeometryMagnitudeV1, 1.0};
   const std::array diagonal_pulses{diagonal_miss};
   expect(diagonal_runtime.fixed_tick(0U, distant_player, diagonal_pulses)
-             .empty() &&
+                 .empty() &&
              diagonal_runtime.health(kDestructibleAuthoredId) == 50U,
          "cross-product cancellation caused a boundary-valid diagonal "
          "segment to hit a distant sphere");
@@ -802,28 +890,26 @@ void test_damage_capsule_endpoint_and_long_interior_regions() {
   EntityGameplayRuntimeV1 start_runtime;
   start_runtime.load_scene(scenes.entities, scenes.gameplay,
                            scenes.destructibles, kLimits);
-  auto before_start =
-      damage_at_crate(1U, 5U, kDamageChannelMeleeV1, 20U);
+  auto before_start = damage_at_crate(1U, 5U, kDamageChannelMeleeV1, 20U);
   before_start.capsule_start = {
       std::nextafter(5.0, std::numeric_limits<double>::infinity()), 0.0, 1.0};
   before_start.capsule_end = {6.0, 0.0, 1.0};
   const std::array before_start_pulses{before_start};
-  expect(start_runtime.fixed_tick(0U, distant_player, before_start_pulses)
-             .empty(),
-         "the infinite line before a capsule start was treated as interior");
+  expect(
+      start_runtime.fixed_tick(0U, distant_player, before_start_pulses).empty(),
+      "the infinite line before a capsule start was treated as interior");
   before_start.capsule_start.x = 5.0;
   const std::array touching_start_pulses{before_start};
-  expect(start_runtime.fixed_tick(1U, distant_player, touching_start_pulses) ==
-             std::vector<EntityGameplayEventV1>{damage_event(
-                 EntityGameplayEventKindV1::entity_damaged, 1U, 1U, 5U, 20U,
-                 30U)},
-         "the inclusive capsule start sphere did not register contact");
+  expect(
+      start_runtime.fixed_tick(1U, distant_player, touching_start_pulses) ==
+          std::vector<EntityGameplayEventV1>{damage_event(
+              EntityGameplayEventKindV1::entity_damaged, 1U, 1U, 5U, 20U, 30U)},
+      "the inclusive capsule start sphere did not register contact");
 
   EntityGameplayRuntimeV1 end_runtime;
-  end_runtime.load_scene(scenes.entities, scenes.gameplay,
-                         scenes.destructibles, kLimits);
-  auto after_end =
-      damage_at_crate(1U, 5U, kDamageChannelMeleeV1, 20U);
+  end_runtime.load_scene(scenes.entities, scenes.gameplay, scenes.destructibles,
+                         kLimits);
+  auto after_end = damage_at_crate(1U, 5U, kDamageChannelMeleeV1, 20U);
   after_end.capsule_start = {6.0, 0.0, 1.0};
   after_end.capsule_end = {
       std::nextafter(5.0, std::numeric_limits<double>::infinity()), 0.0, 1.0};
@@ -832,11 +918,11 @@ void test_damage_capsule_endpoint_and_long_interior_regions() {
          "the infinite line after a capsule end was treated as interior");
   after_end.capsule_end.x = 5.0;
   const std::array touching_end_pulses{after_end};
-  expect(end_runtime.fixed_tick(1U, distant_player, touching_end_pulses) ==
-             std::vector<EntityGameplayEventV1>{damage_event(
-                 EntityGameplayEventKindV1::entity_damaged, 1U, 1U, 5U, 20U,
-                 30U)},
-         "the inclusive capsule end sphere did not register contact");
+  expect(
+      end_runtime.fixed_tick(1U, distant_player, touching_end_pulses) ==
+          std::vector<EntityGameplayEventV1>{damage_event(
+              EntityGameplayEventKindV1::entity_damaged, 1U, 1U, 5U, 20U, 30U)},
+      "the inclusive capsule end sphere did not register contact");
 }
 
 void test_destructible_damage_replay_history_is_bounded_and_transactional() {
@@ -849,17 +935,17 @@ void test_destructible_damage_replay_history_is_bounded_and_transactional() {
   EntityGameplayRuntimeV1 bounded_runtime;
   bounded_runtime.load_scene(scenes.entities, scenes.gameplay,
                              scenes.destructibles, bounded_limits);
-  const std::array first_source{damage_at_crate(
-      2U, 5U, kDamageChannelMeleeV1, 1U)};
+  const std::array first_source{
+      damage_at_crate(2U, 5U, kDamageChannelMeleeV1, 1U)};
   static_cast<void>(
       bounded_runtime.fixed_tick(0U, distant_player, first_source));
   const auto before_new_source = bounded_runtime.snapshot();
-  const std::array second_source{damage_at_crate(
-      1U, 6U, kDamageChannelMeleeV1, 1U)};
+  const std::array second_source{
+      damage_at_crate(1U, 6U, kDamageChannelMeleeV1, 1U)};
   expect_runtime_error(
       [&] {
-        static_cast<void>(bounded_runtime.fixed_tick(
-            1U, distant_player, second_source));
+        static_cast<void>(
+            bounded_runtime.fixed_tick(1U, distant_player, second_source));
       },
       "a destructible accepted more damage sources than its replay-history "
       "limit");
@@ -867,12 +953,12 @@ void test_destructible_damage_replay_history_is_bounded_and_transactional() {
              bounded_runtime.next_tick_index() == 1U,
          "damage-source limit failure partially committed gameplay state");
 
-  const std::array regressed_source{damage_at_crate(
-      1U, 5U, kDamageChannelMeleeV1, 1U)};
+  const std::array regressed_source{
+      damage_at_crate(1U, 5U, kDamageChannelMeleeV1, 1U)};
   expect_runtime_error(
       [&] {
-        static_cast<void>(bounded_runtime.fixed_tick(
-            1U, distant_player, regressed_source));
+        static_cast<void>(
+            bounded_runtime.fixed_tick(1U, distant_player, regressed_source));
       },
       "a damage source was allowed to regress its attack sequence");
   expect(bounded_runtime.snapshot() == before_new_source &&
@@ -890,15 +976,13 @@ void test_destructible_drop_overflow_is_transactional() {
       {"loot/scrap", std::numeric_limits<std::uint64_t>::max() - 1U},
   });
   const auto before = runtime.snapshot();
-  const auto crate_id =
-      *runtime.find_entity_id(kDestructibleAuthoredId);
-  const std::array pulse{damage_at_crate(
-      1U, 5U, kDamageChannelProjectileV1, 100U)};
+  const auto crate_id = *runtime.find_entity_id(kDestructibleAuthoredId);
+  const std::array pulse{
+      damage_at_crate(1U, 5U, kDamageChannelProjectileV1, 100U)};
 
   expect_runtime_error(
       [&] {
-        static_cast<void>(runtime.fixed_tick(
-            0U, player_at(50.0, 50.0), pulse));
+        static_cast<void>(runtime.fixed_tick(0U, player_at(50.0, 50.0), pulse));
       },
       "an overflowing destructible drop total was accepted");
   expect(runtime.snapshot() == before &&
@@ -925,31 +1009,32 @@ void test_destructibles_coexist_with_collectibles_and_inventory_restore() {
   });
   const auto restored = runtime.snapshot();
   expect(restored.item_totals ==
-             std::vector<EntityGameplayItemTotalV1>{
-                 {"items/bolts", 10U},
-                 {"loot/scrap", 4U},
-             } &&
+                 std::vector<EntityGameplayItemTotalV1>{
+                     {"items/bolts", 10U},
+                     {"loot/scrap", 4U},
+                 } &&
              find_snapshot_entity(restored, kDestructibleAuthoredId).health ==
                  50U,
          "snapshot did not preserve restored inventory and destructible state");
 
-  const std::array pulse{damage_at_crate(
-      1U, 5U, kDamageChannelProjectileV1, 50U)};
+  const std::array pulse{
+      damage_at_crate(1U, 5U, kDamageChannelProjectileV1, 50U)};
   const auto events = runtime.fixed_tick(0U, player_at(0.0, 0.0), pulse);
-  expect(events ==
-             std::vector<EntityGameplayEventV1>{
-                 damage_event(EntityGameplayEventKindV1::entity_damaged, 0U,
-                              1U, 5U, 50U, 0U),
-                 damage_event(EntityGameplayEventKindV1::entity_destroyed, 0U,
-                              1U, 5U, 50U, 0U),
-                 grant_event(0U, "items/bolts", 3U, 0U),
-                 grant_event(0U, "loot/scrap", 2U, 1U),
-                 {EntityGameplayEventKindV1::item_collected, 0U, 20U,
-                  "items/bolts", 5U},
-                 {EntityGameplayEventKindV1::item_collected, 0U, 40U,
-                  "items/health", 1U},
-             },
-         "collectible and destructible events did not coexist deterministically");
+  expect(
+      events ==
+          std::vector<EntityGameplayEventV1>{
+              damage_event(EntityGameplayEventKindV1::entity_damaged, 0U, 1U,
+                           5U, 50U, 0U),
+              damage_event(EntityGameplayEventKindV1::entity_destroyed, 0U, 1U,
+                           5U, 50U, 0U),
+              grant_event(0U, "items/bolts", 3U, 0U),
+              grant_event(0U, "loot/scrap", 2U, 1U),
+              {EntityGameplayEventKindV1::item_collected, 0U, 20U,
+               "items/bolts", 5U},
+              {EntityGameplayEventKindV1::item_collected, 0U, 40U,
+               "items/health", 1U},
+          },
+      "collectible and destructible events did not coexist deterministically");
   expect(runtime.collected(20U) && runtime.collected(40U) &&
              runtime.destroyed(kDestructibleAuthoredId) &&
              runtime.item_total("items/bolts") == 18U &&
@@ -962,10 +1047,11 @@ void test_destructibles_coexist_with_collectibles_and_inventory_restore() {
   restored_runtime.load_scene(scenes.entities, scenes.gameplay,
                               scenes.destructibles, kLimits);
   restored_runtime.restore_item_totals(after.item_totals);
-  expect(restored_runtime.snapshot().item_totals == after.item_totals &&
-             restored_runtime.health(kDestructibleAuthoredId) == 50U &&
-             !restored_runtime.destroyed(kDestructibleAuthoredId),
-         "snapshot inventory could not be restored with destructible drop keys");
+  expect(
+      restored_runtime.snapshot().item_totals == after.item_totals &&
+          restored_runtime.health(kDestructibleAuthoredId) == 50U &&
+          !restored_runtime.destroyed(kDestructibleAuthoredId),
+      "snapshot inventory could not be restored with destructible drop keys");
 }
 
 void test_item_overflow_is_transactional() {
@@ -1046,9 +1132,9 @@ void test_local_center_and_conservative_non_uniform_scale() {
   scenes.gameplay = canonicalize_gameplay_scene_v1(std::move(scenes.gameplay),
                                                    kLimits.gameplay_scene);
 
-  const auto center = world_collectible_center_v1(
-      scenes.entities.transforms.front().transform,
-      scenes.gameplay.collectibles.front());
+  const auto center =
+      world_collectible_center_v1(scenes.entities.transforms.front().transform,
+                                  scenes.gameplay.collectibles.front());
   expect(std::abs(center.x - 10.0) < 0.000001 &&
              std::abs(center.y - 12.0) < 0.000001 &&
              std::abs(center.z - 1.0) < 0.000001,
@@ -1090,6 +1176,8 @@ int main() {
     test_canonicalized_input_order_is_irrelevant();
     test_reload_preserves_inventory_and_replaces_world();
     test_bad_cross_resource_loads_are_transactional();
+    test_materialization_uses_the_session_loaded_world();
+    test_transferred_world_validation_and_allocation_failures();
     test_destructible_load_and_cross_resource_validation();
     test_destructible_damage_channels_health_events_and_attack_identity();
     test_destructible_damage_replay_history_is_bounded_and_transactional();

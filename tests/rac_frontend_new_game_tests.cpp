@@ -83,7 +83,8 @@ struct Fixture {
                {0x320000U, Bytes(128U)},
                {0x199810U, Bytes(600U)}};
     memory(0x1602b0U, 0x81234567U);
-    memory(0x1602b4U, 5U);
+    memory(0x1602b4U, 10U);
+    memory(0x15ee68U, 0x3f800000U);
     memory(0x1602b8U, 1U);
     memory(0x1602bcU, 2U);
     memory(0x160358U, 4U);
@@ -155,20 +156,15 @@ struct Fixture {
   }
   void timer(U32 pc, U32 result) {
     observations.push_back(
-        {NK::timer_1f98c0, pc, {5U, 0U, 0U}, 0U, sx(result)});
+        {NK::timer_1f98c0, pc, {10U, 0U, 0U}, 0U, sx(result)});
   }
   void color(U32 timer_value) {
-    observations.push_back({NK::color_mix_1fa8a8,
-                            0x21b814U,
-                            {sx(0x81234567U), sx(0x80ffa888U), 0U},
-                            0x3f000000U,
-                            0x1234567882345678ULL});
-    observations.push_back(
-        {NK::timed_color_21c6c0,
-         0x21b828U,
-         {sx(timer_value), 0x1234567882345678ULL, sx(0x80ffa888U)},
-         0U,
-         0xfedcba9883456789ULL});
+    observations.push_back({NK::timed_color_21c6c0,
+                            0x21b828U,
+                            {sx(timer_value), 0x80917677ULL, sx(0x80ffa888U)},
+                            0U,
+                            *plan_rac_frontend_timed_color_v1(timer_value,
+                                0x80917677ULL, sx(0x80ffa888U),10U,0x3f800000U).returned_low64});
   }
   RacFrontendNewGamePlanV1 run() {
     sources.clear();
@@ -205,8 +201,8 @@ void basic_flow() {
             calls[2]->request.inline_colors_enabled,
         "Source layout/color modes changed");
   check(calls[1]->request.rgbaq == 0x80000000U &&
-            calls[2]->request.rgbaq == 0xfedcba9883456789ULL,
-        "Caller RGBAQ high word or source shadow zero-extension changed");
+            calls[2]->request.rgbaq == 0x80ffa888ULL,
+        "Timed-color pack or source shadow zero-extension changed");
   check(calls[2]->glyph_lines.size() == 1U &&
             calls[2]->glyph_lines[0].program.draw_count == 2U,
         "Reached original float glyph owner was not composed");
@@ -216,6 +212,128 @@ void basic_flow() {
   check(word(plan.preamble_packets, 32U) == 0x44U &&
             word(plan.preamble_packets, 80U) == 0x2004bU,
         "Complete early preamble bytes missing");
+  std::size_t mix_at = plan.effects.size(), timed_at = mix_at;
+  for (std::size_t i = 0U; i < plan.effects.size(); ++i) {
+    if (const auto *mix =
+            std::get_if<RacFrontendNewGameHalfMixV1>(&plan.effects[i])) {
+      check(mix->source_call_pc == 0x21b814U &&
+                mix->left_color == sx(0x81234567U) &&
+                mix->right_color == sx(0x80ffa888U) &&
+                mix->returned_low64 == 0x80917677ULL,
+            "Reached constant-half source mix was not evaluated");
+      mix_at = i;
+    } else if (const auto *numeric =
+                   std::get_if<RacFrontendNewGameNumericV1>(&plan.effects[i])) {
+      if (numeric->kind == NK::timed_color_21c6c0)
+        timed_at = i;
+      check(numeric->evaluated,
+            "Exact timer/saturated timed color was not executed");
+    }
+  }
+  check(mix_at + 1U == timed_at,
+        "Evaluated source mix no longer directly precedes timed color");
+}
+
+void exact_timer_and_timed_color() {
+  for (const auto argument : {-8388608, -4000, -1, 0, 1, 10, 8388607}) {
+    const auto expected = argument < 0 ? argument + 1 : argument;
+    check(evaluate_rac_frontend_timer_v1(static_cast<U32>(argument),
+                                          0x3f800000U) ==
+              sx(static_cast<U32>(expected)),
+          "Source exact timer lost offset, truncation or MFC1 sign extension");
+  }
+  check(evaluate_rac_frontend_timer_v1(8388608U, 0x3f800000U)==8388608U &&
+        evaluate_rac_frontend_timer_v1(10U, 0x3f800001U)==10U,
+        "General source timer reference retained an obsolete unit-domain gate");
+  check(evaluate_rac_frontend_timer_v1(180U,0x3f555555U)==150U &&
+        evaluate_rac_frontend_timer_v1(12U,0x3f555555U)==10U &&
+        evaluate_rac_frontend_timer_v1(10U,0x3f555555U)==8U &&
+        evaluate_rac_frontend_timer_v1(static_cast<U32>(-180),0x3f555555U)==sx(static_cast<U32>(-149)),
+        "Original PAL5/6 timer lost source rounding/truncation");
+  // Complete byte-pair domain at nine exact phases. The expectation is a
+  // quotient of integer color units; no production numeric helper is called.
+  for (U32 left = 0U; left < 256U; ++left)
+    for (U32 right = 0U; right < 256U; ++right)
+      for (U32 age = 0U; age <= 8U; ++age) {
+        const auto plan = plan_rac_frontend_timed_color_v1(
+            age, left * 0x01010101ULL, right * 0x01010101ULL, 8U,
+            0x3f800000U);
+        const auto expected = (left * (8U - age) + right * age) / 8U;
+        check(plan.returned_low64 == expected * 0x01010101ULL &&
+                  plan.timer_calls == 3U && plan.division_numerator == 8U - age &&
+                  plan.division_denominator == 8U,
+              "Exact dyadic source color or timed operand order differs");
+      }
+  const auto sentinel = plan_rac_frontend_timed_color_v1(
+      20U, ~U64{0U}, ~U64{0U}, 10U, 0x3f800000U);
+  check(sentinel.timer_calls == 1U && !sentinel.division_numerator &&
+            sentinel.factor_bits == 0x3f800000U &&
+            sentinel.returned_low64 == 0x8020ffffULL,
+        "Source over-duration branch or full64 sentinel differs");
+  const auto negative = plan_rac_frontend_timed_color_v1(
+      0xffffffffU, 0xffffffffULL, ~U64{0U}, 10U, 0x3f800000U);
+  check(negative.clamped_age == 0U && negative.factor_bits == 0U &&
+            negative.returned_low64 == 0xffffffffULL,
+        "Signed clamp or zero-extended non-sentinel color differs");
+  const auto non_dyadic = plan_rac_frontend_timed_color_v1(
+      3U, 0x80875848U, 0x80ffa888U, 10U, 0x3f800000U);
+  check(non_dyadic.timer_calls == 3U && non_dyadic.division_numerator == 7U &&
+            non_dyadic.division_denominator == 10U && non_dyadic.factor_bits==0x3e99999aU &&
+            non_dyadic.returned_low64==0x7faa705bU,
+        "Source non-dyadic DIV/MADD lost its ordered rounding, including alpha127");
+  const auto zero = plan_rac_frontend_timed_color_v1(
+      0U, 0U, 0U, 0U, 0x3f800000U);
+  check(zero.division_numerator == 0U && zero.division_denominator == 0U &&
+            zero.returned_low64==0U,
+        "Original DIV(0,0) path did not execute through the reference mixer");
+  Fixture executable;
+  executable.observations.clear();
+  const auto callback = executable.run();
+  check(callback.returned_word == 2U && callback.timed_color &&
+            callback.timed_color->returned_low64 == 0x80ffa888ULL,
+        "Callback still requires timer/timed observations for an exact path");
+  Fixture missing;
+  put(missing.in.node_bytes, 0x30U, 0x80U);
+  put(missing.in.node_bytes, 0x34U, 0x320020U);
+  missing.memory(0x310040U, 1U);
+  missing.memory(0x320020U, 101U);
+  missing.observations.clear();
+  const auto formerly_pending=missing.run();
+  check(formerly_pending.timed_color&&formerly_pending.timed_color->returned_low64.has_value(),
+        "Non-dyadic callback still requires a supplied numeric observation");
+}
+
+void constant_half_mix_exact_domain() {
+  for (U32 a = 0U; a < 256U; ++a)
+    for (U32 b = 0U; b < 256U; ++b) {
+      const std::array<U32, 4U> left{a, 255U - a, b, 255U - b};
+      const std::array<U32, 4U> right{b, 255U - b, a, 255U - a};
+      U64 packed_left = 0U, packed_right = 0U, expected = 0U;
+      for (unsigned lane = 0U; lane < 4U; ++lane) {
+        packed_left |= static_cast<U64>(left[lane]) << (8U * lane);
+        packed_right |= static_cast<U64>(right[lane]) << (8U * lane);
+        // Independent carry-free identity, not the production sum/shift.
+        const auto average =
+            (left[lane] & right[lane]) + ((left[lane] ^ right[lane]) >> 1U);
+        expected |= static_cast<U64>(average) << (8U * lane);
+      }
+      check(mix_rac_frontend_color_half_v1(packed_left, packed_right) ==
+                expected,
+            "Exact half mix failed exhaustive byte-pair domain");
+      check(mix_rac_frontend_color_half_v1(
+                packed_left | (static_cast<U64>(a * 0x01010101U) << 32U),
+                packed_right | (static_cast<U64>(b * 0x01010101U) << 32U)) ==
+                expected,
+            "Source unpack or return pack retained high-word padding");
+    }
+  check(
+      mix_rac_frontend_color_half_v1(0xffffffffffffffffULL,
+                                     0xffffffffffffffffULL) == 0xffffffffULL &&
+          mix_rac_frontend_color_half_v1(
+              0xff000000ff000000ULL, 0x8000000080000000ULL) == 0xbf000000ULL &&
+          mix_rac_frontend_color_half_v1(0xffffffffffffffffULL, 0U) ==
+              0x7f7f7f7fULL,
+      "Packed result must zero-extend, truncate odd halves and mix raw alpha");
 }
 void early_returns_and_remap() {
   Fixture f;
@@ -351,43 +469,58 @@ void scrolling_and_controls() {
         "Source no-scroll flag did not reset scrolling state");
 }
 void observation_and_ownership_failures() {
+  const auto rejected = [](const char *name, auto &&call) {
+    try { call(); } catch (const std::runtime_error &) { return; }
+    throw std::runtime_error(std::string("Malformed callback accepted: ") + name);
+  };
   Fixture f;
   f.observations[0].source_call_pc += 4U;
-  rejects([&] { (void)f.run(); });
+  rejected("observation call PC", [&] { (void)f.run(); });
   Fixture arg;
   arg.observations[0].arguments[0] ^= 1U;
-  rejects([&] { (void)arg.run(); });
+  rejected("observation arguments", [&] { (void)arg.run(); });
+  Fixture mixed;
+  mixed.observations.back().arguments[1] |= 0x100000000ULL;
+  rejected("packed color argument upper word", [&] { (void)mixed.run(); });
+  Fixture obsolete;
+  obsolete.observations.insert(obsolete.observations.begin() + 1U,
+                               obsolete.observations.back());
+  obsolete.observations[1U].source_call_pc = 0x21b814U;
+  rejected("obsolete half-mix observation", [&] { (void)obsolete.run(); });
   Fixture unused;
   unused.observations.push_back(unused.observations.back());
-  rejects([&] { (void)unused.run(); });
+  rejected("unused observation", [&] { (void)unused.run(); });
   Fixture timer;
   timer.observations[0].returned_low64 = 0x100000000ULL;
-  rejects([&] { (void)timer.run(); });
+  rejected("timer return upper word", [&] { (void)timer.run(); });
+  Fixture timed_color;
+  timed_color.observations.back().returned_low64 = 0xffffffff83456789ULL;
+  rejected("timed color return upper word", [&] { (void)timed_color.run(); });
   Fixture alias;
   alias.storage.emplace_back(0x1602b0U, Bytes(4U));
-  rejects([&] { (void)alias.run(); });
+  rejected("overlapping source owners", [&] { (void)alias.run(); });
   Fixture mismatch;
   mismatch.bank.entries[0].text_bytes[0] = std::byte{'Z'};
-  rejects([&] { (void)mismatch.run(); });
+  rejected("text bank ownership mismatch", [&] { (void)mismatch.run(); });
   Fixture effects;
   effects.in.limits.max_effects = 1U;
-  rejects([&] { (void)effects.run(); });
+  rejected("effect limit", [&] { (void)effects.run(); });
   Fixture glyph;
   glyph.in.limits.max_total_glyph_operations = 0U;
-  rejects([&] { (void)glyph.run(); });
+  rejected("glyph limit", [&] { (void)glyph.run(); });
   Fixture terminator;
   for (auto &[address, data] : terminator.storage)
     if (address == terminator.text_addresses[0])
       data.pop_back();
   terminator.storage.emplace_back(terminator.text_addresses[0] + 2U, Bytes(1U));
-  rejects([&] { (void)terminator.run(); });
+  rejected("split terminator owner", [&] { (void)terminator.run(); });
   Fixture delay;
   put(delay.in.node_bytes, 0x34U, 0U);
   delay.observations.resize(1U);
   std::erase_if(delay.storage,
                 [](const auto &region) { return region.first == 0x15ee00U; });
   // Even flag4/key0 must own the flag20 branch's unconditional delay-slot LW.
-  rejects([&] { (void)delay.run(); });
+  rejected("unconditional selection delay-slot owner", [&] { (void)delay.run(); });
   Fixture spacing;
   for (std::size_t i = 0U; i < spacing.storage.size(); ++i)
     if (spacing.storage[i].first == 0x160000U) {
@@ -400,7 +533,7 @@ void observation_and_ownership_failures() {
     }
   // The earlier LHU line spacing remains owned, but the unconditional LW
   // after main drawing must not read through an unowned upper halfword.
-  rejects([&] { (void)spacing.run(); });
+  rejected("unconditional spacing upper-half owner", [&] { (void)spacing.run(); });
 }
 
 void callback_return_drives_original_rtt_owner() {
@@ -496,6 +629,8 @@ void callback_return_drives_original_rtt_owner() {
 int main() {
   try {
     basic_flow();
+    constant_half_mix_exact_domain();
+    exact_timer_and_timed_color();
     early_returns_and_remap();
     all_selection_families();
     timer_transition_and_font_override();
@@ -503,7 +638,7 @@ int main() {
     scrolling_and_controls();
     observation_and_ownership_failures();
     callback_return_drives_original_rtt_owner();
-    std::cout << "rac_frontend_new_game_tests:8 groups passed\n";
+    std::cout << "rac_frontend_new_game_tests:10 groups passed\n";
     return 0;
   } catch (const std::exception &error) {
     std::cerr << "rac_frontend_new_game_tests:" << error.what() << '\n';

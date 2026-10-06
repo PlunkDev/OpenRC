@@ -305,7 +305,7 @@ void test_texture_and_material_corruption() {
       [](auto &bytes) { bytes[416U + 32U + 22U] = std::byte{1U}; },
       "decoder accepted an opaque material with an alpha cutoff");
   expect_corrupt_decode(
-      [](auto &bytes) { bytes[416U + 23U] = std::byte{1U}; },
+      [](auto &bytes) { bytes[416U + 30U] = std::byte{1U}; },
       "decoder accepted material reserved data");
 }
 
@@ -326,7 +326,7 @@ void test_mesh_draw_instance_and_index_corruption() {
       [](auto &bytes) { write_u32(bytes, 1040U, 99U); },
       "decoder accepted an out-of-range local mesh index");
   expect_corrupt_decode(
-      [](auto &bytes) { bytes[848U + 8U] = std::byte{1U}; },
+      [](auto &bytes) { bytes[848U + 12U] = std::byte{1U}; },
       "decoder accepted instance reserved data");
   expect_corrupt_decode(
       [](auto &bytes) { write_u32(bytes, 848U + 4U, 99U); },
@@ -434,6 +434,67 @@ void test_encoder_semantics_and_limits() {
       "decoder accepted an unbounded zero scene limit");
 }
 
+void test_encoded_color_extension() {
+  using namespace openrc;
+  const auto legacy=canonicalize_render_scene_v1(make_scene(),kLimits.scene);
+  const auto old_bytes=encode_render_scene_v1(legacy,kLimits);
+  for(std::size_t material=0U;material<legacy.materials.size();++material)
+    for(std::size_t byte=23U;byte<32U;++byte)
+      expect(old_bytes[416U+32U*material+byte]==std::byte{},"Legacy material extension is not wire-zero");
+  for(std::size_t instance=0U;instance<legacy.instances.size();++instance)
+    expect(read_u64(old_bytes,848U+64U*instance+8U)==0U,"Legacy instance extension is not wire-zero");
+  auto extended=legacy;auto &m=extended.materials[1U];
+  m.use_vertex_color=true;m.color_math=RenderSceneColorMathV1::encoded_integer;
+  m.blend_mode=RenderSceneBlendModeV1::source_over;
+  m.interpolation=RenderSceneInterpolationV1::affine;m.depth_test=RenderSceneDepthTestV1::always;
+  m.depth_write=false;m.texture_modulation_denominator=128U;m.blend_denominator=128U;
+  m.alpha_mode=RenderSceneAlphaModeV1::mask;m.alpha_cutoff_rgba8=96U;
+  m.alpha_failure=RenderSceneAlphaFailureV1::rgb_only;
+  extended.instances[0U].camera_relative=true;extended.instances[0U].project_to_far_plane=true;
+  const auto bytes=encode_render_scene_v1(extended,kLimits);
+  constexpr std::array<std::uint8_t,9U> expected{1U,1U,1U,1U,1U,128U,128U,1U,0U};
+  for(std::size_t i=0U;i<expected.size();++i)
+    expect(byte_value(bytes[448U+23U+i])==expected[i],"Extended material field wire position changed");
+  expect(bytes.size()==old_bytes.size() && read_u32(bytes,856U)==3U &&
+      decode_render_scene_v1(bytes,kLimits)==extended,"Encoded material/camera/far flags did not round-trip");
+  extended.materials[1U]=legacy.materials[1U];extended.instances[0U]=legacy.instances[0U];
+  expect(encode_render_scene_v1(extended,kLimits)==old_bytes,"Restored legacy policy changed encoded bytes");
+  for(const auto [offset,value]:std::array{
+      std::pair{23U,2U},std::pair{24U,2U},std::pair{25U,2U},std::pair{26U,2U},
+      std::pair{27U,2U},std::pair{28U,255U},std::pair{29U,255U},std::pair{30U,2U},std::pair{31U,1U}}) {
+    auto corrupt=bytes;corrupt[448U+offset]=static_cast<std::byte>(value);
+    expect_io_error([&]{(void)decode_render_scene_v1(corrupt,kLimits);},"Decoder admitted unknown/noncanonical material extension");
+  }
+  auto corrupt=bytes;write_u32(corrupt,856U,4U);
+  expect_io_error([&]{(void)decode_render_scene_v1(corrupt,kLimits);},"Decoder admitted unknown instance extension flag");
+  const auto rejects=[&](auto change) {auto invalid=decode_render_scene_v1(bytes,kLimits);change(invalid);
+    expect_io_error([&]{(void)encode_render_scene_v1(invalid,kLimits);},"Encoder admitted an unsupported encoded material combination");};
+  rejects([](auto &s){s.materials[1U].base_color_rgba8=0xff000000U;});
+  rejects([](auto &s){s.materials[1U].use_vertex_color=false;});
+  rejects([](auto &s){s.textures[1U].color_space=RenderSceneTextureColorSpaceV1::srgb;});
+  rejects([](auto &s){s.materials[1U].mipmap_filter=RenderSceneMipmapFilterV1::linear;});
+  rejects([](auto &s){s.materials[1U].color_math=RenderSceneColorMathV1::linear;});
+  rejects([](auto &s){s.materials[1U].blend_mode=RenderSceneBlendModeV1::opaque;});
+  rejects([](auto &s){s.materials[1U].texture_modulation_denominator=0U;});
+  rejects([](auto &s){s.materials[1U].blend_denominator=0U;});
+  rejects([](auto &s){s.materials[1U].alpha_mode=RenderSceneAlphaModeV1::opaque;s.materials[1U].alpha_cutoff_rgba8=0U;});
+  rejects([](auto &s){s.materials[1U].alpha_cutoff_rgba8=0U;});
+  rejects([](auto &s){s.materials[1U].mag_filter=RenderSceneFilterV1::linear;});
+  rejects([](auto &s){s.meshes[0U].vertices[0U].u=std::nextafter(16777216.0F,INFINITY);});
+  rejects([](auto &s){s.meshes[0U].vertices[0U].v=std::nextafter(-16777216.0F,-INFINITY);});
+  auto boundary=decode_render_scene_v1(bytes,kLimits);
+  boundary.meshes[0U].vertices[0U].u=16777216.0F;
+  boundary.meshes[0U].vertices[0U].v=-16777216.0F;
+  expect(decode_render_scene_v1(encode_render_scene_v1(boundary,kLimits),kLimits)==boundary,
+      "Exact encoded UV envelope boundary was rejected");
+  rejects([](auto &s){s.materials[2U].texture_modulation_denominator=128U;});
+  auto untextured=legacy;auto &raw=untextured.materials[2U];
+  raw.base_color_rgba8=UINT32_C(0xffffffff);raw.color_math=RenderSceneColorMathV1::encoded_integer;
+  raw.interpolation=RenderSceneInterpolationV1::affine;raw.depth_test=RenderSceneDepthTestV1::always;raw.depth_write=false;
+  expect(decode_render_scene_v1(encode_render_scene_v1(untextured,kLimits),kLimits)==untextured,
+      "Untextured raw vertex color or independent depth policy was rejected");
+}
+
 void test_practical_triangle_payload() {
   constexpr std::uint32_t kTriangles = 2048U;
   openrc::RenderSceneMaterialV1 material;
@@ -475,6 +536,7 @@ int main() {
     test_texture_and_material_corruption();
     test_mesh_draw_instance_and_index_corruption();
     test_encoder_semantics_and_limits();
+    test_encoded_color_extension();
     test_practical_triangle_payload();
     std::cout << "render scene I/O tests passed\n";
     return 0;

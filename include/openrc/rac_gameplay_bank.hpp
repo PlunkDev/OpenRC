@@ -303,6 +303,20 @@ class RacGameplayBankError final : public std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 
+// The original frontend loader consumes these four authored environment
+// blocks even when unrelated level/gameplay directory entries are absent.
+// This explicitly partial source view does not assert a complete level bank.
+struct RacGameplayEnvironmentV1 {
+    std::uint64_t input_bytes = 0U;
+    std::vector<std::uint32_t> tie_class_ids;
+    std::vector<RacGameplayTieInstanceV1> tie_instances;
+    std::vector<std::uint32_t> shrub_class_ids;
+    std::vector<RacGameplayShrubInstanceV1> shrub_instances;
+};
+
+[[nodiscard]] RacGameplayEnvironmentV1 parse_rac_gameplay_environment_v1(
+    std::span<const std::byte> bytes, RacGameplayBankLimitsV1 limits);
+
 [[nodiscard]] std::string_view
 rac_gameplay_block_name_v1(RacGameplayBlockKindV1 kind) noexcept;
 

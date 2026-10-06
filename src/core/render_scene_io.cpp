@@ -85,7 +85,7 @@ constexpr std::uint64_t kMaterialMagFilterOffset = 0x13U;
 constexpr std::uint64_t kMaterialMipmapFilterOffset = 0x14U;
 constexpr std::uint64_t kMaterialAlphaModeOffset = 0x15U;
 constexpr std::uint64_t kMaterialAlphaCutoffOffset = 0x16U;
-constexpr std::uint64_t kMaterialReservedOffset = 0x17U;
+constexpr std::uint64_t kMaterialReservedOffset = 0x1fU;
 constexpr std::uint32_t kMaterialUsesVertexColor = UINT32_C(1) << 0U;
 constexpr std::uint32_t kMaterialDoubleSided = UINT32_C(1) << 1U;
 constexpr std::uint32_t kKnownMaterialFlags =
@@ -112,7 +112,7 @@ constexpr std::uint64_t kVertexVOffset = 0x10U;
 constexpr std::uint64_t kVertexColorOffset = 0x14U;
 
 constexpr std::uint64_t kInstanceMeshIdOffset = 0x04U;
-constexpr std::uint64_t kInstanceReservedOffset = 0x08U;
+constexpr std::uint64_t kInstanceReservedOffset = 0x0cU;
 constexpr std::uint64_t kInstanceMatrixOffset = 0x10U;
 
 static_assert(sizeof(float) == sizeof(std::uint32_t));
@@ -548,6 +548,14 @@ encode_render_scene_v1(const RenderSceneV1 &scene,
              static_cast<std::uint8_t>(material.alpha_mode));
     write_u8(result, offset + kMaterialAlphaCutoffOffset,
              material.alpha_cutoff_rgba8);
+    write_u8(result,offset+0x17U,static_cast<std::uint8_t>(material.color_math));
+    write_u8(result,offset+0x18U,static_cast<std::uint8_t>(material.blend_mode));
+    write_u8(result,offset+0x19U,static_cast<std::uint8_t>(material.interpolation));
+    write_u8(result,offset+0x1aU,static_cast<std::uint8_t>(material.depth_test));
+    write_u8(result,offset+0x1bU,material.depth_write?0U:1U);
+    write_u8(result,offset+0x1cU,material.texture_modulation_denominator==255U?0U:material.texture_modulation_denominator);
+    write_u8(result,offset+0x1dU,material.blend_denominator==255U?0U:material.blend_denominator);
+    write_u8(result,offset+0x1eU,static_cast<std::uint8_t>(material.alpha_failure));
   }
 
   std::uint64_t global_vertex = 0U;
@@ -619,6 +627,7 @@ encode_render_scene_v1(const RenderSceneV1 &scene,
         "A RenderSceneV1 instance record offset");
     write_u32(result, offset, instance.id);
     write_u32(result, offset + kInstanceMeshIdOffset, instance.mesh_id);
+    write_u32(result,offset+8U,(instance.camera_relative?1U:0U)|(instance.project_to_far_plane?2U:0U));
     for (std::size_t element = 0U;
          element < instance.local_to_world.values.size(); ++element) {
       write_f32(result, offset + kInstanceMatrixOffset + element * 4U,
@@ -913,6 +922,20 @@ RenderSceneV1 decode_render_scene_v1(const std::span<const std::byte> bytes,
     material.alpha_cutoff_rgba8 = read_u8(
         bytes, offset + kMaterialAlphaCutoffOffset,
         "A material alpha cutoff");
+    material.color_math=static_cast<RenderSceneColorMathV1>(read_u8(bytes,offset+0x17U,"Material color math"));
+    material.blend_mode=static_cast<RenderSceneBlendModeV1>(read_u8(bytes,offset+0x18U,"Material blend mode"));
+    material.interpolation=static_cast<RenderSceneInterpolationV1>(read_u8(bytes,offset+0x19U,"Material interpolation"));
+    material.depth_test=static_cast<RenderSceneDepthTestV1>(read_u8(bytes,offset+0x1aU,"Material depth test"));
+    const auto no_depth_write=read_u8(bytes,offset+0x1bU,"Material depth write");
+    const auto modulation=read_u8(bytes,offset+0x1cU,"Material modulation denominator");
+    const auto blend=read_u8(bytes,offset+0x1dU,"Material blend denominator");
+    if(no_depth_write>1U || modulation==255U || blend==255U)
+      fail("RenderSceneV1 material extension has noncanonical wire values");
+    material.depth_write=no_depth_write==0U;
+    material.texture_modulation_denominator=modulation?modulation:255U;
+    material.blend_denominator=blend?blend:255U;
+    material.alpha_failure=static_cast<RenderSceneAlphaFailureV1>(
+        read_u8(bytes,offset+0x1eU,"Material alpha failure"));
     result.materials.push_back(material);
   }
 
@@ -1029,6 +1052,10 @@ RenderSceneV1 decode_render_scene_v1(const std::span<const std::byte> bytes,
     instance.id = instance_id;
     instance.mesh_id = read_u32(
         bytes, offset + kInstanceMeshIdOffset, "An instance mesh ID");
+    const auto instance_flags=read_u32(bytes,offset+8U,"Instance flags");
+    if(instance_flags&~3U)fail("RenderSceneV1 instance has unknown flags");
+    instance.camera_relative=(instance_flags&1U)!=0U;
+    instance.project_to_far_plane=(instance_flags&2U)!=0U;
     for (std::size_t element = 0U;
          element < instance.local_to_world.values.size(); ++element) {
       instance.local_to_world.values[element] = read_f32(

@@ -98,6 +98,7 @@ struct RawFrameOffset {
 enum class FrameOffsetBasis {
   sequence,
   source,
+  scene,
 };
 
 [[nodiscard]] RacRatchetSequenceV1 parse_regular_sequence(
@@ -139,6 +140,16 @@ enum class FrameOffsetBasis {
   result.sequence_phase_rate_override =
       read_f32(source, sequence_begin + 0x18U, "sequence phase-rate override");
 
+  if (frame_offset_basis == FrameOffsetBasis::scene) {
+    if (result.continuous_sound_id != 0U || result.trigger_count != 0xffU ||
+        result.opaque_control_13 != 0xffU || result.opaque_word_14 != 0U ||
+        read_le32(source, sequence_begin + 0x18U) != 0U) {
+      fail("A scene animation sequence has unsupported controls");
+    }
+    result.continuous_sound_id = 0xffU;
+    result.trigger_count = 0U;
+  }
+
   if (result.frame_count == 0U || result.frame_count > limits.max_frames) {
     fail("RacRatchetSequenceV1 has an invalid or caller-limited frame count");
   }
@@ -176,7 +187,7 @@ enum class FrameOffsetBasis {
     const auto encoded_offset =
         packed & kRacRatchetSequenceOffsetBitsMaskV1;
     const auto source_offset =
-        frame_offset_basis == FrameOffsetBasis::sequence
+        frame_offset_basis != FrameOffsetBasis::source
             ? checked_add(sequence_range.offset, encoded_offset,
                           "a frame source offset")
             : static_cast<std::uint64_t>(encoded_offset);
@@ -346,6 +357,14 @@ parse_rac_moby_sequence_v1(const std::span<const std::byte> source,
                            const RacRatchetSequenceLimitsV1 limits) {
   return parse_regular_sequence(source, sequence_range, limits,
                                 FrameOffsetBasis::source);
+}
+
+RacRatchetSequenceV1
+parse_rac_scene_sequence_v1(const std::span<const std::byte> source,
+                          const RacRatchetSequenceRangeV1 sequence_range,
+                          const RacRatchetSequenceLimitsV1 limits) {
+  return parse_regular_sequence(source, sequence_range, limits,
+                                FrameOffsetBasis::scene);
 }
 
 } // namespace openrc

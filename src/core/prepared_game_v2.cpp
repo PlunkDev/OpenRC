@@ -423,11 +423,26 @@ validate_prepared_game(const PreparedGameV2 &game,
   std::set<std::uint32_t> level_ids;
   std::set<std::string> referenced_paths;
   std::uint64_t total_package_bytes = 0U;
+  if (game.shared_package) {
+    const auto &shared = *game.shared_package;
+    validate_identifier(shared.package_path, limits.max_string_bytes,
+                        FormatKind::prepared_game,
+                        "PreparedGameV2 shared-package path");
+    if (shared.package_bytes == 0U ||
+        is_zero_prepared_digest_v1(shared.package_sha256) ||
+        shared.package_bytes > limits.max_total_referenced_package_bytes) {
+      fail(FormatKind::prepared_game,
+           "PreparedGameV2 has an invalid or oversized shared reference");
+    }
+    referenced_paths.insert(shared.package_path);
+    total_package_bytes = shared.package_bytes;
+  }
   for (const auto &level : game.levels) {
     validate_identifier(level.package_path, limits.max_string_bytes,
                         FormatKind::prepared_game,
                         "PreparedGameV2 level-package path");
-    if (level.package_bytes == 0U ||
+    if (level.level_id == kPreparedGameSharedPackageIdV2 ||
+        level.package_bytes == 0U ||
         is_zero_prepared_digest_v1(level.package_sha256) ||
         !level_ids.insert(level.level_id).second ||
         !referenced_paths.insert(level.package_path).second) {
@@ -788,7 +803,7 @@ encode_prepared_game_v2(const PreparedGameV2 &game,
   ByteWriter body(limits.max_input_bytes - kPreparedGameHeaderBytesV2,
                   FormatKind::prepared_game);
   body.append_u32(game.content_api_version);
-  body.append_u32(0U);
+  body.append_u32(game.shared_package ? kPreparedGameHasSharedPackageV2 : 0U);
   body.append_string(game.provenance.game_id);
   body.append_string(game.provenance.build_id);
   body.append_string(game.provenance.compiler_id);
@@ -799,6 +814,12 @@ encode_prepared_game_v2(const PreparedGameV2 &game,
   append_zero_bytes(body, 7U);
   body.append_digest(game.provenance.prepared_game_v1_manifest_sha256.value_or(
       PreparedContentDigestV1{}));
+
+  if (game.shared_package) {
+    body.append_u64(game.shared_package->package_bytes);
+    body.append_digest(game.shared_package->package_sha256);
+    body.append_string(game.shared_package->package_path);
+  }
 
   for (const auto *const level : canonical.levels) {
     body.append_u32(level->level_id);
@@ -841,9 +862,10 @@ PreparedGameV2 parse_prepared_game_v2(const std::span<const std::byte> bytes,
   ByteReader body(header.body, FormatKind::prepared_game);
   PreparedGameV2 result;
   result.content_api_version = body.read_u32();
-  if (body.read_u32() != 0U) {
+  const auto features = body.read_u32();
+  if ((features & ~kPreparedGameHasSharedPackageV2) != 0U) {
     fail(FormatKind::prepared_game,
-         "PreparedGameV2 body reserved word is non-zero");
+         "PreparedGameV2 has unknown required features");
   }
   result.provenance.game_id =
       body.read_string(limits.max_string_bytes, "PreparedGameV2 game ID");
@@ -868,6 +890,15 @@ PreparedGameV2 parse_prepared_game_v2(const std::span<const std::byte> bytes,
   } else if (!is_zero_prepared_digest_v1(v1_manifest_sha256)) {
     fail(FormatKind::prepared_game,
          "PreparedGameV2 absent V1 manifest has a non-zero digest");
+  }
+
+  if ((features & kPreparedGameHasSharedPackageV2) != 0U) {
+    PreparedGameSharedReferenceV2 shared;
+    shared.package_bytes = body.read_u64();
+    shared.package_sha256 = body.read_digest();
+    shared.package_path = body.read_string(
+        limits.max_string_bytes, "PreparedGameV2 shared-package path");
+    result.shared_package = std::move(shared);
   }
 
   result.levels.reserve(header.primary_count);
@@ -1104,6 +1135,35 @@ LevelPackageV1 parse_prepared_game_level_package_v1(
       package.build_id != game.provenance.build_id) {
     throw PreparedGameV2Error(
         "Referenced LevelPackageV1 identity disagrees with PreparedGameV2");
+  }
+  return package;
+}
+
+LevelPackageV1 parse_prepared_game_shared_package_v1(
+    const PreparedGameV2 &game, const std::span<const std::byte> package_bytes,
+    const LevelPackageV1Limits limits) {
+  if (!game.shared_package) {
+    throw PreparedGameV2Error("PreparedGameV2 does not reference a shared package");
+  }
+  const auto &reference = *game.shared_package;
+  if (reference.package_bytes != package_bytes.size() ||
+      reference.package_sha256 != prepared_content_sha256_v1(package_bytes)) {
+    throw PreparedGameV2Error(
+        "Shared LevelPackageV1 bytes do not match their PreparedGameV2 reference");
+  }
+  LevelPackageV1 package;
+  try {
+    package = parse_level_package_v1(package_bytes, limits);
+  } catch (const LevelPackageV1Error &error) {
+    throw PreparedGameV2Error("Referenced shared LevelPackageV1 is invalid: " +
+                              std::string(error.what()));
+  }
+  if (package.layer_kind != LevelPackageLayerKindV1::base ||
+      package.level_id != kPreparedGameSharedPackageIdV2 ||
+      package.content_api_version != game.content_api_version ||
+      package.build_id != game.provenance.build_id) {
+    throw PreparedGameV2Error(
+        "Referenced shared LevelPackageV1 identity disagrees with PreparedGameV2");
   }
   return package;
 }

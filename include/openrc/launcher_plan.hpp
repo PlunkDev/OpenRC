@@ -47,6 +47,7 @@ struct RuntimeLaunchPlanV1 {
   std::filesystem::path executable;
   std::filesystem::path prepared_root;
   std::uint32_t level_id{};
+  bool startup = false;
 
   [[nodiscard]] std::vector<std::string> argv_utf8_v1() const;
 };
@@ -54,5 +55,9 @@ struct RuntimeLaunchPlanV1 {
 [[nodiscard]] RuntimeLaunchPlanV1 make_runtime_launch_plan_v1(
     const std::filesystem::path &runtime_executable,
     const std::filesystem::path &prepared_root, std::uint32_t level_id);
+
+[[nodiscard]] RuntimeLaunchPlanV1 make_runtime_startup_launch_plan_v1(
+    const std::filesystem::path &runtime_executable,
+    const std::filesystem::path &prepared_root);
 
 } // namespace openrc::launcher
