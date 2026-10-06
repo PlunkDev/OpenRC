@@ -171,10 +171,10 @@ void real_inactive_tail_and_same_negative_word() {
             std::get<RacMobyPostPackedBoundsWriteV1>(removed.writes.back()).packed_bits == 0x80800000U,
         "Negative new maxY omitted removal or normalized the actual packed store");
   f.actor = removed.actor;
-  owner = f.owner(spatial);
+  auto owner_again = f.owner(spatial);
   const auto before = spatial.snapshot();
   const auto again = execute_rac_moby_post_v1(
-      f.actor, f.bindings(), nullptr, &owner, kPostLimits);
+      f.actor, f.bindings(), nullptr, &owner_again, kPostLimits);
   const auto after = spatial.snapshot();
   check(again.spatial && !again.return_reason && !again.spatial->old_rectangle &&
             !again.spatial->new_rectangle && again.actor.packed_bounds_bits == f.actor.packed_bounds_bits &&

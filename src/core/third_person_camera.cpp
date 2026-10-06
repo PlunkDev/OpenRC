@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <numbers>
 #include <utility>
@@ -295,6 +296,208 @@ ThirdPersonCameraV1::profile() const noexcept {
 }
 
 const ThirdPersonCameraStateV1 &ThirdPersonCameraV1::state() const noexcept {
+  return state_;
+}
+
+namespace {
+
+constexpr float kRacFocusStiffness = std::bit_cast<float>(0x3c75c28fU);
+constexpr float kRacFocusDamping = std::bit_cast<float>(0x3e4ccccdU);
+constexpr float kRacPitchDeadZone = std::bit_cast<float>(0x3e99999aU);
+constexpr float kRacPitchResponseScale = std::bit_cast<float>(0x3fb6db6eU);
+
+[[nodiscard]] bool finite(const RacVector3fV1 value) noexcept {
+  return std::isfinite(value.x) && std::isfinite(value.y) &&
+         std::isfinite(value.z);
+}
+
+void validate_spring(const RacCameraSpringV1 &spring) {
+  if (!std::isfinite(spring.stiffness) || !std::isfinite(spring.damping) ||
+      !std::isfinite(spring.maximum_step) || spring.maximum_step < 0.0F) {
+    throw ThirdPersonCameraError("An original camera spring is invalid");
+  }
+}
+
+[[nodiscard]] RacGameplayCameraProfileV1
+validated_profile(RacGameplayCameraProfileV1 profile) {
+  validate_spring(profile.focus_spring);
+  return profile;
+}
+
+[[nodiscard]] RacGameplayCameraStateV1
+validated_state(RacGameplayCameraStateV1 state) {
+  if (!finite(state.focus) || !finite(state.focus_velocity)) {
+    throw ThirdPersonCameraError(
+        "An original gameplay camera state contains a non-finite value");
+  }
+  return state;
+}
+
+} // namespace
+
+float rac_vertical_tangent_factor_v1(
+    const RacProjectionSelectorV1 selector) noexcept {
+  return std::bit_cast<float>(selector == RacProjectionSelectorV1::pal
+                                  ? kRacPalVerticalTangentFactorBitsV1
+                                  : kRacOtherVerticalTangentFactorBitsV1);
+}
+
+RacGameplayProjectionInputV1
+rac_gameplay_projection_defaults_v1(const RacProjectionSelectorV1 selector,
+                                    const float viewport_half_width,
+                                    const float viewport_half_height) noexcept {
+  return {
+      selector,
+      std::bit_cast<float>(kRacGameplayHorizontalTangentBitsV1),
+      std::bit_cast<float>(kRacGameplayNearBitsV1),
+      std::bit_cast<float>(kRacGameplayFarBitsV1),
+      viewport_half_width,
+      viewport_half_height,
+  };
+}
+
+RacGameplayProjectionV1
+rac_gameplay_projection_v1(const RacGameplayProjectionInputV1 &input) {
+  const std::array values{input.horizontal_tangent, input.near_distance,
+                          input.far_distance, input.viewport_half_width,
+                          input.viewport_half_height};
+  if (!std::ranges::all_of(values,
+                           [](const float value) {
+                             return std::isfinite(value) && value > 0.0F;
+                           }) ||
+      !(input.far_distance > input.near_distance) ||
+      (input.selector != RacProjectionSelectorV1::pal &&
+       input.selector != RacProjectionSelectorV1::other)) {
+    throw ThirdPersonCameraError("An original projection input is invalid");
+  }
+
+  const float near = input.near_distance;
+  const float far = input.far_distance;
+  const float depth_scale = std::bit_cast<float>(kRacProjectionDepthScaleBitsV1);
+
+  RacGameplayProjectionV1 result;
+  result.horizontal_tangent = input.horizontal_tangent;
+  // 1f7d6c: +b4 = +b0 * factor.
+  result.vertical_tangent =
+      input.horizontal_tangent * rac_vertical_tangent_factor_v1(input.selector);
+  // 1f7f8c..1f8058, in the source operand order.
+  const float depth_span = far - near;
+  const float depth_denominator = near * depth_span;
+  const float near_twice_negative = near * -2.0F;
+  const float horizontal_extent = result.horizontal_tangent * near;
+  const float vertical_extent = result.vertical_tangent * near;
+  const float depth_numerator = near_twice_negative * far;
+  float depth_w = depth_numerator / depth_denominator;
+  const float depth_sum = far + near;
+  float depth_z = depth_sum / depth_denominator;
+  result.scale_x = input.viewport_half_width / horizontal_extent;
+  result.scale_y = input.viewport_half_height / vertical_extent;
+  depth_w = depth_w * depth_scale;
+  depth_z = depth_z * depth_scale;
+  result.depth_z = depth_z;
+  result.depth_w = depth_w;
+
+  const std::array outputs{result.vertical_tangent, result.scale_x,
+                           result.scale_y, result.depth_z, result.depth_w};
+  if (!std::ranges::all_of(outputs, [](const float value) {
+        return std::isfinite(value);
+      })) {
+    throw ThirdPersonCameraError(
+        "An original projection exceeded its numeric domain");
+  }
+  return result;
+}
+
+float rac_camera_spring_step_v1(const float current, const float target,
+                                float &velocity,
+                                const RacCameraSpringV1 &spring) {
+  validate_spring(spring);
+  if (!std::isfinite(current) || !std::isfinite(target) ||
+      !std::isfinite(velocity)) {
+    throw ThirdPersonCameraError(
+        "An original camera spring operand is non-finite");
+  }
+
+  const float delta = target - current;
+  float acceleration = spring.stiffness * delta;
+  const float drag = spring.damping * velocity;
+  acceleration = acceleration - drag;
+  float next = velocity + acceleration;
+  if (spring.maximum_step != 0.0F) {
+    if (spring.maximum_step < next) {
+      next = spring.maximum_step;
+    } else if (next < -spring.maximum_step) {
+      next = -spring.maximum_step;
+    }
+  }
+  const float distance = std::abs(delta);
+  if (distance < next) {
+    next = distance;
+  } else if (next < -distance) {
+    next = -distance;
+  }
+  const float result = current + next;
+  if (!std::isfinite(next) || !std::isfinite(result)) {
+    throw ThirdPersonCameraError(
+        "An original camera spring exceeded its numeric domain");
+  }
+  velocity = next;
+  return result;
+}
+
+RacGameplayCameraProfileV1 rac_gameplay_camera_profile_v1() {
+  return {{kRacFocusStiffness, kRacFocusDamping, 0.0F}};
+}
+
+RacGameplayCameraStateV1
+rac_gameplay_camera_initial_state_v1(const RacVector3fV1 player_position) {
+  return validated_state({player_position, {}});
+}
+
+float rac_gameplay_camera_pitch_response_v1(const float axis) {
+  if (!std::isfinite(axis) || axis < -1.0F || axis > 1.0F) {
+    throw ThirdPersonCameraError(
+        "An original camera pitch axis is outside its pad domain");
+  }
+  if (axis < -kRacPitchDeadZone) {
+    return (axis + kRacPitchDeadZone) * kRacPitchResponseScale;
+  }
+  if (kRacPitchDeadZone < axis) {
+    return (axis - kRacPitchDeadZone) * kRacPitchResponseScale;
+  }
+  return 0.0F;
+}
+
+RacGameplayCameraV1::RacGameplayCameraV1(RacGameplayCameraProfileV1 profile,
+                                         RacGameplayCameraStateV1 initial_state)
+    : profile_(validated_profile(std::move(profile))),
+      state_(validated_state(std::move(initial_state))) {}
+
+void RacGameplayCameraV1::step_pal_frame(const RacVector3fV1 player_position) {
+  if (!finite(player_position)) {
+    throw ThirdPersonCameraError(
+        "An original gameplay camera target is non-finite");
+  }
+  auto next = state_;
+  // 2e6da8..2e6e64: vertical Z first, then horizontal X and Y.
+  next.focus.z =
+      rac_camera_spring_step_v1(next.focus.z, player_position.z,
+                                next.focus_velocity.z, profile_.focus_spring);
+  next.focus.x =
+      rac_camera_spring_step_v1(next.focus.x, player_position.x,
+                                next.focus_velocity.x, profile_.focus_spring);
+  next.focus.y =
+      rac_camera_spring_step_v1(next.focus.y, player_position.y,
+                                next.focus_velocity.y, profile_.focus_spring);
+  state_ = next;
+}
+
+const RacGameplayCameraProfileV1 &
+RacGameplayCameraV1::profile() const noexcept {
+  return profile_;
+}
+
+const RacGameplayCameraStateV1 &RacGameplayCameraV1::state() const noexcept {
   return state_;
 }
 
