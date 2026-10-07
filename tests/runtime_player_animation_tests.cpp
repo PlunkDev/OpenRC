@@ -310,8 +310,293 @@ void test_playback_limit_preflight() {
 
 } // namespace
 
+[[nodiscard]] openrc::ActorAnimationBankV1
+make_airborne_bank(const openrc::ActorRigAssetV1 &rig) {
+  auto result = make_bank(rig);
+  result.clips.push_back(make_clip(3U, "actors/player/jump", rig, 30.0F));
+  result.clips.push_back(make_clip(4U, "actors/player/fall", rig, 40.0F));
+  return result;
+}
+
+[[nodiscard]] openrc::game::RuntimePlayerAnimationProfileV1
+airborne_profile(std::string jump, std::string fall) {
+  auto result = profile();
+  result.jump_clip_key = std::move(jump);
+  result.fall_clip_key = std::move(fall);
+  return result;
+}
+
+[[nodiscard]] openrc::game::PlayerSimulationSnapshotV1
+airborne(const double velocity_x, const double velocity_z) {
+  auto result = player(velocity_x, 0.0, false);
+  result.character.velocity.z = velocity_z;
+  return result;
+}
+
+void test_empty_airborne_profile_keeps_v1_hold() {
+  const auto rig = make_rig_asset();
+  const auto bank = make_airborne_bank(rig);
+  openrc::game::RuntimePlayerAnimationV1 animation(bank, rig, profile(),
+                                                   kLimits);
+  animation.fixed_update(player(1.0, 0.0));
+  const auto held_playback = animation.playback();
+  const auto held_palette = animation.palette();
+  for (std::uint32_t tick = 0U; tick < 6U; ++tick) {
+    animation.fixed_update(airborne(1.0, tick < 3U ? 4.0 : -4.0));
+  }
+  expect(animation.active_clip_key() == "actors/player/slow" &&
+             animation.playback() == held_playback &&
+             animation.palette() == held_palette,
+         "an empty airborne profile did not keep the V1 held pose");
+}
+
+void test_ground_takeoff_flight_landing_ground() {
+  const auto rig = make_rig_asset();
+  const auto bank = make_airborne_bank(rig);
+  openrc::game::RuntimePlayerAnimationV1 animation(
+      bank, rig, airborne_profile("actors/player/jump", "actors/player/fall"),
+      kLimits);
+
+  animation.fixed_update(player(1.0, 0.0));
+  expect(animation.active_clip_key() == "actors/player/slow",
+         "the airborne fixture did not start on the ground");
+
+  // Takeoff: the first airborne tick with upward velocity enters the jump
+  // role at source frame zero.
+  animation.fixed_update(airborne(1.0, 4.0));
+  expect(animation.active_clip_key() == "actors/player/jump" &&
+             animation.playback().clip_id == 3U &&
+             animation.playback().frame_index == 0U &&
+             animation.playback().phase == 0.0 &&
+             animation.playback().source_update_accumulator == 50U,
+         "takeoff did not start the jump clip");
+  expect_near(animation.palette().global_joint_transforms[0U].values[3U],
+              30.0, "the jump clip did not sample its first frame");
+
+  // Flight: descending keeps the role chosen at takeoff and advances it.
+  animation.fixed_update(airborne(1.0, -4.0));
+  expect(animation.active_clip_key() == "actors/player/jump" &&
+             animation.playback().phase == 0.5,
+         "the jump clip did not keep playing through the descent");
+
+  // Landing: grounded motion re-enters state 2 through slot 3 at frame zero.
+  animation.fixed_update(player(1.0, 0.0));
+  expect(animation.active_clip_key() == "actors/player/slow" &&
+             animation.playback().frame_index == 0U &&
+             animation.playback().phase == 0.0,
+         "landing did not return to the grounded slot-3 entry");
+
+  // The recovered slot-3 to slot-4 remap still applies after a landing:
+  // floor(0 * 2 / 2) + 1 modulo 2.
+  animation.fixed_update(player(3.0, 0.0));
+  expect(animation.active_clip_key() == "actors/player/full" &&
+             animation.playback().frame_index == 1U,
+         "the post-landing slot remap left the recovered contract");
+
+  // Walking off a ledge without upward velocity selects the fall role, and
+  // a stopped landing returns to idle.
+  animation.fixed_update(airborne(3.0, 0.0));
+  expect(animation.active_clip_key() == "actors/player/fall" &&
+             animation.playback().clip_id == 4U &&
+             animation.playback().frame_index == 0U,
+         "an unsupported drop did not select the fall clip");
+  animation.fixed_update(airborne(3.0, 4.0));
+  expect(animation.active_clip_key() == "actors/player/fall",
+         "the airborne role changed in mid-air");
+  animation.fixed_update(player(0.0, 0.0));
+  expect(animation.active_clip_key() == "actors/player/idle",
+         "a stopped landing did not return to idle");
+}
+
+void test_missing_airborne_role_holds_and_validation() {
+  const auto rig = make_rig_asset();
+  const auto bank = make_airborne_bank(rig);
+  openrc::game::RuntimePlayerAnimationV1 animation(
+      bank, rig, airborne_profile("", "actors/player/fall"), kLimits);
+  animation.fixed_update(player(1.0, 0.0));
+  const auto held_playback = animation.playback();
+  animation.fixed_update(airborne(1.0, 4.0));
+  animation.fixed_update(airborne(1.0, -4.0));
+  expect(animation.active_clip_key() == "actors/player/slow" &&
+             animation.playback() == held_playback,
+         "a jump without a jump clip did not hold the grounded pose");
+
+  using openrc::game::RuntimePlayerAnimationV1;
+  expect_runtime_animation_error(
+      [&] {
+        RuntimePlayerAnimationV1 invalid(
+            bank, rig, airborne_profile("actors/player/missing", ""), kLimits);
+      },
+      "a missing jump clip was accepted");
+  expect_runtime_animation_error(
+      [&] {
+        RuntimePlayerAnimationV1 invalid(
+            bank, rig, airborne_profile("actors/player/slow", ""), kLimits);
+      },
+      "a jump clip aliasing a grounded clip was accepted");
+  expect_runtime_animation_error(
+      [&] {
+        RuntimePlayerAnimationV1 invalid(
+            bank, rig,
+            airborne_profile("actors/player/jump", "actors/player/jump"),
+            kLimits);
+      },
+      "identical jump and fall clips were accepted");
+}
+
+[[nodiscard]] openrc::ActorAnimationClipV1
+make_frames_clip(const std::uint32_t id, std::string key,
+                 const openrc::ActorRigAssetV1 &rig, const float base,
+                 const std::size_t frame_count) {
+  auto result = make_clip(id, std::move(key), rig, base);
+  result.frames.resize(frame_count, result.frames.front());
+  for (std::size_t index = 0U; index < frame_count; ++index) {
+    result.frames[index].joint_poses[0U].translation = {
+        base + static_cast<float>(index), 0.0F, 0.0F};
+  }
+  return result;
+}
+
+[[nodiscard]] openrc::ActorAnimationBankV1
+make_fall_phase_bank(const openrc::ActorRigAssetV1 &rig) {
+  auto result = make_airborne_bank(rig);
+  result.clips.push_back(
+      make_frames_clip(5U, "actors/player/long-fall", rig, 50.0F, 2U));
+  result.clips.push_back(
+      make_frames_clip(6U, "actors/player/fall-landing", rig, 100.0F, 30U));
+  return result;
+}
+
+[[nodiscard]] openrc::game::RuntimePlayerAnimationProfileV1
+fall_phase_profile() {
+  auto result = airborne_profile("actors/player/jump", "actors/player/fall");
+  result.long_fall_clip_key = "actors/player/long-fall";
+  result.fall_landing_clip_key = "actors/player/fall-landing";
+  return result;
+}
+
+void test_fall_long_phase_landing_ground() {
+  const auto rig = make_rig_asset();
+  const auto bank = make_fall_phase_bank(rig);
+  openrc::game::RuntimePlayerAnimationV1 animation(bank, rig,
+                                                   fall_phase_profile(),
+                                                   kLimits);
+  animation.fixed_update(player(1.0, 0.0));
+
+  // Flight: 17 ticks are 14 PAL frames, the 18th reaches frames(18) = 15
+  // and switches to the slot-11 role.
+  for (std::uint32_t tick = 1U; tick <= 17U; ++tick) {
+    animation.fixed_update(airborne(1.0, -1.0));
+    expect(animation.active_clip_key() == "actors/player/fall",
+           "the fall left its first phase before frames(18)");
+  }
+  animation.fixed_update(airborne(1.0, -1.0));
+  expect(animation.active_clip_key() == "actors/player/long-fall" &&
+             animation.playback().frame_index == 0U,
+         "the fall did not switch to the slot-11 role at frames(18)");
+
+  // Landing: slot 12 starts at source frame 9 and holds through the
+  // frames(7) = 6 PAL-frame input lock even while moving.
+  animation.fixed_update(player(1.0, 0.0));
+  expect(animation.active_clip_key() == "actors/player/fall-landing" &&
+             animation.playback().clip_id == 6U &&
+             animation.playback().frame_index == 9U,
+         "the long-fall landing did not start slot 12 at source frame 9");
+  expect_near(animation.palette().global_joint_transforms[0U].values[3U],
+              109.0, "the landing clip did not sample source frame 9");
+  for (std::uint32_t tick = 1U; tick <= 7U; ++tick) {
+    animation.fixed_update(player(1.0, 0.0));
+    expect(animation.active_clip_key() == "actors/player/fall-landing",
+           "motion ended the landing inside the input lock");
+  }
+
+  // Ground: after six PAL landing frames motion resumes the grounded slot 3.
+  animation.fixed_update(player(1.0, 0.0));
+  expect(animation.active_clip_key() == "actors/player/slow" &&
+             animation.playback().frame_index == 0U,
+         "the landing did not hand over to the grounded selection");
+}
+
+void test_hard_fall_landing_runs_to_completion() {
+  const auto rig = make_rig_asset();
+  const auto bank = make_fall_phase_bank(rig);
+  openrc::game::RuntimePlayerAnimationV1 animation(bank, rig,
+                                                   fall_phase_profile(),
+                                                   kLimits);
+  animation.fixed_update(player(0.0, 0.0));
+  // 90 ticks are frames(90) = 75 PAL frames: the hard-landing branch.
+  for (std::uint32_t tick = 0U; tick < 90U; ++tick) {
+    animation.fixed_update(airborne(0.0, -1.0));
+  }
+  animation.fixed_update(player(0.0, 0.0));
+  expect(animation.active_clip_key() == "actors/player/fall-landing" &&
+             animation.playback().frame_index == 4U,
+         "the hard landing did not start slot 12 at source frame 4");
+
+  bool returned_to_idle = false;
+  for (std::uint32_t tick = 0U; tick < 100U && !returned_to_idle; ++tick) {
+    animation.fixed_update(player(0.0, 0.0));
+    returned_to_idle = animation.active_clip_key() == "actors/player/idle";
+    if (!returned_to_idle) {
+      expect(animation.active_clip_key() == "actors/player/fall-landing" &&
+                 (animation.playback().frame_index >= 4U ||
+                  animation.playback().completed_cycles == 1U),
+             "the standing hard landing left slot 12 before completing it");
+    }
+  }
+  expect(returned_to_idle,
+         "the completed hard landing did not return to idle");
+}
+
+void test_short_fall_and_jump_skip_fall_landing() {
+  const auto rig = make_rig_asset();
+  const auto bank = make_fall_phase_bank(rig);
+  openrc::game::RuntimePlayerAnimationV1 animation(bank, rig,
+                                                   fall_phase_profile(),
+                                                   kLimits);
+  animation.fixed_update(player(1.0, 0.0));
+  for (std::uint32_t tick = 0U; tick < 10U; ++tick) {
+    animation.fixed_update(airborne(1.0, -1.0));
+  }
+  animation.fixed_update(player(1.0, 0.0));
+  expect(animation.active_clip_key() == "actors/player/slow",
+         "a short fall played the slot-12 landing");
+
+  for (std::uint32_t tick = 0U; tick < 100U; ++tick) {
+    animation.fixed_update(airborne(1.0, tick == 0U ? 4.0 : -1.0));
+  }
+  expect(animation.active_clip_key() == "actors/player/jump",
+         "a long jump switched to a fall-phase role");
+  animation.fixed_update(player(1.0, 0.0));
+  expect(animation.active_clip_key() == "actors/player/slow",
+         "a jump landing played the fall-landing clip");
+
+  using openrc::game::RuntimePlayerAnimationV1;
+  expect_runtime_animation_error(
+      [&] {
+        auto invalid = profile();
+        invalid.fall_landing_clip_key = "actors/player/fall-landing";
+        RuntimePlayerAnimationV1 rejected(bank, rig, invalid, kLimits);
+      },
+      "a fall-landing clip without a fall clip was accepted");
+  expect_runtime_animation_error(
+      [&] {
+        auto invalid = fall_phase_profile();
+        invalid.fall_landing_clip_key = "actors/player/long-fall";
+        invalid.long_fall_clip_key.clear();
+        RuntimePlayerAnimationV1 rejected(bank, rig, invalid, kLimits);
+      },
+      "a fall-landing clip without source frame 9 was accepted");
+}
+
 int main() {
   try {
+    test_fall_long_phase_landing_ground();
+    test_hard_fall_landing_runs_to_completion();
+    test_short_fall_and_jump_skip_fall_landing();
+    test_empty_airborne_profile_keeps_v1_hold();
+    test_ground_takeoff_flight_landing_ground();
+    test_missing_airborne_role_holds_and_validation();
     test_slow_full_hysteresis_and_phase_remap();
     test_airborne_holds_last_grounded_pose();
     test_pal_source_cadence_over_sixty_hertz_runtime();

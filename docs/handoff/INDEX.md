@@ -1,5 +1,6 @@
 # Handoff index (newest first)
 
+- 2026-10-07 · #30 Reverse: skok, opadanie i lądowanie Ratcheta — fizyka PAL i sloty animacji z maszyny stanów (następca #27) — claude — [2026-10-07-task-30-reverse-skok-opadanie-i-ladowanie-ratche.md](2026-10-07-task-30-reverse-skok-opadanie-i-ladowanie-ratche.md)
 - 2026-10-07 · #39 Audyt pokrycia świata Veldinu: źródło vs pakiet v14 vs to, co runtime rysuje i odtwarza — claude — [2026-10-07-task-39-audyt-pokrycia-swiata-veldinu-zrod-o-vs.md](2026-10-07-task-39-audyt-pokrycia-swiata-veldinu-zrod-o-vs.md)
 - 2026-10-07 · #36 Oryginalny harmonogram pętli poziomu: słowo trybu 0x15f6a8, wybór 2901a8, licznik klatek w trybie, bramka pauzy i kadencja PAL z dogonieniem — czysty komponent core — claude — [2026-10-07-task-36-oryginalny-harmonogram-petli-poziomu-s-o.md](2026-10-07-task-36-oryginalny-harmonogram-petli-poziomu-s-o.md)
 - 2026-10-07 · #38 Reverse: wyzwalacze startu Veldinu — sonda 25a6d0 i wysokość spawnu, instancja klasy 834 i bajt 0x13d498, role 2666a8/266670 — claude — [2026-10-07-task-38-reverse-wyzwalacze-startu-veldinu-sonda.md](2026-10-07-task-38-reverse-wyzwalacze-startu-veldinu-sonda.md)

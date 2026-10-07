@@ -13,6 +13,12 @@ namespace {
 
 constexpr std::uint32_t kSlowToFullSourceFrameOffset = 1U;
 constexpr std::uint32_t kFullToSlowSourceFrameOffset = 5U;
+// select_rac_fall_landing_v1's slot-11-phase start frame; the hard landing
+// starts earlier at frame 4.
+constexpr std::size_t kFallLandingLongSourceFrame = 9U;
+// Bounds source_frames() far below any multiplication overflow while still
+// covering more than a year of 60 Hz ticks.
+constexpr std::uint64_t kMaximumAirborneTicks = 1ULL << 32U;
 
 [[noreturn]] void fail(const std::string &message) {
   throw RuntimePlayerAnimationError(message);
@@ -109,7 +115,122 @@ RuntimePlayerAnimationV1::RuntimePlayerAnimationV1(
                           limits_);
   preflight_clip_playback(*full_, "full", profile_.fixed_ticks_per_second,
                           limits_);
+  const auto distinct_from_grounded = [this](const ActorAnimationClipV1 *clip) {
+    return clip != idle_ && clip != slow_ && clip != full_;
+  };
+  if (!profile_.jump_clip_key.empty()) {
+    jump_ = &require_clip(bank, profile_.jump_clip_key, "jump");
+    if (!distinct_from_grounded(jump_)) {
+      fail("Runtime player jump clip must differ from the grounded clips");
+    }
+    preflight_clip_playback(*jump_, "jump", profile_.fixed_ticks_per_second,
+                            limits_);
+  }
+  if (!profile_.fall_clip_key.empty()) {
+    fall_ = &require_clip(bank, profile_.fall_clip_key, "fall");
+    if (!distinct_from_grounded(fall_) || fall_ == jump_) {
+      fail("Runtime player fall clip must differ from the other roles");
+    }
+    preflight_clip_playback(*fall_, "fall", profile_.fixed_ticks_per_second,
+                            limits_);
+  }
+  const auto distinct_from_roles = [&](const ActorAnimationClipV1 *clip) {
+    return distinct_from_grounded(clip) && clip != jump_ && clip != fall_;
+  };
+  if (!profile_.long_fall_clip_key.empty() ||
+      !profile_.fall_landing_clip_key.empty()) {
+    if (fall_ == nullptr) {
+      fail("Runtime player fall phase clips require the fall clip");
+    }
+  }
+  if (!profile_.long_fall_clip_key.empty()) {
+    long_fall_ = &require_clip(bank, profile_.long_fall_clip_key, "long fall");
+    if (!distinct_from_roles(long_fall_)) {
+      fail("Runtime player long-fall clip must differ from the other roles");
+    }
+    preflight_clip_playback(*long_fall_, "long fall",
+                            profile_.fixed_ticks_per_second, limits_);
+  }
+  if (!profile_.fall_landing_clip_key.empty()) {
+    fall_landing_ =
+        &require_clip(bank, profile_.fall_landing_clip_key, "fall landing");
+    if (!distinct_from_roles(fall_landing_) || fall_landing_ == long_fall_) {
+      fail("Runtime player fall-landing clip must differ from the other roles");
+    }
+    // The long-phase landing starts at source frame 9 (T3 0x22e74c).
+    if (fall_landing_->frames.size() <= kFallLandingLongSourceFrame) {
+      fail("Runtime player fall-landing clip lacks its source start frame");
+    }
+    preflight_clip_playback(*fall_landing_, "fall landing",
+                            profile_.fixed_ticks_per_second, limits_);
+  }
   restart(*idle_);
+}
+
+std::uint64_t
+RuntimePlayerAnimationV1::source_frames(const std::uint64_t runtime_ticks) const {
+  // Airborne time uses the fall clip's PAL source cadence and the same exact
+  // integer 50-to-60 conversion as playback (adapter mapping).
+  return runtime_ticks * fall_->source_updates_per_second /
+         profile_.fixed_ticks_per_second;
+}
+
+bool RuntimePlayerAnimationV1::begin_fall_landing(
+    const AirborneRole landed_role, const std::uint64_t airborne_frames) {
+  if (landed_role != AirborneRole::fall || fall_landing_ == nullptr) {
+    return false;
+  }
+  // The neutral snapshot carries no stick sample, planar source speed, hit
+  // points or height, so only the frame-count branches of the recovered
+  // selector can be evaluated; the short-fall branches fall back to the
+  // grounded selection.
+  RacFallLandingInputV1 input;
+  input.frames_in_state = static_cast<std::uint32_t>(
+      std::min<std::uint64_t>(airborne_frames,
+                              std::numeric_limits<std::uint32_t>::max()));
+  input.long_phase = rac_fall_enters_long_phase_v1(input.frames_in_state, 0.0F);
+  const auto landing = select_rac_fall_landing_v1(input);
+  if (!landing.sequence_selected || landing.sequence_slot != 12U) {
+    return false;
+  }
+  restart_at(*fall_landing_, landing.sequence_argument);
+  landing_active_ = true;
+  landing_ticks_ = 0U;
+  landing_lock_frames_ =
+      landing.input_lock_written ? landing.input_lock_frames : 0U;
+  return true;
+}
+
+bool RuntimePlayerAnimationV1::continue_fall_landing(
+    const PlayerSimulationSnapshotV1 &player) {
+  if (landing_ticks_ < kMaximumAirborneTicks) {
+    ++landing_ticks_;
+  }
+  if (playback_.finished || playback_.completed_cycles != 0U) {
+    return false;
+  }
+  const auto horizontal_speed =
+      std::hypot(player.character.velocity.x, player.character.velocity.y);
+  if (!std::isfinite(horizontal_speed)) {
+    fail("Runtime player animation received a non-finite velocity");
+  }
+  // Adapter policy: motion ends the landing once the source input lock
+  // (+0x1c4) written by the landing branch has elapsed.
+  return horizontal_speed == 0.0 ||
+         source_frames(landing_ticks_) < landing_lock_frames_;
+}
+
+void RuntimePlayerAnimationV1::restart_at(const ActorAnimationClipV1 &clip,
+                                          const std::uint32_t frame) {
+  active_ = &clip;
+  try {
+    playback_ = start_actor_animation_playback_v1(clip);
+    playback_.frame_index = frame;
+    resample();
+  } catch (const ActorAnimationPlaybackError &error) {
+    fail("Cannot start runtime player animation: " +
+         std::string(error.what()));
+  }
 }
 
 const ActorAnimationClipV1 &RuntimePlayerAnimationV1::select_grounded_clip(
@@ -142,6 +263,46 @@ const ActorAnimationClipV1 &RuntimePlayerAnimationV1::select_grounded_clip(
                : *slow_;
   }
   return *slow_;
+}
+
+const ActorAnimationClipV1 *RuntimePlayerAnimationV1::select_airborne_clip(
+    const PlayerSimulationSnapshotV1 &player) {
+  if (airborne_role_ == AirborneRole::undecided) {
+    const auto vertical_speed = player.character.velocity.z;
+    if (!std::isfinite(vertical_speed)) {
+      fail("Runtime player animation received a non-finite velocity");
+    }
+    // Adapter policy, not a source rule: the snapshot has no RAC state, so
+    // upward motion on the first airborne tick stands for the button-driven
+    // state 7 and anything else for the unsupported-ground state 6.
+    const auto *const chosen = vertical_speed > 0.0 ? jump_ : fall_;
+    if (chosen == nullptr) {
+      airborne_role_ = AirborneRole::hold;
+    } else {
+      airborne_role_ =
+          chosen == jump_ ? AirborneRole::jump : AirborneRole::fall;
+    }
+  }
+  switch (airborne_role_) {
+  case AirborneRole::jump:
+    return jump_;
+  case AirborneRole::fall:
+    // T3 0x22e594..0x22e5e8: slot 11 after frames(18) frames. The height
+    // test (+0x2dc > 1.75) has no input in the neutral snapshot.
+    if (long_fall_ != nullptr &&
+        rac_fall_enters_long_phase_v1(
+            static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                source_frames(airborne_ticks_),
+                std::numeric_limits<std::uint32_t>::max())),
+            0.0F)) {
+      return long_fall_;
+    }
+    return fall_;
+  case AirborneRole::undecided:
+  case AirborneRole::hold:
+    break;
+  }
+  return nullptr;
 }
 
 void RuntimePlayerAnimationV1::select(const ActorAnimationClipV1 &clip) {
@@ -230,6 +391,9 @@ void RuntimePlayerAnimationV1::fixed_update(
 
   if (player.reset_count != observed_reset_count_) {
     observed_reset_count_ = player.reset_count;
+    airborne_role_ = AirborneRole::undecided;
+    airborne_ticks_ = 0U;
+    landing_active_ = false;
     if (!player.character.grounded) {
       restart(*idle_);
     } else {
@@ -243,10 +407,27 @@ void RuntimePlayerAnimationV1::fixed_update(
       restart(horizontal_speed == 0.0 ? *idle_ : *slow_);
     }
   } else if (player.character.grounded) {
-    const auto &selected = select_grounded_clip(player);
-    select(selected);
+    const auto landed_role = airborne_role_;
+    const auto airborne_frames =
+        fall_ == nullptr ? 0U : source_frames(airborne_ticks_);
+    airborne_role_ = AirborneRole::undecided;
+    airborne_ticks_ = 0U;
+    if (!begin_fall_landing(landed_role, airborne_frames) &&
+        !(landing_active_ && continue_fall_landing(player))) {
+      landing_active_ = false;
+      const auto &selected = select_grounded_clip(player);
+      select(selected);
+    }
   } else {
-    return;
+    landing_active_ = false;
+    if (airborne_ticks_ < kMaximumAirborneTicks) {
+      ++airborne_ticks_;
+    }
+    const auto *const airborne = select_airborne_clip(player);
+    if (airborne == nullptr) {
+      return;
+    }
+    select(*airborne);
   }
 
   try {

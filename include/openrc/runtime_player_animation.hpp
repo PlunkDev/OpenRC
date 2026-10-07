@@ -33,6 +33,21 @@ struct RuntimePlayerAnimationProfileV1 {
   double legacy_idle_max_horizontal_speed = 0.0;
   double legacy_run_min_horizontal_speed = 0.0;
   std::uint32_t fixed_ticks_per_second = 0U;
+  // Optional airborne roles appended after the V1 fields. Empty keys keep the
+  // V1 behavior of holding the last sampled pose while airborne. The intended
+  // clips are source slot 7 (state-7 jump entry at 0x224d1c) and source slot
+  // 10 (default state-6 fall entry at 0x224aa4). Choosing between them from
+  // the neutral snapshot is an OpenRC adapter policy, see
+  // docs/RAC_PLAYER_AIRBORNE_V1.md.
+  std::string jump_clip_key{};
+  std::string fall_clip_key{};
+  // Optional state-6 phase roles, used only together with fall_clip_key:
+  // source slot 11 (the fall switches to it after frames(18) = 15 PAL frames)
+  // and source slot 12 (the landing after that phase starts at source frame
+  // 9, or 4 after frames(90) = 75 PAL frames; T3 0x22e584). Empty keys keep
+  // the immediate return to the grounded selection.
+  std::string long_fall_clip_key{};
+  std::string fall_landing_clip_key{};
 
   [[nodiscard]] std::string_view slow_clip_key() const noexcept {
     return walk_clip_key;
@@ -53,8 +68,17 @@ public:
 // slow/full animation contract. The snapshot does not yet expose the source
 // state or previous pad magnitude, so exact state-0 entry (> 0.22) and state-2
 // exit (< 0.17) cannot be selected here. A truly stopped horizontal velocity
-// is the explicit fallback to idle. Unsupported airborne states hold the last
-// sampled pose instead of guessing a source sequence.
+// is the explicit fallback to idle. When the optional airborne keys are
+// empty, airborne ticks hold the last sampled pose instead of guessing a
+// source sequence. Otherwise the first airborne tick after leaving the ground
+// picks the jump clip for upward vertical velocity and the fall clip for
+// none; that clip plays until the player is grounded again, which re-enters
+// the grounded selection through slot 3 or idle. With the optional state-6
+// phase keys a long fall switches to the slot-11 clip and its landing plays
+// the slot-12 clip from the recovered source frame before the grounded
+// selection resumes. Airborne time is counted in source updates through the
+// same 50-to-60 cadence conversion as playback; that mapping, the missing
+// height test and the landing exit are adapter policy.
 class RuntimePlayerAnimationV1 final {
 public:
   RuntimePlayerAnimationV1(
@@ -70,8 +94,18 @@ public:
   [[nodiscard]] const ActorAnimationPlaybackStateV1 &playback() const noexcept;
 
 private:
+  enum class AirborneRole : std::uint8_t { undecided, hold, jump, fall };
+
   [[nodiscard]] const ActorAnimationClipV1 &
   select_grounded_clip(const PlayerSimulationSnapshotV1 &player) const;
+  [[nodiscard]] const ActorAnimationClipV1 *
+  select_airborne_clip(const PlayerSimulationSnapshotV1 &player);
+  [[nodiscard]] std::uint64_t source_frames(std::uint64_t runtime_ticks) const;
+  [[nodiscard]] bool begin_fall_landing(AirborneRole landed_role,
+                                        std::uint64_t airborne_frames);
+  [[nodiscard]] bool continue_fall_landing(
+      const PlayerSimulationSnapshotV1 &player);
+  void restart_at(const ActorAnimationClipV1 &clip, std::uint32_t frame);
   void select(const ActorAnimationClipV1 &clip);
   void restart(const ActorAnimationClipV1 &clip);
   void remap_moving_phase(const ActorAnimationClipV1 &clip,
@@ -82,7 +116,16 @@ private:
   const ActorAnimationClipV1 *idle_ = nullptr;
   const ActorAnimationClipV1 *slow_ = nullptr;
   const ActorAnimationClipV1 *full_ = nullptr;
+  const ActorAnimationClipV1 *jump_ = nullptr;
+  const ActorAnimationClipV1 *fall_ = nullptr;
+  const ActorAnimationClipV1 *long_fall_ = nullptr;
+  const ActorAnimationClipV1 *fall_landing_ = nullptr;
   const ActorAnimationClipV1 *active_ = nullptr;
+  AirborneRole airborne_role_ = AirborneRole::undecided;
+  std::uint64_t airborne_ticks_ = 0U;
+  bool landing_active_ = false;
+  std::uint64_t landing_ticks_ = 0U;
+  std::uint32_t landing_lock_frames_ = 0U;
   RuntimePlayerAnimationProfileV1 profile_;
   ActorAnimationPlaybackLimitsV1 limits_;
   ActorAnimationPlaybackStateV1 playback_;

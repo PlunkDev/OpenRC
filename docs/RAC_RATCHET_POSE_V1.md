@@ -82,18 +82,30 @@ retain their own build-authored subsets. Numeric keys do not infer semantics
 from pose appearance. Independent overlay tracing proves the current grounded
 subset: state 0 uses slot 0, while state 2 enters slot 3 and switches to slot 4
 above actual pace `2.35`, returning below `1.90`; equality retains the current
-slot. The cross-slot frame remap is preserved. No jump, fall, crouch, landing,
-damage, death, or wrench slot is claimed yet. The preceding four-axis pad
-normalizer is independently recovered (`raw-127`, dead-zone 48, divide by 76,
-clamp to one).
+slot. The cross-slot frame remap is preserved. The airborne states are traced
+in [RAC_PLAYER_AIRBORNE_V1](RAC_PLAYER_AIRBORNE_V1.md): the state-7 jump
+entry selects slot 7, its landing re-selects slot 7 at a later position
+rather than a separate landing slot, and the default state-6 fall entry
+selects slot 10 (slot 11 above 1.75 or after 15 PAL frames) and lands through
+slot 12 or the skid slot 6. No crouch, damage, death, or wrench slot
+is claimed yet. The preceding four-axis pad normalizer is independently
+recovered (`raw-127`, dead-zone 48, divide by 76, clamp to one).
 
 The generic player advances the PAL 50 Hz source cadence on the 60 Hz fixed
 runtime with an integer accumulator, interpolates normalized quaternions on the
 shortest hemisphere, linearly interpolates translation and scale, then composes
-the hierarchy and inverse bind described above. Airborne ticks hold the last
-grounded palette. Because authored zero scales remain singular, the current
-unlit renderer consumes the position-only skinning result while retaining the
-source UVs and colors.
+the hierarchy and inverse bind described above. With the default profile,
+airborne ticks hold the last grounded palette. The optional `jump_clip_key`
+and `fall_clip_key` roles play the slot-7 or slot-10 clip from the first
+airborne tick until the player is grounded again; picking between them from
+upward velocity is an OpenRC adapter policy, and source blends are not
+reproduced. The further optional `long_fall_clip_key` and
+`fall_landing_clip_key` roles switch a fall to slot 11 after 15 PAL frames and
+play slot 12 from the recovered source frame (9, or 4 after 75 PAL frames)
+when that fall lands, before the grounded selection resumes. Because authored
+zero scales remain singular, the current unlit
+renderer consumes the position-only skinning result while retaining the source
+UVs and colors.
 
 ## Corpus verification
 
