@@ -1,5 +1,6 @@
 # Handoff index (newest first)
 
+- 2026-10-07 · #29 Reverse: ruch naziemny Ratcheta — progi stanów 0/2 z opóźnieniem próbki, wygładzanie tempa i obrót — claude — [2026-10-07-task-29-reverse-ruch-naziemny-ratcheta-progi-sta.md](2026-10-07-task-29-reverse-ruch-naziemny-ratcheta-progi-sta.md)
 - 2026-10-07 · #32 level/enter: rzeczywiste wejście do Veldinu po New Game i sterowanie Ratchetem w tej samej sesji — claude — [2026-10-07-task-32-level-enter-rzeczywiste-wejscie-do-veldi.md](2026-10-07-task-32-level-enter-rzeczywiste-wejscie-do-veldi.md)
 - 2026-10-06 · #31 Reverse: oryginalna kamera rozgrywki na Veldinie i projekcja 1f7bc8/1f7d00 — dowód i czysty model obok kamery deweloperskiej — claude — [2026-10-06-task-31-reverse-oryginalna-kamera-rozgrywki-na-v.md](2026-10-06-task-31-reverse-oryginalna-kamera-rozgrywki-na-v.md)
 - 2026-10-06 · #34 Reverse: oryginalne wejście do Veldinu — od entry 2465f8 do pierwszej klatki ze sterowaniem Ratchetem (mapa właścicieli i stan początkowy) — claude — [2026-10-06-task-34-reverse-oryginalne-wejscie-do-veldinu-od.md](2026-10-06-task-34-reverse-oryginalne-wejscie-do-veldinu-od.md)
