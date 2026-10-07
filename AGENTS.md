@@ -11,6 +11,9 @@
   ignored `local` directory. Never commit copyrighted source data.
 - Runtime code consumes neutral prepared packages only. RAC/PS2 decoders stay
   on the compiler side of the package boundary.
+- Keep `README.md` a short overview: update its status table only when an area
+  changes state. Record new capabilities and verified results in
+  `docs/COMPONENTS.md` and new or changed `openrc-cli` commands in `docs/CLI.md`.
 - On Windows, store roaming configuration under
   `%APPDATA%\PlunkDev\OpenRC` and local cache, logs, and machine-specific state
   under `%LOCALAPPDATA%\PlunkDev\OpenRC`. Migrate older locations without
