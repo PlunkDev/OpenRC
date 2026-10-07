@@ -136,6 +136,7 @@ add_library(openrc_core STATIC
     src/core/rac_level_collision_compile.cpp
     src/core/rac_level_foundation_compile.cpp
     src/core/rac_level_core.cpp
+    src/core/rac_level_frame_schedule.cpp
     src/core/rac_level_moby_assets.cpp
     src/core/rac_level_moby_texture.cpp
     src/core/rac_moby_actor_scene_compile.cpp
@@ -506,7 +507,7 @@ if(OPENRC_BUILD_TESTS)
     target_link_libraries(openrc-rac-frontend-sound-tests PRIVATE openrc_level_scene_recovery)
     target_compile_features(openrc-rac-frontend-sound-tests PRIVATE cxx_std_20)
     add_test(NAME rac-frontend-sound COMMAND openrc-rac-frontend-sound-tests)
-    foreach(openrc_new_test frontend_input loading_presentation rac_new_game_resources frontend_sequence rac_new_game_flow rac_frontend_menu_actor_compile rac_frontend_menu_resources rac_shrub_class rac_startup rac_scene_animation_compile rac_frontend_scene_compile rac_frontend_object_animation rac_frontend_object rac_frontend_title rac_frontend_numeric rac_frontend_loading rac_frontend_loading_raster rac_frontend_decoration rac_frontend_geometry rac_frontend_main_compile media_clip rac_pss rac_frontend_input rac_integer_glyph rac_frontend_list_draw scene_timeline image_presentation screen_overlay)
+    foreach(openrc_new_test rac_level_frame_schedule frontend_input loading_presentation rac_new_game_resources frontend_sequence rac_new_game_flow rac_frontend_menu_actor_compile rac_frontend_menu_resources rac_shrub_class rac_startup rac_scene_animation_compile rac_frontend_scene_compile rac_frontend_object_animation rac_frontend_object rac_frontend_title rac_frontend_numeric rac_frontend_loading rac_frontend_loading_raster rac_frontend_decoration rac_frontend_geometry rac_frontend_main_compile media_clip rac_pss rac_frontend_input rac_integer_glyph rac_frontend_list_draw scene_timeline image_presentation screen_overlay)
         string(REPLACE "_" "-" openrc_new_target "${openrc_new_test}")
         add_executable(openrc-${openrc_new_target}-tests tests/${openrc_new_test}_tests.cpp)
         target_link_libraries(openrc-${openrc_new_target}-tests PRIVATE openrc_core)

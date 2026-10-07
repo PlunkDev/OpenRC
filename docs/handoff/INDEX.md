@@ -1,5 +1,6 @@
 # Handoff index (newest first)
 
+- 2026-10-07 · #36 Oryginalny harmonogram pętli poziomu: słowo trybu 0x15f6a8, wybór 2901a8, licznik klatek w trybie, bramka pauzy i kadencja PAL z dogonieniem — czysty komponent core — claude — [2026-10-07-task-36-oryginalny-harmonogram-petli-poziomu-s-o.md](2026-10-07-task-36-oryginalny-harmonogram-petli-poziomu-s-o.md)
 - 2026-10-07 · #38 Reverse: wyzwalacze startu Veldinu — sonda 25a6d0 i wysokość spawnu, instancja klasy 834 i bajt 0x13d498, role 2666a8/266670 — claude — [2026-10-07-task-38-reverse-wyzwalacze-startu-veldinu-sonda.md](2026-10-07-task-38-reverse-wyzwalacze-startu-veldinu-sonda.md)
 - 2026-10-07 · #29 Reverse: ruch naziemny Ratcheta — progi stanów 0/2 z opóźnieniem próbki, wygładzanie tempa i obrót — claude — [2026-10-07-task-29-reverse-ruch-naziemny-ratcheta-progi-sta.md](2026-10-07-task-29-reverse-ruch-naziemny-ratcheta-progi-sta.md)
 - 2026-10-07 · #32 level/enter: rzeczywiste wejście do Veldinu po New Game i sterowanie Ratchetem w tej samej sesji — claude — [2026-10-07-task-32-level-enter-rzeczywiste-wejscie-do-veldi.md](2026-10-07-task-32-level-enter-rzeczywiste-wejscie-do-veldi.md)
