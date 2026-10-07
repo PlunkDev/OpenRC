@@ -1,5 +1,6 @@
 # Handoff index (newest first)
 
+- 2026-10-07 · #37 Kamera typu 0: składanie oka (2eb060), wejście prawego drążka, stan przy wejściu do poziomu i skala świata — kompletny widok RacGameplayCameraV1 z adapterem dla renderera — claude — [2026-10-07-task-37-kamera-typu-0-sk-adanie-oka-2eb060-wejsc.md](2026-10-07-task-37-kamera-typu-0-sk-adanie-oka-2eb060-wejsc.md)
 - 2026-10-07 · #30 Reverse: skok, opadanie i lądowanie Ratcheta — fizyka PAL i sloty animacji z maszyny stanów (następca #27) — claude — [2026-10-07-task-30-reverse-skok-opadanie-i-ladowanie-ratche.md](2026-10-07-task-30-reverse-skok-opadanie-i-ladowanie-ratche.md)
 - 2026-10-07 · #39 Audyt pokrycia świata Veldinu: źródło vs pakiet v14 vs to, co runtime rysuje i odtwarza — claude — [2026-10-07-task-39-audyt-pokrycia-swiata-veldinu-zrod-o-vs.md](2026-10-07-task-39-audyt-pokrycia-swiata-veldinu-zrod-o-vs.md)
 - 2026-10-07 · #36 Oryginalny harmonogram pętli poziomu: słowo trybu 0x15f6a8, wybór 2901a8, licznik klatek w trybie, bramka pauzy i kadencja PAL z dogonieniem — czysty komponent core — claude — [2026-10-07-task-36-oryginalny-harmonogram-petli-poziomu-s-o.md](2026-10-07-task-36-oryginalny-harmonogram-petli-poziomu-s-o.md)

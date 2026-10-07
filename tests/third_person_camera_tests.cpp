@@ -359,8 +359,9 @@ void test_original_focus_follow_sequence() {
              near(subject.state().focus.z, 0.5, 1.0e-4),
          "the focus follow did not settle on the player");
 
-  RacGameplayCameraV1 overshoot(
-      profile, {{0.0F, 0.0F, 0.0F}, {5.0F, 0.0F, 0.0F}});
+  RacGameplayCameraStateV1 focus_only;
+  focus_only.focus_velocity.x = 5.0F;
+  RacGameplayCameraV1 overshoot(profile, focus_only);
   overshoot.step_pal_frame({1.0F, 0.0F, 0.0F});
   expect(overshoot.state().focus.x == 1.0F &&
              overshoot.state().focus_velocity.x == 1.0F,
@@ -401,6 +402,337 @@ void test_original_pitch_response() {
       "a pitch axis outside the pad domain was accepted");
 }
 
+float source_float(const std::uint32_t bits) { return std::bit_cast<float>(bits); }
+
+void test_original_yaw_selectors_and_inversions() {
+  using namespace openrc::game;
+  constexpr std::array<std::uint32_t, 3> rates{0x3c8efa35U, 0x3cb9dedeU, 0x3ce4c388U};
+  for (std::uint32_t selector = 0; selector < rates.size(); ++selector) {
+    RacGameplayCameraV1 camera(rac_gameplay_camera_profile_v1(),
+                                rac_gameplay_camera_initial_state_v1({}));
+    RacGameplayCameraInputV1 input;
+    input.right_x = 1.0F;
+    input.yaw_selector = selector;
+    camera.step_pal_frame({}, input);
+    expect(std::bit_cast<std::uint32_t>(camera.state().applied_yaw_step) == rates[selector] &&
+               camera.state().yaw_response == 1.0F,
+           "yaw is not immediate k=1,d=1 response times selected source rate");
+    // 260c80 stores q*v*conj(q) (1ffe18 = a (x) b): a positive source angle
+    // is a right-handed turn, so the eye offset (-4.64,0,0) moves to -Y.
+    expect(near(std::atan2(camera.state().desired_offset.y,
+                           -camera.state().desired_offset.x),
+                -source_float(rates[selector]), 1.0e-6),
+           "260c80 source yaw rotation has the wrong neutral sign");
+    input.yaw_option_nonzero = false;
+    camera.step_pal_frame({}, input);
+    expect(camera.state().applied_yaw_step == -source_float(rates[selector]) &&
+               near(camera.state().desired_offset.y, 0.0, 1.0e-6),
+           "15eee0 inversion did not undo yaw");
+  }
+  expect_camera_error([] { static_cast<void>(rac_gameplay_camera_yaw_step_v1(3U)); },
+                       "out-of-table yaw selector was accepted");
+}
+
+void test_original_pitch_smoothing_and_feedback() {
+  using namespace openrc::game;
+  const auto profile = rac_gameplay_camera_profile_v1();
+  RacGameplayCameraV1 dead(profile, rac_gameplay_camera_initial_state_v1({}));
+  RacGameplayCameraInputV1 input;
+  input.right_y = 0.3F;
+  dead.step_pal_frame({}, input);
+  expect(dead.state().pitch_response_velocity == 0.0F &&
+             near(dead.state().applied_pitch_step, 0.0F, 1.0e-6) &&
+             dead.state().desired_offset.z == 0.0F,
+         "the second pitch dead zone changed the offset at its boundary");
+  input.right_y = -1.0F;
+  RacGameplayCameraV1 rising(profile, rac_gameplay_camera_initial_state_v1({}));
+  rising.step_pal_frame({}, input);
+  expect(rising.state().pitch_response_velocity == source_float(0x3ca3d70aU) &&
+             near(rising.state().applied_pitch_step,
+                  source_float(0x3ca3d70aU) * source_float(0x3f32b8c2U), 2.0e-6) &&
+             rising.state().desired_offset.z > 0.0F,
+         "increasing pitch did not use the 0.02 step and 40-degree target");
+  // Disable the source feedback condition using a pre-tilted desired offset.
+  auto initial = rac_gameplay_camera_initial_state_v1({});
+  initial.desired_offset = {-4.0F, 0.0F, 2.0F};
+  // +0 = pivot (player + 2*up) + desired offset.
+  initial.unfiltered_eye = {-4.0F, 0.0F, 4.0F};
+  initial.pitch_response = 0.8F;
+  RacGameplayCameraV1 decreasing(profile, initial);
+  input.right_y = -0.65F; // response +0.5, same sign and smaller magnitude
+  decreasing.step_pal_frame({}, input);
+  expect(near(decreasing.state().pitch_response_velocity, -0.01, 1.0e-6),
+         "same-sign decreasing pitch did not use the 0.01 maximum");
+  RacGameplayCameraV1 neutral(profile, initial);
+  neutral.step_pal_frame({});
+  expect(near(neutral.state().pitch_response_velocity, -0.01, 1.0e-6),
+         "neutral pitch did not take the branch-delay-slot 0.01 maximum");
+  RacGameplayCameraV1 reversed(profile, rac_gameplay_camera_initial_state_v1({}));
+  input = {};
+  input.right_y = -1.0F;
+  input.pitch_option_nonzero = false;
+  reversed.step_pal_frame({}, input);
+  expect(reversed.state().desired_offset.z < 0.0F &&
+             reversed.state().pitch_response_velocity == -source_float(0x3ca3d70aU),
+         "15eedc did not invert pitch before its response");
+}
+
+void test_original_offset_and_view_pitch_limits() {
+  using namespace openrc::game;
+  const float limit = source_float(0x40947ae1U);
+  const auto limited = rac_gameplay_camera_limit_offset_v1({30.0F, 40.0F, 0.0F});
+  expect(near(limited.x, 0.6 * limit, 1.0e-6) &&
+             near(limited.y, 0.8 * limit, 1.0e-6) && limited.z == 0.0F,
+         "the 4.64 radial offset limit changed the direction");
+  expect(rac_gameplay_camera_limit_offset_v1({1.0F, 2.0F, 2.0F}) ==
+             RacVector3fV1{1.0F, 2.0F, 2.0F},
+         "a shorter standalone offset was changed");
+  const float pitch_limit = source_float(0x3f9c61aaU);
+  for (const float pitch : {-2.0F, 2.0F}) {
+    auto initial = rac_gameplay_camera_initial_state_v1({});
+    initial.look_pitch = pitch;
+    initial.desired_offset = {-30.0F, 0.0F, 0.0F};
+    RacGameplayCameraV1 camera(rac_gameplay_camera_profile_v1(), initial);
+    camera.step_pal_frame({});
+    const auto offset = camera.state().desired_offset;
+    expect(near(std::sqrt(offset.x * offset.x + offset.y * offset.y + offset.z * offset.z),
+                limit, 1.0e-6), "2ea3f0 did not restore the limited desired offset");
+    expect(camera.state().view_pitch_difference == (pitch < 0.0F ? pitch_limit : -pitch_limit),
+           "2ea4c0 did not clamp its composed view pitch to +/-70 degrees");
+    const auto view = camera.view();
+    const auto forward_z = view.target.z - view.eye.z;
+    expect(near(std::abs(forward_z), std::sin(pitch_limit), 1.0e-6),
+           "the clamped pitch was not applied to the renderer view");
+  }
+  expect(rac_gameplay_camera_probe_height_v1(0U) == source_float(0x3f000000U) &&
+             rac_gameplay_camera_probe_height_v1(1U) == source_float(0x3ecccccdU) &&
+             rac_gameplay_camera_probe_height_v1(2U) == source_float(0x40400000U) &&
+             rac_gameplay_camera_probe_height_v1(255U) == source_float(0x3f000000U),
+         "2e6fb0 byte selection has the wrong source height bits");
+}
+
+void test_original_angular_spring_boundary() {
+  using namespace openrc::game;
+  const float pi = source_float(0x40490fdbU);
+  float velocity = 0.0F;
+  auto result = rac_camera_angular_spring_step_v1(pi - 0.01F, -pi + 0.01F,
+                                                 velocity, {1.0F, 1.0F, 0.0F});
+  expect(near(result, -pi + 0.01F, 1.0e-6) && near(velocity, 0.02F, 1.0e-6),
+         "1eb6a8 took the long arc over +pi");
+  velocity = 0.0F;
+  result = rac_camera_angular_spring_step_v1(-pi + 0.01F, pi - 0.01F,
+                                             velocity, {1.0F, 1.0F, 0.0F});
+  expect(near(result, pi - 0.01F, 1.0e-6) && near(velocity, -0.02F, 1.0e-6),
+         "1eb6a8 took the long arc over -pi");
+  velocity = 0.0F;
+  expect(rac_camera_angular_spring_step_v1(0.0F, pi, velocity, {1.0F, 1.0F, 0.0F}) == -pi &&
+             velocity == -pi,
+         "source equality at +pi did not map to -pi");
+  velocity = 0.0F;
+  expect(rac_camera_angular_spring_step_v1(-pi, -pi, velocity, {1.0F, 1.0F, 0.0F}) == -pi,
+         "source equality at -pi was wrapped unnecessarily");
+  velocity = 0.0F;
+  result = rac_camera_angular_spring_step_v1(pi - 0.01F, -pi + 0.01F,
+      velocity, {source_float(0x3c75c28fU), source_float(0x3e4ccccdU), 0.0F});
+  expect(near(velocity, 0.0003, 1.0e-7) && result < pi && result > pi - 0.01F,
+         "the original angular spring did not preserve the small wrapped delta");
+}
+
+void test_veldin_entry_and_deterministic_eye_sequence() {
+  using namespace openrc::game;
+  // gameplay-705.bin SHA256 f085b471...c6422, only class 0 at record 0.
+  // Conditional no-hit entry: 205278 and 2e5770 probe results are not claimed.
+  const RacVector3fV1 spawn{source_float(0x4304170aU), source_float(0x42e6f5c3U),
+                           source_float(0x41fb70a4U)};
+  const float yaw = source_float(0x3f29a6ceU);
+  const auto initial = rac_gameplay_camera_initial_state_v1(spawn, yaw);
+  const auto entered = rac_gameplay_camera_level_enter_state_v1(spawn, yaw);
+  expect(initial.focus == spawn && initial.focus_velocity == RacVector3fV1{} &&
+             initial.eye_height == 2.0F && initial.look_height == 1.5F &&
+             entered.focus == spawn && entered.eye_initialized &&
+             !entered.collision_modeled && !entered.entry_probes_modeled && !entered.ee_bit_exact,
+         "conditional Veldin entry lost source initialization or qualification flags");
+  // Geometric oracle from the placed transform, independent of the springs:
+  // eye = P - 4.64*(cos(yaw),sin(yaw),0) + 2*up. Source asin polynomial
+  // residual introduces a small first-update offset in the host model.
+  expect(near(entered.eye.x, 128.4320702, 5.0e-4) &&
+             near(entered.eye.y, 112.6250287, 5.0e-4) &&
+             near(entered.eye.z, 33.4300003, 5.0e-4),
+         "the first camera frame was not seeded behind the actual Veldin yaw");
+  RacGameplayCameraV1 manual(rac_gameplay_camera_profile_v1(), initial);
+  manual.step_pal_frame(spawn);
+  expect(manual.state() == entered, "level enter did not perform exactly one update");
+  // 2ea6e0..2ea750: V = horizontal look + up*(dot(+320,up) + (+40 - +36)),
+  // so the first view looks down at the 1.5 reference from 2.0 above the
+  // focus: forward.z = -0.5/sqrt(4.64^2 + 0.5^2) up to the asin residual.
+  const auto entered_view = manual.view();
+  expect(near(entered_view.target.z - entered_view.eye.z,
+              -0.5 / std::sqrt(4.64 * 4.64 + 0.25), 3.0e-4),
+         "2ea4c0 did not aim at the 1.5 look reference");
+  expect(entered.offset_shortfall >= 0.0F && entered.offset_shortfall < 1.0e-5F &&
+             near(std::sqrt(entered.desired_offset.x * entered.desired_offset.x +
+                            entered.desired_offset.y * entered.desired_offset.y +
+                            entered.desired_offset.z * entered.desired_offset.z),
+                  4.64, 1.0e-5),
+         "2ea3f0 did not keep the entry offset at the 4.64 target");
+  expect(rac_gameplay_camera_initial_state_v1(spawn, -yaw).eye.y > spawn.y,
+         "entry ignored the player's yaw sign");
+  RacGameplayCameraV1 first(rac_gameplay_camera_profile_v1(), entered);
+  RacGameplayCameraV1 second(rac_gameplay_camera_profile_v1(), entered);
+  for (int frame = 0; frame < 1000; ++frame) {
+    RacGameplayCameraInputV1 input;
+    input.right_x = frame % 120 < 60 ? 0.6F : -0.6F;
+    input.right_y = frame % 160 < 80 ? -0.9F : 0.9F;
+    input.yaw_selector = static_cast<std::uint32_t>(frame % 3);
+    const RacVector3fV1 player{spawn.x + static_cast<float>(frame) * 0.01F,
+                               spawn.y, spawn.z};
+    first.step_pal_frame(player, input);
+    second.step_pal_frame(player, input);
+    expect(first.state() == second.state() && first.view() == second.view(),
+           "host camera replay differs for identical PAL input");
+    const auto view = first.view();
+    expect(finite(view.eye) && finite(view.target) && finite(view.up),
+           "camera replay produced a non-finite renderer view");
+  }
+  const auto before = first.state();
+  RacGameplayCameraInputV1 unsupported;
+  unsupported.special_override_active = true;
+  expect_camera_error([&] { first.step_pal_frame(spawn, unsupported); },
+                       "a special-state camera override was silently modeled");
+  unsupported = {};
+  unsupported.right_x = std::numeric_limits<float>::quiet_NaN();
+  expect_camera_error([&] { first.step_pal_frame(spawn, unsupported); },
+                       "a non-finite source pad axis was accepted");
+  expect(first.state() == before, "a rejected original camera frame changed state");
+}
+
+void test_original_moving_distance_and_previous_pivot() {
+  using namespace openrc::game;
+  const auto profile = rac_gameplay_camera_profile_v1();
+  const float limit = source_float(0x40947ae1U);
+  RacGameplayCameraV1 lateral(profile, rac_gameplay_camera_initial_state_v1({}));
+  lateral.step_pal_frame({0.0F, 0.1F, 0.0F});
+  expect(lateral.state().desired_offset.y < 0.0F &&
+             !lateral.state().movement_distance_active,
+         "2ea3f0 lost previous-eye minus current-pivot translation");
+  RacGameplayCameraV1 backward(profile, rac_gameplay_camera_initial_state_v1({}));
+  backward.step_pal_frame({-0.14F, 0.0F, 0.0F});
+  const auto first = backward.state();
+  expect(first.movement_distance_active && first.movement_distance_maximum == 6.0F &&
+             near(first.target_distance, limit + (6.0F-limit)*source_float(0x3b449ba6U), 1.0e-6) &&
+             near(std::sqrt(first.smoothed_offset.x*first.smoothed_offset.x +
+                            first.smoothed_offset.y*first.smoothed_offset.y +
+                            first.smoothed_offset.z*first.smoothed_offset.z), limit, 1.0e-6),
+         "2ea9c8 did not defer its moving-player radius target until the next update");
+  backward.step_pal_frame({-0.28F, 0.0F, 0.0F});
+  const auto second = backward.state();
+  expect(second.target_distance > first.target_distance &&
+             near(second.eye_distance_velocity,
+                  (first.target_distance-limit)*source_float(0x3d23d70aU), 1.0e-6),
+         "backward motion did not interpolate radial stiffness to 0.04");
+  RacGameplayCameraInputV1 input;
+  input.player_yaw_radians = source_float(0x40490fdbU);
+  backward.step_pal_frame({-0.28F, 0.0F, 0.0F}, input);
+  expect(backward.state().movement_distance_active &&
+             backward.state().movement_distance_maximum == 6.0F,
+         "stationary 2ea9c8 continuation ignored player Moby forward");
+  input.player_yaw_radians = 0.0F;
+  backward.step_pal_frame({-0.28F, 0.0F, 0.0F}, input);
+  expect(!backward.state().movement_distance_active &&
+             backward.state().movement_distance_maximum == limit,
+         "2ea9c8 did not clear its remembered distance when the guard failed");
+}
+
+void test_original_pole_correction_precedes_eye() {
+  using namespace openrc::game;
+  auto initial = rac_gameplay_camera_initial_state_v1({});
+  // +320 12.5 degrees from up: the elevation spring alone stays inside the
+  // 15-degree cone, so 2eae68..2eaee8 must rotate it before 2eaef8.
+  initial.smoothed_offset = {-1.0F, 0.0F, 4.5F};
+  RacGameplayCameraV1 camera(rac_gameplay_camera_profile_v1(), initial);
+  camera.step_pal_frame({});
+  const auto &state = camera.state();
+  const auto offset = state.smoothed_offset;
+  const double offset_length =
+      std::sqrt(offset.x * offset.x + offset.y * offset.y + offset.z * offset.z);
+  const double from_up = std::acos(offset.z / offset_length);
+  expect(near(from_up, source_float(0x3e860a92U), 2.0e-4) &&
+             state.eye_elevation_velocity == 0.0F &&
+             state.eye_distance_velocity == 0.0F &&
+             state.eye_azimuth_velocity == 0.0F,
+         "the 15-degree pole correction did not rotate +320 and clear velocities");
+  const RacVector3fV1 anchor{state.focus.x + 0.0F, state.focus.y + 0.0F,
+                             2.0F + state.focus.z};
+  expect(state.eye == RacVector3fV1{anchor.x + offset.x, anchor.y + offset.y,
+                                    anchor.z + offset.z},
+         "the eye was not composed from the pole-corrected +320");
+}
+
+void test_original_renderer_adapter_matrices() {
+  using namespace openrc::game;
+  const auto pal = rac_gameplay_pal_projection_defaults_v1();
+  expect(pal.viewport_half_width == 256.0F && pal.viewport_half_height == 224.0F &&
+             rac_projection_selector_v1(0U) == RacProjectionSelectorV1::other &&
+             rac_projection_selector_v1(1U) == RacProjectionSelectorV1::pal &&
+             rac_projection_selector_v1(7U) == RacProjectionSelectorV1::pal,
+         "the runtime display/selector adapter has the wrong source domain");
+  RacGameplayCameraV1 camera(rac_gameplay_camera_profile_v1(),
+                             rac_gameplay_camera_level_enter_state_v1({10.0F, 20.0F, 30.0F}, 0.0F));
+  const auto view = camera.view();
+  expect(view.near_plane_distance == 0.03125 && view.far_plane_distance == 728.0 &&
+             near(std::tan(view.vertical_field_of_view_radians / 2.0),
+                  static_cast<double>(pal.horizontal_tangent * source_float(0x3f418937U)), 1.0e-12),
+         "the renderer adapter lost source world scale or tangent FOV");
+  expect(near(std::tan(view.vertical_field_of_view_radians / 2.0) * view.aspect_ratio,
+              pal.horizontal_tangent, 1.0e-12) && view.aspect_ratio != 512.0 / 448.0,
+         "the renderer adapter incorrectly substituted the PAL pixel aspect");
+  using Vec = std::array<double, 3>;
+  const auto dot = [](Vec a, Vec b) { return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]; };
+  const auto normalized = [&](Vec a) {
+    const double norm = std::sqrt(dot(a, a));
+    return Vec{a[0]/norm, a[1]/norm, a[2]/norm};
+  };
+  const Vec eye{view.eye.x, view.eye.y, view.eye.z};
+  const auto forward = normalized({view.target.x-view.eye.x, view.target.y-view.eye.y,
+                                   view.target.z-view.eye.z});
+  const Vec up{view.up.x, view.up.y, view.up.z};
+  const auto right = normalized({forward[1]*up[2]-forward[2]*up[1],
+                                 forward[2]*up[0]-forward[0]*up[2],
+                                 forward[0]*up[1]-forward[1]*up[0]});
+  expect(near(right[0], 0.0, 1.0e-6) && near(right[1], -1.0, 1.0e-6) &&
+             near(dot(forward, up), 0.0, 1.0e-6),
+         "the yaw-zero neutral view basis has the wrong handedness/up");
+  // Column-vector matrices equivalent to the renderer's dot-product path.
+  const std::array<Vec, 3> view_rows{right, up, forward};
+  const double n = view.near_plane_distance, f = view.far_plane_distance;
+  const double sx = 1.0 / (std::tan(view.vertical_field_of_view_radians/2.0)*view.aspect_ratio);
+  const double sy = 1.0 / std::tan(view.vertical_field_of_view_radians/2.0);
+  const std::array<std::array<double, 4>, 4> projection{{
+      {sx,0.0,0.0,0.0}, {0.0,sy,0.0,0.0},
+      {0.0,0.0,f/(f-n),-n*f/(f-n)}, {0.0,0.0,1.0,0.0}}};
+  for (const double distance : {n, f}) {
+    Vec point{eye[0]+forward[0]*distance, eye[1]+forward[1]*distance,
+              eye[2]+forward[2]*distance};
+    std::array<double,4> camera_point{0.0,0.0,0.0,1.0};
+    for (std::size_t i=0; i<3; ++i) {
+      camera_point[i] = dot(view_rows[i],point)-dot(view_rows[i],eye);
+    }
+    std::array<double,4> clip{};
+    for (std::size_t row=0; row<4; ++row) {
+      for (std::size_t col=0; col<4; ++col) {
+        clip[row] += projection[row][col]*camera_point[col];
+      }
+    }
+    expect(near(clip[0]/clip[3],0.0,1.0e-5) && near(clip[1]/clip[3],0.0,1.0e-5) &&
+               near(clip[2]/clip[3],distance==n ? 0.0 : 1.0,1.0e-9),
+           "the renderer view/projection does not map neutral near/far to D3D depth");
+  }
+  auto invalid = camera.state();
+  invalid.eye_initialized = false;
+  expect_camera_error([&] { static_cast<void>(rac_gameplay_camera_renderer_view_v1(
+      invalid,pal,1024.0F)); }, "a focus-only state produced a renderer view");
+}
+
 } // namespace
 
 int main() {
@@ -413,6 +745,14 @@ int main() {
     test_original_projection_uses_source_factor_bits();
     test_original_focus_follow_sequence();
     test_original_pitch_response();
+    test_original_yaw_selectors_and_inversions();
+    test_original_pitch_smoothing_and_feedback();
+    test_original_offset_and_view_pitch_limits();
+    test_original_angular_spring_boundary();
+    test_veldin_entry_and_deterministic_eye_sequence();
+    test_original_moving_distance_and_previous_pivot();
+    test_original_pole_correction_precedes_eye();
+    test_original_renderer_adapter_matrices();
     std::cout << "third_person_camera_tests: ok\n";
     return 0;
   } catch (const std::exception &error) {
