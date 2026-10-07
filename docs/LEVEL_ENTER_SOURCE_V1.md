@@ -34,7 +34,7 @@ and, when the level-exit flag is set, an exit owner (`2940e0`) and a return to
 | 7 | `246ec0`, `235828`, `276f18` | Map art, unknown, "misc anim" | roles INFERRED/UNKNOWN |
 | 8 | `2901a8` | **Mode selection: level 0 → mode 0**; most other levels → arrival mode 6 | CONFIRMED |
 | 9 | `122598(0)` | Video-field sync; presented-frame counter `0x15f4f8 = 0` | CONFIRMED |
-| 10 | `200ec8`, `266210`, then `2666a8` or `266670(0)` | Two unconditional calls, then a branch: on level 0, `2666a8` only when byte `0x13d498` is non-zero, otherwise `266670(0)` | order and branch CONFIRMED, roles UNKNOWN |
+| 10 | `200ec8`, `266210`, then `2666a8` or `266670(0)` | Two unconditional calls, then a branch: on level 0, `2666a8` only when byte `0x13d498` is non-zero, otherwise `266670(0)`. On New Game the class-834 load-time callback has already set `0x13d498 = 1`, so `2666a8` runs ([start triggers](RAC_VELDIN_START_TRIGGERS_V1.md) §2) | order, branch and New Game arm CONFIRMED; roles INFERRED (audio stream channel requests, display setup) |
 | 11 | stores, `12ec30` | Per-level first-visit flag and visit/time statistics | stores CONFIRMED, meaning INFERRED |
 
 Rows 9–11 still belong to the one-time prologue: the prologue ends at
@@ -74,17 +74,26 @@ owners above run once per level entry.
 * **No mode-level phase on Veldin (CONFIRMED).** `2901a8` selects mode 0 for
   level 0, so the first loop iteration already runs the gameplay arm: pad,
   hero update and camera update. Arrival (mode 6), scene playback (mode 2) and
-  transition (mode 3) are not selected by the entry. Duration: **0 frames**.
+  transition (mode 3) are not selected by the entry. Duration of the
+  entry-selected phase: **0 frames**. This does not make the first frame
+  controllable: see the object-driven scene below.
 * The pause/menu input is gated until 8 frames in mode 0 (CONFIRMED); this
   does not gate Ratchet's control.
-* Object-driven scenes remain possible but are **UNKNOWN** for the New Game
-  start: one placed Veldin class has a callback that can start a mode-2 scene
-  after a proximity test and either an authored automatic flag or a button.
-  The two other scene-starting classes are not placed on Veldin. Veldin has
-  seven scene-animation containers (visible through `wad-scene-animation`);
-  none is proven to belong to the start. Help-message triggers and any fade
-  owner were not identified. Missing: that object's per-instance inputs, the
-  help-message owner and a fade owner.
+* **Object-driven scene before control: YES (INFERRED; every gate
+  CONFIRMED)**, settled in [RAC_VELDIN_START_TRIGGERS_V1](RAC_VELDIN_START_TRIGGERS_V1.md).
+  The only class-834 placement (record 165) is admitted; its callback `2db278`
+  runs in the load-time pass of `2657b8` while the mode is 6, initialises its
+  script, sets the range parameter to 255 and writes `0x13d498 = 1`
+  (`2db35c`). In the first mode-0 Moby pass (before the hero update) the
+  script gate `267290` passes: hero state != 29, mode 0, script record 0 with
+  the automatic bit (no button), distance ≈160 ≤ 2·255, threshold 0. It
+  calls `299b68(4)`, which writes **mode 2** (`299ccc`) and hero set-state
+  `222b80(100, 2)`. The scene is **index 4 of the seven containers** (PAL
+  first block unique 590). Its length and the first controlled frame after it
+  are not derived. The ship callback `28f458` and classes 750/1290 do not
+  start a scene on fresh progress. Missing for CONFIRMED: a trace of a normal
+  New Game through `2657b8`, the first `2658c0` and `299b68` with live globals.
+  Help-message triggers and a fade owner remain unidentified.
 
 ## 3. Ratchet at the first controlled frame
 
@@ -93,8 +102,16 @@ owners above run once per level entry.
   placement, record 0, consistent with the existing spawn rule), probes it with
   `25a6d0` and replaces its height only when the probe returns a positive
   value, then copies the Moby position and Z rotation into the player and
-  writes them back through `208e98` and the post-step. The probe's numeric
-  meaning is **UNKNOWN** (INFERRED: vertical ground probe).
+  writes them back through `208e98` and the post-step. **Probe CONFIRMED:**
+  `25a6d0` casts the collision segment `(X, Y, Z+0.5) → (X, Y, 0.01)` through
+  `1efff0` (flags 2) and returns the absolute world Z of the hit (`0x173f68`)
+  or 0; it reads no Moby bounds. Formula: `Z = R > 0 ? R : 31.43` (record 0's
+  authored Z). The exact bits of R are **UNKNOWN** (no execution of `1efff0`
+  on the live state); the prepared static mesh gives ≈31.4266 (INFERRED),
+  about 0.0034 below the `LevelBootstrapV1` spawn.
+* **First frames are a scene (INFERRED).** With §2, the first mode-0 frame's
+  Moby pass switches to mode 2 and hero state 100 before the hero update, so
+  the state-0 pad-driven update does not run in that frame.
 * **State number 0 (CONFIRMED).** `205598` writes the state word to 0 directly
   and calls set-state `222b80(0, 1)`. Because the mode is still 6 during load,
   the set-state gate rejects it, so the state-0 entry handler (idle-slot
@@ -147,8 +164,10 @@ owners above run once per level entry.
 | `244ae0` data load | `prepared_game_v2*`, `runtime_level_foundation`, `runtime_level_content` | PARTIAL (order) |
 | Admission loop in `2422d8` | `rac_moby_admission`, `placement_admission`, `rac_moby_fresh_constructor`, `rac_moby_authored_tail`, `rac_moby_reference`, `ordered_spatial_index`, `rac_moby_post` | PARTIAL (not interleaved; `game_world` creates all entities at once) |
 | Ship object | none | MISSING / UNKNOWN |
-| `205278`, `205598` | `level_bootstrap`, `player_simulation`, `runtime_player_actor` | PARTIAL (no probe, reset or gated set-state) |
-| `2657b8`, `2658c0`, class callbacks | `runtime_actor_behavior`, `runtime_actor_schedule`, `runtime_actor_animation` | PARTIAL |
+| `205278`, `205598` | `level_bootstrap`, `player_simulation`, `runtime_player_actor` | PARTIAL (no probe, reset or gated set-state; probe contract now CONFIRMED, exact Z UNKNOWN) |
+| `2657b8`, `2658c0`, class callbacks | `runtime_actor_behavior`, `runtime_actor_schedule`, `runtime_actor_animation` | PARTIAL (class-834 `2db278` and script `267290` reversed, not lowered) |
+| Mode-2 scene start `299b68`, scene 4 | `SceneAnimationBankV1` data only | MISSING (no scene owner) |
+| `200ec8`, `266210`, `2666a8`/`266670` | audio components | MISSING (roles INFERRED) |
 | Pad | `rac_pad_input`, `game_input` | PARTIAL (axis response done) |
 | Hero update, three tables | `rac_player_locomotion`, `player_simulation`, `runtime_player_animation` | PARTIAL |
 | Camera `1ed428`, `1f7bc8`/`1f7d00` | `third_person_camera` (developer) | PARTIAL, not original |
@@ -180,6 +199,13 @@ Ordered implementation tasks:
    classes' callbacks, including the scene-starting object and the mode-2
    scene owner, to settle the first-frame triggers. Depends on 1 and 2.
 
-Reverse prerequisites (UNKNOWN items): `25a6d0`, that object's per-instance
-inputs, the Clank attachment owner, the roles of the unnamed prologue and
-frame owners, the ship branch input and the first-frame animation step.
+Reverse prerequisites (UNKNOWN items): the exact `1efff0` result for the
+spawn probe, the length of scene 4 and the first controlled frame after it,
+the Clank attachment owner, the roles of the remaining unnamed prologue and
+frame owners (`294df0`, `235828`, F3 owners), the ship branch input and the
+first-frame animation step. Resolved by
+[RAC_VELDIN_START_TRIGGERS_V1](RAC_VELDIN_START_TRIGGERS_V1.md): the `25a6d0`
+contract and height formula, the class-834 instance inputs and admission,
+`0x13d498` (progress tag 5, byte 8; 0 after reset, 1 after the load pass),
+the P14 arm (`2666a8`) and the roles of `2666a8`/`266670`/`266210`/`200ec8`
+(INFERRED names).

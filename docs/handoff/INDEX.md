@@ -1,5 +1,6 @@
 # Handoff index (newest first)
 
+- 2026-10-07 · #38 Reverse: wyzwalacze startu Veldinu — sonda 25a6d0 i wysokość spawnu, instancja klasy 834 i bajt 0x13d498, role 2666a8/266670 — claude — [2026-10-07-task-38-reverse-wyzwalacze-startu-veldinu-sonda.md](2026-10-07-task-38-reverse-wyzwalacze-startu-veldinu-sonda.md)
 - 2026-10-07 · #29 Reverse: ruch naziemny Ratcheta — progi stanów 0/2 z opóźnieniem próbki, wygładzanie tempa i obrót — claude — [2026-10-07-task-29-reverse-ruch-naziemny-ratcheta-progi-sta.md](2026-10-07-task-29-reverse-ruch-naziemny-ratcheta-progi-sta.md)
 - 2026-10-07 · #32 level/enter: rzeczywiste wejście do Veldinu po New Game i sterowanie Ratchetem w tej samej sesji — claude — [2026-10-07-task-32-level-enter-rzeczywiste-wejscie-do-veldi.md](2026-10-07-task-32-level-enter-rzeczywiste-wejscie-do-veldi.md)
 - 2026-10-06 · #31 Reverse: oryginalna kamera rozgrywki na Veldinie i projekcja 1f7bc8/1f7d00 — dowód i czysty model obok kamery deweloperskiej — claude — [2026-10-06-task-31-reverse-oryginalna-kamera-rozgrywki-na-v.md](2026-10-06-task-31-reverse-oryginalna-kamera-rozgrywki-na-v.md)
