@@ -9,7 +9,55 @@ or throwaway first-planet implementation is authorized.
 
 ## Acceptance and present status
 
-Current checkpoint,2026-10-03: the normal sequence smoke verifies START →
+Current checkpoint, 2026-10-06: the normal sequence now continues through a
+real `level/enter` consumer into controllable Veldin in the same window,
+renderer and canonical session. The consumer moves the installed frontend
+`GameSessionV1` into `RuntimeGameplaySessionOptionsV1::frontend_session`
+(seed, state identity, bytes and revision retained; no initial values
+replayed). It admits the scene through `D3d11Renderer::set_gameplay_scene`.
+Gameplay admission and the interactive loop are the same code as the
+developer `--level` path. The `new-game-sequence` smoke runs 600 fixed ticks
+with scripted stick deflection through the controller-sample boundary. Result:
+player displacement 24.2 units, revision 1195 unchanged, a non-frozen frame,
+exit 0. An ordinary launch driven only by window input messages entered the
+level without an exception and moved Ratchet with W. Logs:
+`local/forensics/level-enter/`.
+
+This does **not** qualify the original entry. The run reports
+`original_entity_admission=0 original_entry_qualified=0 camera=developer
+physics=openrc-policy`. The source map of the original entry is
+[LEVEL_ENTER_SOURCE_V1.md](LEVEL_ENTER_SOURCE_V1.md). Compared with it:
+
+- `0x2465f8` is the whole level module (one-time prologue, mode-dispatched
+  frame loop, exit owner). The native consumer instead runs the neutral
+  admission and OpenRC's 60 Hz fixed-step loop. There is no mode word,
+  `2901a8`, frames-in-mode or PAL per-present update with catch-up.
+- Entities come from the existing neutral loader, all at once. The source
+  admits and constructs one record at a time inside `2422d8`, then runs a
+  load-time Moby pass (`2657b8`) that is also absent here.
+- The spawn is the bootstrap default. It is the same single class-0 Moby, but
+  without the `25a6d0` height probe of `205278`, whose meaning is UNKNOWN.
+  Ratchet's state also starts without the source's mode-gated set-state.
+- Immediate control is consistent with the source at mode level: `2901a8`
+  selects mode 0 for level 0, i.e. zero non-interactive frames (CONFIRMED in
+  the source). A possible object-started scene on Veldin remains UNKNOWN and
+  unhandled.
+- Frame order differs. The source updates Mobys before the hero, then the
+  camera (`1ed428`), and runs the projection update `1f7d00` last in render.
+  OpenRC steps the developer camera in the movement mapper, then the player,
+  then entity gameplay.
+- The camera is the developer third-person prototype, not 1f7bc8/1f7d00. The
+  recovered projection, the type-0 follow spring and the right-stick steps are
+  documented in [RAC_GAMEPLAY_CAMERA_V1.md](RAC_GAMEPLAY_CAMERA_V1.md). Its
+  clean `RacGameplayCameraV1` model is not yet connected here; eye
+  composition and camera collision remain UNKNOWN.
+- Character physics beyond the source pad response and standard ground pace
+  is OpenRC policy.
+- There is no HUD, AI, event, cutscene, particle or level audio integration.
+
+The earlier 2026-10-03 checkpoint follows as history.
+
+Previous checkpoint,2026-10-03: the normal sequence smoke verifies START →
 original intro → menu → no-card dialog → confirmed New Game → actual frontend
 retirement/preparation → all three original movies, three loading cards and
 seven fades → completed Veldin load and transition cleanup. The same sequence
@@ -44,7 +92,7 @@ their stated component scope, not original-game fidelity for the whole feature.
 | --- | --- | --- |
 | One launcher, prepared-package boundary, portable import guards | DONE at infrastructure scope | Existing compilation, validation and package-only launch; this does not implement the PS2 frontend. |
 | Original intro movie | PASS at media scope | Compiler-selected original PAL MPEG-2, prepared PCM, full runtime video/audio drain and actual D3D11 framebuffer comparison. Boot/prelude and post-intro frontend are not complete. |
-| Original title/menu and New Game | PARTIAL components / MISSING playable flow | Title overlay, partial sky/terrain and animated actors run after copyright. Source menu models/lists, absent-card dialog,12-update entry gate and live reset have source comparisons. Full presentation/input transition remains unintegrated. |
+| Original title/menu and New Game | PARTIAL | Title overlay, partial sky/terrain and animated actors run after copyright. Source menu models/lists, absent-card dialog, 12-update entry gate and live reset have source comparisons. The normal New Game sequence reaches controllable Veldin through `level/enter` (2026-10-06). The entry itself is not the original 2465f8 owner chain. |
 | Level loading, geometry, textures and static collision | PARTIAL | Shared source-backed loaders/rendering exist; scene-family coverage and original loading lifecycle remain incomplete. |
 | Original ordered actor initialization | PARTIAL | Admission/session state, ordered spatial lists, fresh constructor, authored color tail, indexed reference store, dynamic allocator, sequence/frame setter and scalar post continuation exist. Actual session-world materialization is shared. Remaining compound numerics, live-token/entity binding and ordered integration are still required. |
 | Ratchet movement and gameplay animations | PARTIAL | Source animation banks and a grounded subset exist; full state transitions, acceleration/turning, airborne behavior and weapon handling are not verified. Prototype behavior is not fidelity evidence. |

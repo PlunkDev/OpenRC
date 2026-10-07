@@ -1,5 +1,119 @@
 # OpenRC — przekazanie pracy
 
+## Najnowszy checkpoint runtime — `level/enter` i sterowalny Veldin 2026-10-06
+
+Pełny zwykły smoke `new-game-sequence` na świeżym v14 PASS, exit0, PID15984:
+`local/forensics/level-enter/smoke-new-game-sequence-v2.log` i `.err`. Intro →
+menu/dialog → New Game → prepare →3 karty,3 filmy616/1348/415 klatek,7 fade →
+ładowanie/cleanup → `level/admit-prepared-sections` (3457 zapisów, revision
+1194→1195) → **nowy rzeczywisty konsument `level/enter`** → 600 ticków gry.
+Sekwencja kończy się teraz fazą `complete`, a nie `incomplete`. Wynik smoke:
+`ticks=600 player_horizontal_displacement=24.1972 grounded=1 revision_before=1195
+revision_after=1195 persistent_bytes_unchanged=1 changed_pixels=921600
+world_entered=1 level_playable=1 original_entity_admission=0
+original_entry_qualified=0 camera=developer physics=openrc-policy`.
+
+Konsument w `src/runtime/windows_main.cpp` ma warunki wstępne takie jak
+`level/admit-prepared-sections`, rozszerzone o wykonaną już instalację stanu:
+`state.admitted_level`, brak gameplay i brak właścicieli frontendu. Przenosi
+(move, bez kopii) tę samą `GameSessionV1` przez
+`RuntimeGameplaySessionOptionsV1::frontend_session`. Nie tworzy drugiej sesji
+i nie stosuje ponownie wartości początkowych. Ziarno, identity/schema, bajty
+i revision pozostają, a przy wejściu także alokacja bufora (CONFIRMED w smoke).
+`RuntimeGameplaySessionV1::advance_frame` stage'uje kopię sesji, więc od
+pierwszej klatki tożsamość to ziarno, identity/schema i bajty uporządkowane
+revision, a nie adres.
+
+Scena wchodzi przez `D3d11Renderer::set_gameplay_scene` na tym samym oknie
+i rendererze. Admission rozgrywki (`enter_gameplay_level`) i pętla gry
+(`run_gameplay_loop`) są teraz wspólne z deweloperskim `--level`; to ten sam
+kod, nie kopia. `WindowState::admitted_level` jest jedynym właścicielem
+pozostałych zasobów poziomu w obu ścieżkach i żyje przez całą pętlę.
+Skryptowany drążek (30 ticków neutralnie, 300 do przodu, 240 po skosie,
+30 puszczony) wchodzi przez tę samą granicę próbki pada co XInput
+(`apply_gameplay_gamepad_sample`).
+
+Zwykłe uruchomienie bez smoke PASS, exit0, PID19956:
+`local/forensics/level-enter/normal-run-v1.log`, `.err` i `.driver.log`.
+Brak wyjątku przy `level/enter`. Log zawiera `OpenRC level enter: ...
+world_entered=1` oraz `OpenRC gameplay loop: ended=1 ticks=483
+player_horizontal_displacement=20.7628`. Wejście podano komunikatami okna
+`PostMessageW` do okna tego PID: 3× Enter w menu, W przez 4 s, potem WM_CLOSE.
+To nie fizyczna klawiatura. Fizycznego pada XInput nie testowano; korzysta
+z tej samej ścieżki co `--level` (INFERRED). Regresja `--level 0 --smoke-test`
+kończy się exit0 z pustym stdout/stderr (`smoke-level0-v1.log`), tak samo jak
+w bazie #33. Ten smoke niczego nie loguje, więc nie jest dowodem rozgrywki.
+Dowodem działania wspólnej ścieżki są własne pomiary powyżej: 600 ticków
+z przemieszczeniem w smoke New Game i log pętli zwykłego uruchomienia.
+
+Build CMake/static runtime, `scripts/build-portable.ps1` PASS, ctest 189/189,
+4 audyty PE PASS i `validate-native-game` v14 PASS (manifest
+`d9249c74834a1423cb6b3bdfdb5b5812991cc634521ce54b73323dc583237fd9`):
+`local/forensics/level-enter/pe-audit-and-validate-final.log`. Runtime SHA256:
+`CA6214A3F8E7623D5CADB7E03A7B8AB104C0CFD184D5ABBA6E7D38B35259C544`.
+Paczka opublikowana tylko w `build-portable` worktree zadania. Commit v14
+nie kompilował się: `tests/rac_moby_post_execute_tests.cpp` przypisywał strukturę
+z polem referencyjnym. Gałąź używa poprawki wniesionej przez #31 w `811d33e`
+(`owner_again`); plik jest identyczny z `main`. Liczba testów ctest dla v14 z tą zmianą
+wynosi 189 (CONFIRMED w `build-portable-v2.log`). Wszystkie
+otwarcia audio użyły Oculus index1 wyłącznie przez zmienne procesu
+(`OPENRC_AUDIO_DEVICE=1`, `OPENRC_AUDIO_DEVICE_REQUIRED=1`). Process/User/
+Machine i `audio-output.txt` pozostają nieustawione.
+
+**Co nadal nie jest oryginalne** (bramka końcowa NIE jest PASS). Mapa źródłowa
+entry jest w `docs/LEVEL_ENTER_SOURCE_V1.md` (#34, main `c8d29eb`); poniżej
+porównanie z obecnym konsumentem:
+- Entry 2465f8 nie jest odtworzony (`original_entry_qualified=0`). W oryginale
+  to cały moduł poziomu: jednorazowy prolog `2465f8..2468a4`, pętla klatki od
+  `2468a8` i wyjście `2940e0`. OpenRC wykonuje neutralne admission i własną
+  pętlę `fixed_step` 60 Hz. Nie ma słowa trybu `0x15f6a8`, `2901a8`, licznika
+  klatek w trybie ani aktualizacji raz na present PAL z catch-upem.
+- Encje tworzy obecny loader neutralny, wszystkie definicje naraz
+  (`original_entity_admission=0`). Oryginał w `2422d8` przyjmuje i konstruuje
+  rekord po rekordzie (pętla `243210..2435f0`: admission → `24f968` →
+  `25a6d0` → `251e30` → `251308` → `24b1b0`). Potem wykonuje jednorazowy
+  przebieg Moby `2657b8` w trybie 6; tego przebiegu też brak.
+- Spawn to domyślny spawn `LevelBootstrapV1`, czyli ta sama jedyna Moby klasy 0.
+  Oryginalne `205278` dodatkowo sonduje wysokość przez `25a6d0`, którego
+  znaczenie liczbowe jest UNKNOWN. Wysokość startu może się więc różnić.
+- Stan Ratcheta: oryginał zapisuje stan 0, a set-state jest odrzucany w trybie 6,
+  więc handler wejścia nie działa przy ładowaniu. OpenRC startuje od snapshotu
+  `PlayerSimulationV1` bez tej bramki.
+- Brak fazy nieinteraktywnej jest zgodny ze źródłem na poziomie trybów:
+  `2901a8` wybiera tryb 0 dla poziomu 0, czyli 0 klatek (CONFIRMED w źródle).
+  Scenka uruchamiana przez obiekt na Veldinie pozostaje UNKNOWN i nie jest
+  obsłużona.
+- Kolejność klatki: oryginał aktualizuje Moby przed bohaterem, kamerę `1ed428`
+  po bohaterze, a `1f7d00` na końcu renderu. OpenRC aktualizuje gracza przed
+  encjami, a deweloperską kamerę w mapperze ruchu przed krokiem gracza.
+- Kamera to deweloperska `ThirdPersonCameraV1`, a nie oryginał. Ma pionowy FOV
+  60°, near 0.05, far 4096, odległość 2.5–12 (start 6), pitch od −10° do 70°
+  i nie ma sprężyny. Oryginał według `docs/RAC_GAMEPLAY_CAMERA_V1.md`:
+  - projekcja `1f7bc8`/`1f7d00`: near 32, far 745472, tangens poziomy 0.63
+    mnożony przez 0.756 lub `3f466666`;
+  - kamera typu 0 ze sprężyną `1eb5c0` (k=0.015, d=0.2);
+  - prawy drążek obraca yaw o 1/1.3/1.6° na aktualizację i pochyla kamerę
+    do 40°.
+  
+  Czysty model `RacGameplayCameraV1` z #31 nie jest podłączony w tym zadaniu.
+  Składanie oka i kolizje kamery pozostają UNKNOWN.
+- Fizyka (gravity, skok, przyspieszenia) to polityka OpenRC. Ze źródła pochodzą
+  tylko odpowiedź pada i standardowe tempo naziemne.
+- Brak HUD, AI, zdarzeń, cutscenek, cząsteczek i audio poziomu. Animacja
+  obejmuje tylko ruch naziemny, a Bolt i skrzynie to polityka OpenRC.
+
+Pułapki: CLI odrzuca `prepared-root` prowadzący przez junction `local`
+(„not a plain directory”). Używać `D:\! Projekty\OpenRC\local\prepared-milestone1-v14`.
+W zwykłym przebiegu revision przed instalacją jest dużo wyższa (31550), bo
+callback filmów zapisuje wejście w każdej klatce. Smoke wraca z callbacku przed
+tym zapisem. Następne kroki według `docs/LEVEL_ENTER_SOURCE_V1.md` sekcja 5:
+oryginalny scheduler klatki i słowo trybu, przeplatana transakcja admission
+w `2422d8` zamiast obecnego loadera, lowering `205278`/`205598`, kolejność
+podsystemów trybu 0, podłączenie oryginalnej kamery (#31) i audio poziomu.
+
+Poniższy checkpoint z 2026-10-03 jest historyczny: jego granica `level/enter`
+jest już zarejestrowana.
+
 ## Najnowszy checkpoint runtime — instalacja stanu Veldinu 2026-10-03
 
 Pełny zwykły smoke `new-game-sequence` na nowym pakiecie v14 PASS, exit0,

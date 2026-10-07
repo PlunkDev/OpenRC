@@ -594,18 +594,26 @@ void update_gameplay_primary_pointer(
         state, buttons_before, buttons_after);
 }
 
+// The single controller boundary: XInput polling and scripted smoke input
+// both replace the platform sample here, before fixed-tick submission.
+void apply_gameplay_gamepad_sample(
+    WindowState& state,
+    const openrc::game::GameInputSampleV1& sample) noexcept {
+    const auto buttons_before = make_gameplay_input_sample(state).held_buttons;
+    state.gameplay_gamepad_sample = sample;
+    const auto buttons_after = make_gameplay_input_sample(state).held_buttons;
+    remember_gameplay_button_transition(
+        state, buttons_before, buttons_after);
+}
+
 void poll_gameplay_gamepad(WindowState& state) noexcept {
     if (!state.gameplay_input_active) {
         return;
     }
-    const auto buttons_before = make_gameplay_input_sample(state).held_buttons;
     const auto poll = state.gameplay_gamepad.poll();
-    state.gameplay_gamepad_sample = poll.connected
-                                        ? poll.sample
-                                        : openrc::game::GameInputSampleV1{};
-    const auto buttons_after = make_gameplay_input_sample(state).held_buttons;
-    remember_gameplay_button_transition(
-        state, buttons_before, buttons_after);
+    apply_gameplay_gamepad_sample(
+        state,
+        poll.connected ? poll.sample : openrc::game::GameInputSampleV1{});
 }
 
 void suspend_gameplay_input(WindowState& state) noexcept {
@@ -1209,6 +1217,211 @@ make_runtime_window_title(const openrc::game::RuntimeLevelContentV1& content) {
         throw std::runtime_error("CreateWindowExW failed");
     }
     return window;
+}
+
+// The one gameplay admission shared by the developer --level path and the
+// normal New Game `level/enter` consumer. WindowState::admitted_level stays
+// the owner of the remaining assets for the whole game loop: the player
+// animation borrows its rig and clips. Without a renderer the level creates
+// one; after frontend presentation the existing device admits the scene.
+// A transferred frontend session keeps its seed, bytes and revision.
+void enter_gameplay_level(
+    const HWND window,
+    WindowState& state,
+    const bool select_smoke_target,
+    std::optional<openrc::game::GameSessionV1> frontend_session) {
+    if (!state.admitted_level) {
+        throw std::logic_error("Gameplay admission has no admitted level");
+    }
+    if (state.gameplay || state.gameplay_animation || state.gameplay_camera) {
+        throw std::logic_error("Gameplay admission was already completed");
+    }
+    auto& level_content = *state.admitted_level;
+    state.base_title = make_runtime_window_title(level_content);
+    const auto player_actor =
+        openrc::game::resolve_runtime_player_actor_v1(level_content, 0U);
+    const auto world_actors =
+        openrc::game::resolve_runtime_world_actors_v1(level_content);
+    if (player_actor) {
+        state.gameplay_actor = true;
+        const auto& library = *level_content.actor_library;
+        const auto& player_rig = library.rigs[player_actor->actor_rig_index];
+        if (state.renderer) {
+            state.renderer->set_gameplay_scene(
+                level_content.render_scene,
+                library,
+                *player_actor,
+                world_actors);
+        } else {
+            state.renderer = std::make_unique<openrc::runtime::D3d11Renderer>(
+                window,
+                level_content.render_scene,
+                library,
+                *player_actor,
+                world_actors);
+        }
+        state.gameplay_world_actor_ids.reserve(world_actors.size());
+        for (const auto& actor : world_actors) {
+            state.gameplay_world_actor_ids.push_back(actor.authored_id);
+        }
+        apply_runtime_world_actor_initial_poses(
+            *state.renderer, level_content, world_actors);
+        const auto animation_profile = make_runtime_player_animation_profile();
+        if (level_content.actor_animation_bank &&
+            has_complete_runtime_player_animation(
+                *level_content.actor_animation_bank, animation_profile)) {
+            state.gameplay_animation =
+                std::make_unique<openrc::game::RuntimePlayerAnimationV1>(
+                    *level_content.actor_animation_bank,
+                    player_rig,
+                    animation_profile,
+                    make_runtime_actor_animation_playback_limits());
+            state.renderer->set_gameplay_actor_pose(
+                state.gameplay_animation->palette());
+        }
+    } else if (state.renderer) {
+        throw std::runtime_error(
+            "The admitted level has no prepared player actor for the existing "
+            "renderer");
+    } else {
+        state.renderer = std::make_unique<openrc::runtime::D3d11Renderer>(
+            window, level_content.render_scene);
+    }
+    openrc::game::RuntimeGameplaySessionOptionsV1 gameplay_options;
+    if (level_content.entity_scene &&
+        (level_content.gameplay_scene || level_content.destructible_scene)) {
+        state.gameplay_render_bindings =
+            level_content.entity_scene->render_bindings;
+        if (level_content.gameplay_scene) {
+            state.gameplay_collectible_ids.reserve(
+                level_content.gameplay_scene->collectibles.size());
+            for (const auto& collectible :
+                 level_content.gameplay_scene->collectibles) {
+                state.gameplay_collectible_ids.push_back(
+                    collectible.authored_id);
+            }
+        }
+        if (level_content.destructible_scene) {
+            state.gameplay_destructible_ids.reserve(
+                level_content.destructible_scene->destructibles.size());
+            for (const auto& destructible :
+                 level_content.destructible_scene->destructibles) {
+                state.gameplay_destructible_ids.push_back(
+                    destructible.authored_id);
+            }
+        }
+        if (select_smoke_target && level_content.destructible_scene &&
+            !level_content.destructible_scene->destructibles.empty()) {
+            state.gameplay_smoke_target = make_gameplay_smoke_target(
+                *level_content.entity_scene,
+                level_content.destructible_scene->destructibles.front());
+        } else if (select_smoke_target && level_content.gameplay_scene &&
+                   !level_content.gameplay_scene->collectibles.empty()) {
+            state.gameplay_smoke_target = make_gameplay_smoke_target(
+                *level_content.entity_scene,
+                level_content.gameplay_scene->collectibles.front());
+        }
+        openrc::GameplaySceneV1 gameplay_scene;
+        gameplay_scene.level_id = level_content.entity_scene->level_id;
+        if (level_content.gameplay_scene) {
+            gameplay_scene = std::move(*level_content.gameplay_scene);
+        }
+        gameplay_options.entity_gameplay =
+            openrc::game::RuntimeGameplayEntityContentV1{
+                std::move(*level_content.entity_scene),
+                std::move(gameplay_scene),
+                openrc::game::make_runtime_entity_gameplay_limits_v1(),
+                std::move(level_content.destructible_scene),
+            };
+    }
+    gameplay_options.frontend_session = std::move(frontend_session);
+    state.gameplay = std::make_unique<openrc::game::RuntimeGameplaySessionV1>(
+        std::move(level_content.foundation), std::move(gameplay_options));
+    RECT client_rectangle{};
+    if (GetClientRect(window, &client_rectangle) == FALSE) {
+        throw std::runtime_error(
+            "GetClientRect failed while initializing gameplay");
+    }
+    const auto client_width = static_cast<std::uint32_t>(
+        std::max<LONG>(0, client_rectangle.right - client_rectangle.left));
+    const auto client_height = static_cast<std::uint32_t>(
+        std::max<LONG>(0, client_rectangle.bottom - client_rectangle.top));
+    const auto player = state.gameplay->snapshot().player;
+    state.gameplay_camera.emplace(
+        make_gameplay_camera_profile(
+            gameplay_aspect_ratio(client_width, client_height)),
+        openrc::game::ThirdPersonCameraStateV1{
+            canonical_gameplay_yaw(player.facing_yaw_radians),
+            22.0 * std::numbers::pi_v<double> / 180.0,
+            6.0,
+        });
+    update_gameplay_player_presentation(state, player);
+    synchronize_gameplay_entity_presentation(state);
+    refresh_window_title(window, state);
+}
+
+[[nodiscard]] double gameplay_horizontal_distance(
+    const openrc::CollisionVectorV1& from,
+    const openrc::CollisionVectorV1& to) noexcept {
+    return std::hypot(to.x - from.x, to.y - from.y);
+}
+
+// Interactive loop shared by every admitted gameplay session: XInput polling,
+// keyboard/mouse through the window procedure, fixed-tick advance and present.
+// Returns the WM_QUIT exit code.
+int run_gameplay_loop(const HWND window, WindowState& state) {
+    if (!state.gameplay || !state.gameplay_camera || !state.renderer) {
+        throw std::logic_error("The gameplay loop has no admitted session");
+    }
+    const auto first_tick = state.gameplay->session().next_tick_index();
+    const auto start_feet =
+        state.gameplay->player().snapshot().character.feet_position;
+    MSG message{};
+    state.previous_gameplay_frame = std::chrono::steady_clock::now();
+    bool running = true;
+    while (running) {
+        while (PeekMessageW(&message, nullptr, 0U, 0U, PM_REMOVE) != FALSE) {
+            if (message.message == WM_QUIT) {
+                running = false;
+                break;
+            }
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+        if (!running) {
+            break;
+        }
+        if (IsIconic(window) != FALSE) {
+            if (WaitMessage() == FALSE) {
+                throw std::runtime_error("WaitMessage failed");
+            }
+            state.previous_gameplay_frame = std::chrono::steady_clock::now();
+            continue;
+        }
+        poll_gameplay_gamepad(state);
+        advance_gameplay_frame(window, state, std::chrono::steady_clock::now());
+        if (!state.renderer->render()) {
+            constexpr DWORD kOccludedWaitMilliseconds = 16U;
+            const auto wait_result = MsgWaitForMultipleObjectsEx(
+                0U,
+                nullptr,
+                kOccludedWaitMilliseconds,
+                QS_ALLINPUT,
+                MWMO_INPUTAVAILABLE);
+            if (wait_result == WAIT_FAILED) {
+                throw std::runtime_error(
+                    "Waiting for an occluded runtime window failed");
+            }
+        }
+    }
+    const auto final_player = state.gameplay->player().snapshot();
+    std::cout << "OpenRC gameplay loop: ended=1 ticks="
+              << state.gameplay->session().next_tick_index() - first_tick
+              << " player_horizontal_displacement="
+              << gameplay_horizontal_distance(
+                     start_feet, final_player.character.feet_position)
+              << '\n';
+    return static_cast<int>(message.wParam);
 }
 
 void verify_media_capture(const openrc::runtime::MediaVideoFrameV1 &source,
@@ -2155,6 +2368,107 @@ void validate_frontend_prepare_profile(const openrc::LevelPackageV1& package,
     }
 }
 
+// Observed immediately before `level/enter` moves the canonical frontend
+// session into gameplay. The smoke compares the admitted session and its
+// presented gameplay frames against these values.
+struct LevelEntryEvidence {
+    std::uint32_t level_id=0;
+    openrc::game::GameSessionSnapshotV1 session;
+    std::string identity_buffer;
+    const std::byte* identity_allocation=nullptr;
+    std::vector<std::byte> frozen_frame;
+};
+
+// At entry the gameplay owner holds the moved frontend allocation itself.
+// Later frames stage a copy of the session and commit it, so afterwards the
+// identity is the seed, state identity/schema and revision-ordered bytes.
+void verify_level_entry_session(const WindowState& state,const LevelEntryEvidence& entry,bool at_entry) {
+    const auto& session=state.gameplay->session();
+    const auto* persistent=session.persistent_state();
+    if(state.frontend_session||!persistent||!entry.session.persistent_state||
+        session.deterministic_seed()!=entry.session.deterministic_seed||
+        (at_entry&&persistent->buffer_bytes(entry.identity_buffer).data()!=entry.identity_allocation)||
+        session.active_level_id()!=entry.level_id||session.level_instance_sequence()!=1U||
+        session.pending_level_request())
+        throw std::runtime_error("Level entry lost the identity of the canonical frontend session");
+    const auto after=persistent->snapshot();
+    const auto& before=*entry.session.persistent_state;
+    // Revisions only advance through committed writes; equal revisions mean
+    // equal bytes. Entry itself must not replay or replace any initial value.
+    if(after.identity_key!=before.identity_key||after.schema_sha256!=before.schema_sha256||
+        after.revision<before.revision||(after.revision==before.revision&&after!=before)||
+        (at_entry&&after!=before))
+        throw std::runtime_error("Level entry changed canonical session bytes outside the state contract");
+}
+
+// Smoke continuation of the real `level/enter` consumer. Scripted stick
+// deflection replaces the controller sample at the same boundary as XInput;
+// the shared fixed-tick path then advances and presents each gameplay tick.
+bool run_level_entry_smoke(WindowState& state,HWND window,const LevelEntryEvidence& entry,
+    const RuntimeArguments& arguments) {
+    constexpr std::uint64_t kSmokeTicks=600U;
+    if(!state.gameplay||!state.gameplay_camera||!state.renderer||!state.gameplay_actor||!state.admitted_level)
+        throw std::runtime_error("New Game smoke has no admitted gameplay session");
+    verify_level_entry_session(state,entry,true);
+    const auto first_tick=state.gameplay->session().next_tick_index();
+    const auto start=state.gameplay->player().snapshot();
+    const auto ticks_per_second=std::uint64_t(state.gameplay->profile().fixed_step.ticks_per_second);
+    const auto begin=std::chrono::steady_clock::now();
+    state.previous_gameplay_frame=begin;
+    double max_displacement=0.0;
+    for(std::uint64_t frame=1U;frame<=kSmokeTicks;++frame) {
+        if(!pump_startup_messages(state))throw std::runtime_error("New Game gameplay smoke closed before completion");
+        // Neutral, forward, diagonal, then released stick.
+        const auto tick=frame-1U;
+        openrc::game::GameInputSampleV1 stick;
+        if(tick>=30U&&tick<330U)stick.axes.move_y=openrc::game::kGameInputAxisMagnitudeV1;
+        else if(tick>=330U&&tick<570U){stick.axes.move_x=23170;stick.axes.move_y=23170;}
+        apply_gameplay_gamepad_sample(state,stick);
+        // Each frame ends at or after one more fixed-tick boundary.
+        advance_gameplay_frame(window,state,begin+std::chrono::nanoseconds(
+            (frame*1'000'000'000U+ticks_per_second-1U)/ticks_per_second));
+        if(!present_startup_frame(state))throw std::runtime_error("New Game gameplay smoke closed during presentation");
+        max_displacement=std::max(max_displacement,gameplay_horizontal_distance(
+            start.character.feet_position,state.gameplay->player().snapshot().character.feet_position));
+    }
+    const auto ticks=state.gameplay->session().next_tick_index()-first_tick;
+    const auto final_player=state.gameplay->player().snapshot();
+    const auto displacement=gameplay_horizontal_distance(start.character.feet_position,final_player.character.feet_position);
+    if(ticks!=kSmokeTicks)
+        throw std::runtime_error("New Game gameplay smoke executed "+std::to_string(ticks)+" fixed ticks instead of 600");
+    if(!(displacement>0.25))
+        throw std::runtime_error("Scripted stick deflection did not move the admitted player: displacement="+
+            std::to_string(displacement)+" max="+std::to_string(max_displacement));
+    verify_level_entry_session(state,entry,false);
+    const auto& persistent=*state.gameplay->session().persistent_state();
+    const auto bytes_unchanged=persistent.snapshot()==*entry.session.persistent_state;
+    const auto frame=state.renderer->capture_frame_rgba();
+    if(frame.empty()||frame.size()!=entry.frozen_frame.size())
+        throw std::runtime_error("Gameplay framebuffer capture differs in size from the frozen transition frame");
+    std::uint64_t changed_pixels=0U;
+    for(std::size_t i=0;i<frame.size();i+=4U)
+        if(frame[i]!=entry.frozen_frame[i]||frame[i+1U]!=entry.frozen_frame[i+1U]||frame[i+2U]!=entry.frozen_frame[i+2U])++changed_pixels;
+    if(changed_pixels<256U)throw std::runtime_error("Gameplay presentation did not replace the frozen transition frame");
+    for(const auto authored_id:state.gameplay_world_actor_ids)
+        if(state.renderer->world_actor_enabled(authored_id)&&!state.renderer->last_frame_world_actor_submitted(authored_id))
+            throw std::runtime_error("New Game gameplay smoke did not submit an enabled world actor");
+    if(!arguments.smoke_capture.empty()) {
+        RECT client{};if(!GetClientRect(window,&client))throw std::runtime_error("Cannot read gameplay capture dimensions");
+        auto output=arguments.smoke_capture;output+=L".level-enter.ppm";
+        save_startup_capture(output,frame,static_cast<std::uint32_t>(client.right-client.left),
+            static_cast<std::uint32_t>(client.bottom-client.top));
+    }
+    std::cout<<"OpenRC New Game gameplay: level="<<entry.level_id<<" ticks="<<ticks
+        <<" scripted_stick=controller-boundary player_horizontal_displacement="<<displacement
+        <<" max_horizontal_displacement="<<max_displacement<<" grounded="<<final_player.character.grounded
+        <<" session_seed_retained=1 entry_allocation_retained=1 revision_before="<<entry.session.persistent_state->revision
+        <<" revision_after="<<persistent.revision()<<" persistent_bytes_unchanged="<<bytes_unchanged
+        <<" frame_differs_from_frozen=1 changed_pixels="<<changed_pixels
+        <<" world_entered=1 level_playable=1 original_entity_admission=0 original_entry_qualified=0"
+        <<" camera=developer physics=openrc-policy\n";
+    return true;
+}
+
 bool run_new_game_sequence(WindowState& state,HWND window,
     const openrc::LevelPackageV1& package,const RuntimeArguments& arguments,
     std::optional<StartupSceneContent>& frontend_content,const openrc::PreparedGameV2RootV1& prepared) {
@@ -2190,7 +2504,10 @@ bool run_new_game_sequence(WindowState& state,HWND window,
     if(state.frontend_platform_active&&!audio_retirement_diagnostic) {
         validate_frontend_prepare_profile(package,prepared);
         consumers.push_back("transition/prepare");
-        if(level_installation)consumers.push_back("level/admit-prepared-sections");
+        if(level_installation) {
+            consumers.push_back("level/admit-prepared-sections");
+            consumers.push_back("level/enter");
+        }
     }
     const bool prepared_fades=std::ranges::all_of(program.cues,[&](const auto& cue) {
         return cue.kind!=openrc::FrontendSequenceCueKindV1::fade||cue.resource_index<program.resources.size();
@@ -2215,6 +2532,7 @@ bool run_new_game_sequence(WindowState& state,HWND window,
     bool movie_before_fade_completed=false;
     bool transition_prepared=false,transition_cleaned=false;
     bool level_state_installed=false;
+    std::optional<LevelEntryEvidence> level_entry;
     unsigned completed_movies=0,completed_fades=0,presented_cards=0;
     const auto poll_level_load=[&]() {
         if(!state.prepared_level)throw std::runtime_error("Prepared level completion has no started load");
@@ -2249,18 +2567,6 @@ bool run_new_game_sequence(WindowState& state,HWND window,
                 <<" ambient_retired="<<retired.ambient_after.playback.retired
                 <<" stop_acknowledged=1 devices_retired=1 worker_joined=1 banks_unloaded=1"
                 <<" frozen_frame_preserved=1 session_unchanged=1 normal_sequence_barriers_executed=0\n";
-            return true;
-        }
-        if(player.command().phase==openrc::FrontendSequencePhaseV1::incomplete&&
-            cue.consumer_key=="level/enter"&&arguments.smoke_test&&
-            arguments.smoke_stage==L"new-game-sequence") {
-            if(!transition_prepared||!transition_cleaned||completed_movies!=3U||completed_fades!=7U||
-                presented_cards!=3U||!level_state_installed||!state.admitted_level||state.prepared_level||state.gameplay)
-                throw std::runtime_error("Normal New Game presentation did not complete its native owners");
-            std::cout<<"OpenRC normal New Game sequence: prepare_completed=1 cards="<<presented_cards
-                <<" movies="<<completed_movies<<" fades="<<completed_fades
-                <<" level_load_completed=1 transition_cleanup_completed=1 normal_sequence_barriers_executed=1"
-                <<" level_state_installed=1 next_owner=level/enter level_admitted=0 world_entered=0 level_playable=0\n";
             return true;
         }
         if(player.command().phase==openrc::FrontendSequencePhaseV1::incomplete)
@@ -2300,6 +2606,48 @@ bool run_new_game_sequence(WindowState& state,HWND window,
                 <<" revision_after="<<session.persistent_state()->revision()
                 <<" completed_content_taken=1 canonical_session_retained=1 frozen_frame_preserved=1"
                 <<" level_state_installed=1 level_admitted=0 world_entered=0 level_playable=0\n";
+            continue;
+        }
+        if(cue.consumer_key=="level/enter") {
+            // Same preconditions as section admission, after its installation:
+            // one retained session, completed content and no frontend owner.
+            if(!transition_cleaned||!level_installation||!level_state_installed||!state.admitted_level||
+                !state.frontend_session||state.prepared_level||state.gameplay||state.gameplay_animation||
+                state.gameplay_camera||state.frontend_input_active||state.frontend_platform_active||frontend_content||
+                loading_card||movie_owner||movie_clip||movie_before_fade_completed||
+                state.frontend_menu_audio||state.frontend_ambient_audio||level_entry)
+                throw std::runtime_error("Level entry precedes installed state or completed frontend owner retirement");
+            auto& session=*state.frontend_session;
+            const auto* persistent=session.persistent_state();
+            if(!persistent)throw std::runtime_error("Level entry has no canonical persistent state");
+            const auto level=frontend_word(*persistent,"session/target-level");
+            if(level_installation->level_id!=level||state.admitted_level->foundation.level_id!=level||
+                session.active_level_id()||session.pending_level_request()||session.next_tick_index())
+                throw std::runtime_error("Level entry disagrees with the installed canonical session");
+            auto& entry=level_entry.emplace();
+            entry.level_id=level;
+            entry.session=session.snapshot();
+            entry.identity_buffer=entry.session.persistent_state->buffers.at(0).buffer_key;
+            entry.identity_allocation=persistent->buffer_bytes(entry.identity_buffer).data();
+            entry.frozen_frame=state.renderer->capture_frame_rgba();
+            // Move, never copy: gameplay takes ownership of this same session,
+            // with its seed, bytes and revision, without replaying initial data.
+            std::optional<openrc::game::GameSessionV1> transferred(std::in_place,std::move(session));
+            state.frontend_session.reset();
+            enter_gameplay_level(window,state,false,std::move(transferred));
+            verify_level_entry_session(state,entry,true);
+            if(!state.gameplay_actor||!state.gameplay_animation)
+                throw std::runtime_error("Level entry did not admit the prepared player model and animation");
+            openrc::FrontendSequenceSignalV1 completed;completed.consumer_completed=true;player.advance(completed);
+            const auto* entities=state.gameplay->entity_gameplay();
+            std::cout<<"OpenRC level enter: level="<<level<<" session_transferred=1 second_session=0"
+                <<" window_reused=1 renderer_reused=1 player_actor=1 player_animation=1"
+                <<" entity_gameplay="<<(entities!=nullptr)<<" collectibles="<<state.gameplay_collectible_ids.size()
+                <<" destructibles="<<state.gameplay_destructible_ids.size()
+                <<" world_actors="<<state.gameplay_world_actor_ids.size()
+                <<" revision="<<state.gameplay->session().persistent_state()->revision()
+                <<" controls=keyboard+xinput world_entered=1 original_entity_admission=0"
+                <<" original_entry_qualified=0 camera=developer physics=openrc-policy\n";
             continue;
         }
         if(cue.consumer_key=="transition/prepare") {
@@ -2548,6 +2896,17 @@ bool run_new_game_sequence(WindowState& state,HWND window,
         openrc::FrontendSequenceSignalV1 completed;completed.consumer_completed=true;player.advance(completed);
         std::cout<<"OpenRC frontend exit: gpu_drained=1 scene_retired=1 frozen_frame_preserved=1\n";
         if(arguments.smoke_test&&arguments.smoke_stage==L"frontend-exit")return true;
+    }
+    if(arguments.smoke_test&&arguments.smoke_stage==L"new-game-sequence") {
+        if(!transition_prepared||!transition_cleaned||completed_movies!=3U||completed_fades!=7U||
+            presented_cards!=3U||!level_state_installed||!level_entry||!state.admitted_level||
+            state.prepared_level||!state.gameplay)
+            throw std::runtime_error("Normal New Game presentation did not complete its native owners");
+        std::cout<<"OpenRC normal New Game sequence: prepare_completed=1 cards="<<presented_cards
+            <<" movies="<<completed_movies<<" fades="<<completed_fades
+            <<" level_load_completed=1 transition_cleanup_completed=1 normal_sequence_barriers_executed=1"
+            <<" level_state_installed=1 level_entered=1 sequence_complete=1\n";
+        return run_level_entry_smoke(state,window,*level_entry,arguments);
     }
     return true;
 }
@@ -2827,9 +3186,16 @@ int run_prepared_startup(const HINSTANCE instance,const int show_command,
         }
         if(arguments.smoke_test&&arguments.smoke_stage==L"intro"){DestroyWindow(window);return 0;}
         const auto completed=run_post_intro(state,window,shared,arguments,prepared);
-        if(IsWindow(window))DestroyWindow(window);
         if(arguments.smoke_test&&!completed)throw std::runtime_error("Startup smoke closed before its selected stage completed");
-        return 0;
+        // A normal launch continues in the same window, renderer and session
+        // that `level/enter` admitted; smoke stages end above.
+        auto exit_code=0;
+        if(completed&&!arguments.smoke_test&&state.gameplay) {
+            exit_code=run_gameplay_loop(window,state);
+            if(state.fatal_error)throw std::runtime_error(*state.fatal_error);
+        }
+        if(IsWindow(window))DestroyWindow(window);
+        return exit_code;
     } catch(...) {
         if(IsWindow(window))DestroyWindow(window);
         throw;
@@ -2848,7 +3214,7 @@ constexpr wchar_t kUsageText[] =
     L"  --smoke-stage intro|post-intro|frontend-background|frontend-menu|frontend-dialog|new-game-request - startup smoke extent\n"
     L"  --smoke-stage media-library - separate movie playback/retirement diagnostic\n"
     L"  --smoke-stage frontend-exit - verify New Game frontend resource retirement\n"
-    L"  --smoke-stage new-game-sequence - present New Game and install level state, stopping before world entry\n"
+    L"  --smoke-stage new-game-sequence - present New Game, install level state, enter the level and run 600 scripted gameplay ticks\n"
     L"  --smoke-stage frontend-audio-retirement - verify admitted New Game sound owners without acknowledging preparation\n"
     L"  --help - show this help\n\n"
     L"Controls:\n"
@@ -2896,144 +3262,17 @@ int WINAPI wWinMain(
                 std::span<
                     const openrc::ExplicitLevelPackageOverlayBytesV1>{},
                 filesystem_limits);
-        auto level_content = openrc::game::load_runtime_level_content_v1(
-            resolved, make_runtime_level_content_limits());
-
         WindowState state;
-        state.base_title = make_runtime_window_title(level_content);
+        state.admitted_level.emplace(openrc::game::load_runtime_level_content_v1(
+            resolved, make_runtime_level_content_limits()));
+        state.base_title = make_runtime_window_title(*state.admitted_level);
         const auto window = create_runtime_window(
             instance,
             state,
             state.base_title);
         try {
-            const auto player_actor =
-                openrc::game::resolve_runtime_player_actor_v1(
-                    level_content, 0U);
-            const auto world_actors =
-                openrc::game::resolve_runtime_world_actors_v1(level_content);
-            if (player_actor) {
-                state.gameplay_actor = true;
-                const auto& library = *level_content.actor_library;
-                const auto& player_rig =
-                    library.rigs[player_actor->actor_rig_index];
-                state.renderer =
-                    std::make_unique<openrc::runtime::D3d11Renderer>(
-                        window,
-                        level_content.render_scene,
-                        library,
-                        *player_actor,
-                        world_actors);
-                state.gameplay_world_actor_ids.reserve(world_actors.size());
-                for (const auto& actor : world_actors) {
-                    state.gameplay_world_actor_ids.push_back(
-                        actor.authored_id);
-                }
-                apply_runtime_world_actor_initial_poses(
-                    *state.renderer, level_content, world_actors);
-                const auto animation_profile =
-                    make_runtime_player_animation_profile();
-                if (level_content.actor_animation_bank &&
-                    has_complete_runtime_player_animation(
-                        *level_content.actor_animation_bank,
-                        animation_profile)) {
-                    state.gameplay_animation = std::make_unique<
-                        openrc::game::RuntimePlayerAnimationV1>(
-                            *level_content.actor_animation_bank,
-                            player_rig,
-                            animation_profile,
-                            make_runtime_actor_animation_playback_limits());
-                    state.renderer->set_gameplay_actor_pose(
-                        state.gameplay_animation->palette());
-                }
-            } else {
-                state.renderer =
-                    std::make_unique<openrc::runtime::D3d11Renderer>(
-                        window, level_content.render_scene);
-            }
-            openrc::game::RuntimeGameplaySessionOptionsV1 gameplay_options;
-            if (level_content.entity_scene &&
-                (level_content.gameplay_scene ||
-                 level_content.destructible_scene)) {
-                state.gameplay_render_bindings =
-                    level_content.entity_scene->render_bindings;
-                if (level_content.gameplay_scene) {
-                    state.gameplay_collectible_ids.reserve(
-                        level_content.gameplay_scene->collectibles.size());
-                    for (const auto& collectible :
-                         level_content.gameplay_scene->collectibles) {
-                        state.gameplay_collectible_ids.push_back(
-                            collectible.authored_id);
-                    }
-                }
-                if (level_content.destructible_scene) {
-                    state.gameplay_destructible_ids.reserve(
-                        level_content.destructible_scene->destructibles.size());
-                    for (const auto& destructible :
-                         level_content.destructible_scene->destructibles) {
-                        state.gameplay_destructible_ids.push_back(
-                            destructible.authored_id);
-                    }
-                }
-                if (arguments.smoke_test &&
-                    level_content.destructible_scene &&
-                    !level_content.destructible_scene->destructibles.empty()) {
-                    state.gameplay_smoke_target = make_gameplay_smoke_target(
-                        *level_content.entity_scene,
-                        level_content.destructible_scene
-                            ->destructibles.front());
-                } else if (arguments.smoke_test &&
-                           level_content.gameplay_scene &&
-                           !level_content.gameplay_scene
-                                ->collectibles.empty()) {
-                    state.gameplay_smoke_target = make_gameplay_smoke_target(
-                        *level_content.entity_scene,
-                        level_content.gameplay_scene->collectibles.front());
-                }
-                openrc::GameplaySceneV1 gameplay_scene;
-                gameplay_scene.level_id =
-                    level_content.entity_scene->level_id;
-                if (level_content.gameplay_scene) {
-                    gameplay_scene =
-                        std::move(*level_content.gameplay_scene);
-                }
-                gameplay_options.entity_gameplay =
-                    openrc::game::RuntimeGameplayEntityContentV1{
-                        std::move(*level_content.entity_scene),
-                        std::move(gameplay_scene),
-                        openrc::game::
-                            make_runtime_entity_gameplay_limits_v1(),
-                        std::move(level_content.destructible_scene),
-                    };
-            }
-            state.gameplay = std::make_unique<
-                openrc::game::RuntimeGameplaySessionV1>(
-                    std::move(level_content.foundation),
-                    std::move(gameplay_options));
-            RECT client_rectangle{};
-            if (GetClientRect(window, &client_rectangle) == FALSE) {
-                throw std::runtime_error(
-                    "GetClientRect failed while initializing gameplay");
-            }
-            const auto client_width = static_cast<std::uint32_t>(
-                std::max<LONG>(
-                    0,
-                    client_rectangle.right - client_rectangle.left));
-            const auto client_height = static_cast<std::uint32_t>(
-                std::max<LONG>(
-                    0,
-                    client_rectangle.bottom - client_rectangle.top));
-            const auto player = state.gameplay->snapshot().player;
-            state.gameplay_camera.emplace(
-                make_gameplay_camera_profile(
-                    gameplay_aspect_ratio(client_width, client_height)),
-                openrc::game::ThirdPersonCameraStateV1{
-                    canonical_gameplay_yaw(player.facing_yaw_radians),
-                    22.0 * std::numbers::pi_v<double> / 180.0,
-                    6.0,
-                });
-            update_gameplay_player_presentation(state, player);
-            synchronize_gameplay_entity_presentation(state);
-            refresh_window_title(window, state);
+            enter_gameplay_level(
+                window, state, arguments.smoke_test, std::nullopt);
         } catch (...) {
             DestroyWindow(window);
             throw;
@@ -3159,54 +3398,11 @@ int WINAPI wWinMain(
         ShowWindow(window, show_command == 0 ? SW_SHOWNORMAL : show_command);
         UpdateWindow(window);
 
-        MSG message{};
-        if (state.gameplay) {
-            state.previous_gameplay_frame =
-                std::chrono::steady_clock::now();
-            bool running = true;
-            while (running) {
-                while (PeekMessageW(
-                           &message, nullptr, 0U, 0U, PM_REMOVE) != FALSE) {
-                    if (message.message == WM_QUIT) {
-                        running = false;
-                        break;
-                    }
-                    TranslateMessage(&message);
-                    DispatchMessageW(&message);
-                }
-                if (!running) {
-                    break;
-                }
-                if (IsIconic(window) != FALSE) {
-                    if (WaitMessage() == FALSE) {
-                        throw std::runtime_error("WaitMessage failed");
-                    }
-                    state.previous_gameplay_frame =
-                        std::chrono::steady_clock::now();
-                    continue;
-                }
-                poll_gameplay_gamepad(state);
-                advance_gameplay_frame(
-                    window, state, std::chrono::steady_clock::now());
-                if (!state.renderer->render()) {
-                    constexpr DWORD kOccludedWaitMilliseconds = 16U;
-                    const auto wait_result = MsgWaitForMultipleObjectsEx(
-                        0U,
-                        nullptr,
-                        kOccludedWaitMilliseconds,
-                        QS_ALLINPUT,
-                        MWMO_INPUTAVAILABLE);
-                    if (wait_result == WAIT_FAILED) {
-                        throw std::runtime_error(
-                            "Waiting for an occluded runtime window failed");
-                    }
-                }
-            }
-        }
+        const auto exit_code = run_gameplay_loop(window, state);
         if (state.fatal_error) {
             throw std::runtime_error(*state.fatal_error);
         }
-        return static_cast<int>(message.wParam);
+        return exit_code;
     } catch (const std::exception& error) {
         // A GUI process may have no usable inherited standard-error handle.
         // Preserve the failure independently of the launching shell or UI.

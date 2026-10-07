@@ -3,6 +3,7 @@
 #include "openrc/rac_pad_input.hpp"
 #include "openrc/rac_player_locomotion.hpp"
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <functional>
@@ -1121,6 +1122,129 @@ void test_prepared_state_is_owned_across_runtime_ticks_and_levels() {
       "runtime without a state contract accepted an operation");
 }
 
+void test_frontend_session_transfer_retains_canonical_state() {
+  using namespace openrc;
+  using namespace openrc::game;
+  const SessionStateLimitsV1 limits{2U,   4U,  64U,  1024U, 64U,
+                                    128U, 64U, 256U, 16U};
+  const SessionStateInitialV1 initial{
+      {"test.runtime/frontend",
+       {{"progress", 4U}},
+       {{"word", "progress", SessionStateValueTypeV1::u32, 0U, 1U, 4U}}},
+      {{"progress", {std::byte{3}, std::byte{0}, std::byte{0}, std::byte{0}}}},
+  };
+  const auto live_frontend = [&] {
+    GameSessionV1 frontend(0x5eedU, initial, limits);
+    for (std::uint32_t value = 1U; value <= 3U; ++value) {
+      const std::array writes{SessionStateWriteV1{
+          "word", 0U, SessionStateValueTypeV1::u32, 0x1000U + value}};
+      frontend.apply_persistent_state_writes(
+          writes, frontend.persistent_state()->revision());
+    }
+    return frontend;
+  };
+
+  {
+    auto frontend = live_frontend();
+    const auto before = frontend.snapshot();
+    const auto *allocation =
+        frontend.persistent_state()->buffer_bytes("progress").data();
+    RuntimeGameplaySessionOptionsV1 options;
+    // The transferred seed wins; neither this seed nor any prepared initial
+    // value is applied again at first gameplay admission.
+    options.deterministic_seed = 0x0badU;
+    options.persistent_state_limits = limits;
+    options.entity_gameplay = entity_gameplay_content(7U);
+    options.frontend_session.emplace(std::move(frontend));
+    RuntimeGameplaySessionV1 entered(foundation(), std::move(options));
+    const auto admitted = entered.snapshot().session;
+    expect(admitted.deterministic_seed == 0x5eedU &&
+               admitted.persistent_state == before.persistent_state &&
+               admitted.persistent_state->revision == 3U &&
+               entered.session().persistent_state()->read_u32("word", 0U) ==
+                   0x1003U &&
+               entered.session().persistent_state()->buffer_bytes("progress")
+                       .data() == allocation,
+           "frontend transfer changed the seed, bytes, revision or owner");
+    expect(admitted.active_level_id == 7U &&
+               admitted.level_instance_sequence == 1U &&
+               admitted.next_level_request_sequence == 1U &&
+               admitted.next_tick_index == 0U && !admitted.pending_level_request,
+           "frontend transfer did not commit exactly one first-level request");
+
+    std::uint64_t ticks = 0U;
+    for (unsigned frame = 0U; frame < 30U; ++frame) {
+      ticks += entered
+                   .advance_frame(16'666'667U,
+                                  movement_sample(0, kGameInputAxisMagnitudeV1))
+                   .ticks.size();
+    }
+    const auto after_ticks = entered.snapshot().session;
+    expect(ticks == 30U && after_ticks.next_tick_index == 30U &&
+               after_ticks.persistent_state == before.persistent_state &&
+               after_ticks.deterministic_seed == 0x5eedU,
+           "gameplay ticks changed transferred frontend bytes or revision");
+    expect_gameplay_error(
+        [&] {
+          entered.apply_persistent_state_writes(
+              std::array{SessionStateWriteV1{
+                  "word", 0U, SessionStateValueTypeV1::u32, 1U}},
+              2U);
+        },
+        "transferred session accepted a stale frontend revision");
+    entered.apply_persistent_state_writes(
+        std::array{
+            SessionStateWriteV1{"word", 0U, SessionStateValueTypeV1::u32, 9U}},
+        3U);
+    expect(entered.session().persistent_state()->revision() == 4U &&
+               entered.session().persistent_state()->read_u32("word", 0U) ==
+                   9U,
+           "transferred session revision did not advance by its contract");
+  }
+
+  const auto expect_rejected = [&](GameSessionV1 session,
+                                   const bool with_initial_state,
+                                   const std::string &message) {
+    RuntimeGameplaySessionOptionsV1 options;
+    options.persistent_state_limits = limits;
+    if (with_initial_state) {
+      options.initial_persistent_state = initial;
+    }
+    options.frontend_session.emplace(std::move(session));
+    expect_gameplay_error(
+        [&] {
+          RuntimeGameplaySessionV1 rejected(foundation(), std::move(options));
+        },
+        message);
+  };
+  expect_rejected(live_frontend(), true,
+                  "frontend transfer accepted a second initial-state owner");
+  {
+    auto ticked = live_frontend();
+    GameInputCommandV1 command;
+    command.tick_index = 0U;
+    ticked.commit_simulation_tick(command);
+    expect_rejected(std::move(ticked), false,
+                    "frontend transfer accepted a session with gameplay ticks");
+  }
+  {
+    auto requested = live_frontend();
+    static_cast<void>(requested.request_level(7U));
+    expect_rejected(std::move(requested), false,
+                    "frontend transfer accepted a pending level request");
+  }
+  {
+    auto entered = live_frontend();
+    WorldV1 world;
+    world.load_level(entered, entered.request_level(7U));
+    expect_rejected(std::move(entered), false,
+                    "frontend transfer accepted an already entered level");
+  }
+  expect_rejected(GameSessionV1(0x5eedU), false,
+                  "frontend transfer accepted a session without prepared "
+                  "persistent state");
+}
+
 } // namespace
 
 int main() {
@@ -1145,6 +1269,7 @@ int main() {
     test_optional_entity_content_uses_global_level_instance_sequence();
     test_level_replacement_retains_global_tick_sequence();
     test_prepared_state_is_owned_across_runtime_ticks_and_levels();
+    test_frontend_session_transfer_retains_canonical_state();
     std::cout << "runtime_gameplay_tests: ok\n";
     return 0;
   } catch (const std::exception &error) {

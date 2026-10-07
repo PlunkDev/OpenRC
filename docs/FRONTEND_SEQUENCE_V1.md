@@ -1,6 +1,35 @@
 # Neutral frontend sequence v1
 
-Current native checkpoint,2026-10-03: the fresh PAL v14 continuation now
+Current native checkpoint, 2026-10-06: the runtime registers a real
+`level/enter` consumer. This final continuation cue now executes and the player
+reaches `complete` instead of stopping at `incomplete`.
+
+Its preconditions match `level/admit-prepared-sections` after that
+installation:
+
+- installed level state and a completed admitted level owner;
+- no gameplay session;
+- no remaining frontend input, platform, card/movie presentation or audio owner.
+
+The consumer then:
+
+1. moves the one canonical `GameSessionV1` into
+   `RuntimeGameplaySessionOptionsV1::frontend_session`, which rejects sessions
+   with ticks, level requests or an entered level, and an additional
+   `initial_persistent_state`;
+2. admits the scene into the existing renderer with `set_gameplay_scene`;
+3. reuses the developer `--level` admission and game loop code;
+4. acknowledges completion only after gameplay exists.
+
+The normal smoke executes 600 gameplay ticks afterwards and checks player
+movement, retained session identity/bytes/revision and a non-frozen frame.
+This consumer does not lower the source owners behind entry `2465f8`. In the
+source, that entry is the whole level module: prologue, mode loop and exit
+([LEVEL_ENTER_SOURCE_V1.md](LEVEL_ENTER_SOURCE_V1.md)). Entity admission,
+camera and physics are explicitly reported as non-original. See `HANDOFF.md`
+and `FIRST_PLAYABLE.md`.
+
+Earlier native checkpoint,2026-10-03: the fresh PAL v14 continuation now
 implements `transition/prepare` using the canonical prefix evaluator, verified
 dry/resident audio profile, actual stop/join/bank release and GPU completion.
 The final frontend framebuffer is preserved for the prepared initial fade.
@@ -8,9 +37,10 @@ Normal sequence smoke passes three cards, three complete movies, seven fades,
 actual level loading, transition cleanup and `level/admit-prepared-sections`.
 The latter takes the loaded content once into a durable owner and atomically
 installs3,457 prepared state writes in the existing canonical session, retaining
-the final framebuffer. Its remaining missing consumer is `level/enter`;
-`level_state_installed=1` does not claim world entry or playable Veldin. See
-`HANDOFF.md` and `STATE_INSTALLATION_V1.md` for the executed scope and evidence.
+the final framebuffer. At that checkpoint the remaining missing consumer was
+`level/enter`; `level_state_installed=1` alone does not claim world entry or
+playable Veldin. See `HANDOFF.md` and `STATE_INSTALLATION_V1.md` for the
+executed scope and evidence.
 
 `frontend_sequence` is a small linear prepared program and executable player.
 It carries opaque resource IDs, types and exact payload SHA-256, a canonical
@@ -162,7 +192,9 @@ I/O teardown and display configuration. The loading prologue calls232b90,
 204c60 polling. The movie tail calls122598,120858,123168 before fade4,
 then modifies its audio flags. Final120f30 and2350a8 precede resident
 12db18/12da38 section admission and entry2465f8. A real runtime lowering must
-account for these owners; registering a no-op does not close them.
+account for these owners; registering a no-op does not close them. The native
+`level/enter` consumer is a real neutral gameplay admission, not a no-op.
+It still leaves the transitive source effects of `2465f8` open.
 
 The display boundaries have concrete ownership, not abstract acknowledgements:
 `122598` synchronizes the video field; `120858` polls until the GIF/VIF/VU
