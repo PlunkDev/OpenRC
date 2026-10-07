@@ -34,10 +34,9 @@ runtime receives neutral prepared packages.
 ## Third-party code
 
 Every imported dependency must have a compatible license and attribution. Wrench
-is GPL-3.0 licensed; linking or copying its implementation would affect OpenRC's
-license obligations. Until the project license is chosen, Wrench may be studied
-as evidence that formats are understood by the community, but its source must
-not be copied into OpenRC.
+is GPL-3.0 licensed; linking or copying its implementation would conflict with
+OpenRC's ISC license. Wrench may be studied as evidence that formats are
+understood by the community, but its source must not be copied into OpenRC.
 
 The current WadV1 and PS ADPCM decoders and the 2FIP, boundary-table,
 MapArtV1, PS2D, VAGp, SBlk, SBlk audio-bank, SceneBlockDirectoryV1, and

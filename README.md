@@ -672,8 +672,10 @@ Machine-specific data, cache, extracted files, and logs live below:
 - [Reference build](docs/REFERENCE_BUILD.md)
 - [Legal and project boundaries](docs/LEGAL.md)
 
-## License status
+## License
 
-No open-source license has been selected yet. Until one is added, the source is
-not licensed for redistribution. This decision must be made before accepting
-external contributions or incorporating GPL-licensed code such as Wrench.
+OpenRC's source code is released under the [ISC License](LICENSE). The license
+covers only this repository's code and documentation. It grants no rights to
+Ratchet & Clank, its code or its assets, which remain the property of their
+owners. GPL-licensed code such as Wrench must not be copied into OpenRC; see
+[Legal and project boundaries](docs/LEGAL.md).
