@@ -1,5 +1,6 @@
 # Handoff index (newest first)
 
+- 2026-10-07 · #40 Etap 1: aktualna paczka portable i sprawdzenie New Game → sterowalny Veldin — codex — [2026-10-07-task-40-etap-1-aktualna-paczka-portable-i-sprawd.md](2026-10-07-task-40-etap-1-aktualna-paczka-portable-i-sprawd.md)
 - 2026-10-07 · #37 Kamera typu 0: składanie oka (2eb060), wejście prawego drążka, stan przy wejściu do poziomu i skala świata — kompletny widok RacGameplayCameraV1 z adapterem dla renderera — claude — [2026-10-07-task-37-kamera-typu-0-sk-adanie-oka-2eb060-wejsc.md](2026-10-07-task-37-kamera-typu-0-sk-adanie-oka-2eb060-wejsc.md)
 - 2026-10-07 · #30 Reverse: skok, opadanie i lądowanie Ratcheta — fizyka PAL i sloty animacji z maszyny stanów (następca #27) — claude — [2026-10-07-task-30-reverse-skok-opadanie-i-ladowanie-ratche.md](2026-10-07-task-30-reverse-skok-opadanie-i-ladowanie-ratche.md)
 - 2026-10-07 · #39 Audyt pokrycia świata Veldinu: źródło vs pakiet v14 vs to, co runtime rysuje i odtwarza — claude — [2026-10-07-task-39-audyt-pokrycia-swiata-veldinu-zrod-o-vs.md](2026-10-07-task-39-audyt-pokrycia-swiata-veldinu-zrod-o-vs.md)
