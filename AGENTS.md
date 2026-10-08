@@ -9,6 +9,10 @@
   verified executables published under `build-portable`.
 - Keep original game images, extracted assets, and analysis output under the
   ignored `local` directory. Never commit copyrighted source data.
+- Before reading raw assembly, check the local reverse-engineering index described in `local/re/README.md`
+  (Ghidra function list, address mentions across `docs/` with their confidence, facts, optional pseudo-C).
+  Decompiler output is unverified: confirm every conclusion against the assembly, label it
+  CONFIRMED/INFERRED/UNKNOWN, and never copy decompiled code or assembly into the repository.
 - Runtime code consumes neutral prepared packages only. RAC/PS2 decoders stay
   on the compiler side of the package boundary.
 - Keep `README.md` a short overview: update its status table only when an area
